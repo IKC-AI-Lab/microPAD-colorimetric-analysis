@@ -10,8 +10,11 @@ A MATLAB-based colorimetric analysis pipeline for microfluidic paper-based analy
 - [Pipeline Stages](#pipeline-stages)
 - [Quick Start](#quick-start)
 - [Data Augmentation](#data-augmentation)
+- [Helper Scripts](#helper-scripts)
 - [Directory Layout](#directory-layout)
 - [Tips and Troubleshooting](#tips-and-troubleshooting)
+- [Output Example](#output-example)
+- [Future Work: Android Smartphone Application](#future-work-android-smartphone-application)
 
 ---
 
@@ -103,27 +106,134 @@ Extracts three elliptical measurement regions from each test zone. In the final 
 
 **Output:** Excel feature tables in `5_extract_features/`
 
-Measures color values from each test zone and adjusts them based on the white paper background. Saves results to Excel files for machine learning.
+![White Reference Strategy](demo_images/white_referenced_pixels_on_rectangle.png)
 
-**Example usage:**
+Extracts 80+ colorimetric features from elliptical test zones while compensating for varying lighting conditions using the white paper as a reference. This enables robust biomarker concentration prediction under different smartphone cameras and lighting environments.
+
+---
+
+#### **White Reference Strategy**
+
+The pipeline automatically samples white paper pixels **outside the three elliptical test regions** within each concentration rectangle (shown in green above). These reference pixels provide:
+
+1. **Illuminant estimation** - Determines color temperature of the lighting (2500-10000K)
+2. **Chromatic adaptation** - Normalizes color channels to compensate for lighting color cast
+3. **Reflectance calculation** - Converts RGB values to relative reflectance ratios
+4. **Delta-E baseline** - Measures color difference from paper white point in perceptually-uniform Lab space
+
+This approach makes features **lighting-invariant** across different phone models and laboratory conditions.
+
+---
+
+#### **Available Presets**
+
 ```matlab
-extract_features('preset','robust','chemical','lactate')
+extract_features('preset','robust','chemical','lactate')  % Recommended
+extract_features('preset','minimal')  % Fast, essential features only
+extract_features('preset','full')     % All 150+ features
+extract_features('preset','custom')   % Interactive feature group selection dialog
 ```
 
-**Available presets:**
-- `minimal`: Essential color ratios and basic statistics
-- `robust`: Comprehensive feature set (recommended)
-- `full`: All available features
-- `custom`: User-defined feature groups
+| Preset | Feature Count | Description |
+|--------|---------------|-------------|
+| **minimal** | ~30 | Essential color ratios and basic statistics |
+| **robust** | ~80 | Comprehensive set balancing accuracy and speed (recommended) |
+| **full** | ~150 | All available features including advanced texture analysis |
+| **custom** | Variable | User-defined via interactive dialog or struct |
 
-**What gets measured** (robust preset extracts 80+ features):
+---
 
-- **Color relative to paper**: How much the test zone color differs from the white paper
-- **Color ratios**: Red/Green, Red/Blue, Green/Blue ratios that work under different lighting
-- **Basic color statistics**: Average, median, and variation of RGB, HSV, and Lab color values
-- **Texture patterns**: Stripe patterns, uniformity, roughness
-- **Color gradients**: How color changes across the test zone
-- **Other measurements**: Edge sharpness, color intensity ranges
+#### **Extracted Features (Robust Preset)**
+
+**Color Normalization (Paper-Referenced)**
+- RGB ratios relative to paper white point (R/R_paper, G/G_paper, B/B_paper)
+- Lab color corrected for paper baseline (L*, a*, b* shifts)
+- Delta-E color difference from paper (perceptually uniform)
+- Chromatic adaptation factors (von Kries-style)
+
+**Lighting-Invariant Color Ratios**
+- Red/Green, Red/Blue, Green/Blue channel ratios
+- Hue-based features immune to brightness changes
+- Normalized chroma and saturation metrics
+
+**Color Space Statistics**
+- RGB: Mean, median, standard deviation per channel
+- HSV: Hue, saturation, value distributions
+- Lab: Lightness (L*), red-green (a*), blue-yellow (b*) statistics
+
+**Texture and Spatial Features**
+- Edge sharpness (gradient magnitude)
+- Color uniformity (coefficient of variation)
+- Spatial frequency patterns (FFT-based)
+- Local color gradients
+
+**Advanced Colorimetry**
+- Estimated illuminant color temperature (Kelvin)
+- Color purity and dominance wavelength
+- Entropy and histogram statistics
+
+---
+
+#### **Output Format**
+
+Excel files with one row per elliptical measurement (replicate):
+
+| PhoneType | ImageName | RG_ratio | delta_E_from_paper | R_paper_ratio | Label |
+|-----------|-----------|----------|-------------------|---------------|-------|
+| iphone_11 | IMG_0957_aug_000_con_0.jpeg | 0.461 | 32.04 | 0.723 | 0 |
+| iphone_11 | IMG_0957_aug_000_con_0.jpeg | 0.460 | 31.51 | 0.719 | 0 |
+| iphone_11 | IMG_0957_aug_000_con_0.jpeg | 0.462 | 32.23 | 0.728 | 0 |
+
+- Each concentration zone contributes **3 rows** (3 elliptical replicates)
+- `Label` column = known concentration (0-6) for supervised learning
+- Automatically exports train/test splits (70/30 default, stratified by image)
+
+---
+
+#### **Parameters**
+
+```matlab
+% Chemical name (used in output filename)
+extract_features('chemical', 'urea')
+
+% White reference override (if auto-detection fails)
+extract_features('paperTempK', 6000)
+
+% Train/test split control
+extract_features('trainTestSplit', true, 'testSize', 0.25, 'randomSeed', 42)
+
+% Custom feature selection without dialog
+customFeatures = struct('ColorRatios', true, 'PaperNormalization', true);
+extract_features('preset', 'custom', 'features', customFeatures, 'useDialog', false)
+```
+
+---
+
+#### **Machine Learning Integration**
+
+The extracted features are designed for training AI models that will:
+1. **Predict biomarker concentrations** from smartphone images
+2. **Run on Android smartphones** via embedded TensorFlow Lite models
+3. **Auto-detect test zones** using polygon detection networks
+
+**Typical ML workflow:**
+```matlab
+% 1. Extract features in MATLAB
+extract_features('preset','robust','chemical','lactate')
+
+% 2. Load train/test splits in Python
+train_df = pd.read_excel('5_extract_features/robust_lactate_train_features.xlsx')
+test_df = pd.read_excel('5_extract_features/robust_lactate_test_features.xlsx')
+
+% 3. Train regression model
+X_train = train_df.drop(['PhoneType','ImageName','Label'], axis=1)
+y_train = train_df['Label']
+model = RandomForestRegressor()
+model.fit(X_train, y_train)
+
+% 4. Export for Android deployment
+# Convert to TensorFlow Lite for smartphone inference
+```
 
 ---
 
@@ -161,57 +271,169 @@ matlab -batch "addpath('matlab_scripts'); extract_features('preset','robust','ch
 
 ## Data Augmentation
 
-**Script:** `augment_dataset.m` (optional)
+**Script:** `augment_dataset.m` (optional, recommended for AI training)
 
-Generates synthetic training data by transforming Stage 2 outputs (papers and polygons) and composing them onto procedural backgrounds. If Stage 4 ellipse coordinates exist, augmented ellipse patches are also produced.
+Generates synthetic training data by transforming Stage 2 outputs (papers and polygons) and composing them onto procedural backgrounds. Essential for training robust polygon detection models for the Android smartphone application.
 
 ![Augmented Dataset](demo_images/augmented_dataset_1.jpg)
-*Synthetic scene with transformed microPAD*
+*Synthetic scene with transformed microPAD under simulated lighting*
 
 ![Augmented Concentration](demo_images/augmented_concentration_rectangle_1.jpeg)
-*Augmented concentration region*
+*Augmented concentration region with perspective distortion*
 
 ![Augmented Ellipse](demo_images/augmented_elliptical_region1.jpeg)
-*Augmented elliptical patch*
+*Augmented elliptical patch preserving colorimetric properties*
 
-**What it does:**
-- Shared perspective + rotation per paper
-- Random non-overlapping placement using spatial grid acceleration
-- Procedural backgrounds: uniform, speckled, laminate (white/black), skin
-- Moderate-density distractor artifacts (1-20 per image)
-- Color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
-- Optional motion blur or Gaussian blur
-- Outputs 1 original (aug_000) + N augmented versions per paper
+---
 
-**Usage:**
+### **Why Augmentation is Critical**
+
+The final Android application will use AI-based **auto-detection** to locate test zones in smartphone photos. This requires training data with:
+
+1. **Diverse viewpoints** - Different camera angles and distances
+2. **Variable lighting** - Different color temperatures and brightness levels
+3. **Realistic backgrounds** - Laboratory surfaces, skin, various materials
+4. **Occlusions and artifacts** - Objects partially covering the test strip
+5. **Multiple phone cameras** - Cross-device generalization
+
+Augmentation **multiplies the training dataset** by 5-10x without requiring additional physical experiments.
+
+---
+
+### **Transformation Pipeline**
+
+**Geometric Transformations (per paper)**
+1. **3D perspective projection** - Simulates camera viewing angles (±45° pitch/yaw)
+2. **Rotation** - Random orientation (0-180°)
+3. **Spatial placement** - Random non-overlapping positions via grid acceleration
+4. **Optional per-region rotation** - Independent orientation for each concentration zone
+
+**Photometric Augmentation**
+- **Brightness/contrast** - Global illumination variation (±5-10%)
+- **White balance jitter** - Per-channel gains simulating different lighting (0.92-1.08x)
+- **Saturation adjustment** - Color intensity variation (0.94-1.06x)
+- **Gamma correction** - Exposure simulation (0.92-1.08)
+
+**Background Generation (Procedural)**
+- **Uniform surfaces** - Clean laboratory benches (220±15 RGB)
+- **Speckled textures** - Granite, composite materials
+- **Laminate** - High-contrast white/black surfaces (245 or 30 RGB)
+- **Skin tones** - Human hand/arm backgrounds (HSV-based)
+
+**Distractor Artifacts (1-20 per image)**
+- **Shapes**: Ellipses, rectangles, quadrilaterals, triangles, lines
+- **Sizes**: 1-100% of image diagonal (allows partial occlusions)
+- **Placement**: Unconstrained (can extend beyond frame)
+- **Purpose**: Train polygon detector to ignore false positives
+
+**Blur and Occlusions (Optional)**
+- **Motion blur** - Camera shake simulation (15% probability)
+- **Gaussian blur** - Focus variation (25% probability)
+- **Thin occlusions** - Hair/strap-like artifacts across test zones (disabled by default)
+
+---
+
+### **Usage Examples**
+
 ```matlab
-% Generate 5 augmented versions per original image (optimized for speed)
+% Basic usage: 5 augmented versions per paper (6 total with original)
 augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 
-% Optional parameters (defaults shown)
+% High-augmentation mode for deep learning (10x data)
+augment_dataset('numAugmentations', 10, 'photometricAugmentation', true)
+
+% Enable all augmentation features
 augment_dataset('numAugmentations', 5, ...
                 'photometricAugmentation', true, ...
-                'blurProbability', 0.25, ...
-                'motionBlurProbability', 0.15, ...
-                'occlusionProbability', 0.0, ...
+                'blurProbability', 0.30, ...
+                'motionBlurProbability', 0.20, ...
+                'occlusionProbability', 0.15, ...
+                'independentRotation', true)
+
+% Fast mode: disable expensive features
+augment_dataset('numAugmentations', 3, ...
+                'photometricAugmentation', false, ...
                 'independentRotation', false)
+
+% Reproducible augmentation for ablation studies
+augment_dataset('numAugmentations', 5, 'rngSeed', 12345)
 ```
 
-**Performance:**
-- ~3x faster than previous version (1.0s vs 3.0s per augmented image)
-- Grid-based placement with automatic background expansion
-- Simplified texture generation and polygon warping
+---
 
-**Inputs and outputs:**
-- Reads from `2_micropad_papers/` and `3_concentration_rectangles/` (coordinates required)
-- If `4_elliptical_regions/coordinates.txt` is present, also writes ellipse patches
+### **Performance**
 
-**Output folders:**
-- `augmented_1_dataset/` (synthetic scenes)
-- `augmented_2_concentration_rectangles/` (transformed concentration regions)
-- `augmented_3_elliptical_regions/` (transformed elliptical patches)
+**Speed**: ~1.0 second per augmented image (3x faster than v1)
+- Grid-based spatial acceleration (O(1) collision detection vs O(n²))
+- Simplified polygon warping (nearest-neighbor vs bilinear)
+- Reduced background complexity (4 types vs 7)
 
-If ellipse coordinates are unavailable, run Stage 3 on `augmented_2_concentration_rectangles/` to generate augmented ellipse patches.
+**Memory**: Low overhead
+- Processes one paper at a time
+- Temporary buffers released after each scene
+
+**Scalability**: Handles large datasets
+- Automatic background expansion if polygons don't fit
+- Graceful degradation on positioning failures
+
+---
+
+### **Input/Output Structure**
+
+**Inputs:**
+- `2_micropad_papers/{phone}/` - Cropped paper strip images
+- `3_concentration_rectangles/{phone}/coordinates.txt` - Polygon vertices (required)
+- `4_elliptical_regions/{phone}/coordinates.txt` - Ellipse parameters (optional)
+
+**Outputs:**
+- `augmented_1_dataset/{phone}/` - Full synthetic scenes (for polygon detector training)
+- `augmented_2_concentration_rectangles/{phone}/con_{N}/` - Transformed concentration regions + coordinates.txt
+- `augmented_3_elliptical_regions/{phone}/con_{N}/` - Transformed elliptical patches + coordinates.txt (if input ellipses exist)
+
+**Naming convention:**
+- Original: `paper_name_aug_000.jpg` (identity transformations)
+- Augmented: `paper_name_aug_001.jpg`, `paper_name_aug_002.jpg`, etc.
+
+---
+
+### **Integration with ML Pipeline**
+
+**For Polygon Detection (YOLO, Faster R-CNN)**
+```python
+# Train on augmented_1_dataset/ with bounding boxes from coordinates.txt
+# Polygon vertices → bounding boxes for object detection
+```
+
+**For Concentration Prediction (Regression Models)**
+```matlab
+% Extract features from augmented data
+extract_features('preset','robust','chemical','lactate')
+% Output: 5_extract_features/ with (N+1) × original sample count
+```
+
+**For Android Deployment**
+1. Train polygon detector on `augmented_1_dataset/`
+2. Export to TensorFlow Lite (.tflite)
+3. Train concentration predictor on features from augmented ellipses
+4. Embed both models in Android app
+
+---
+
+### **Important Notes**
+
+**Ellipse coordinate propagation:**
+- If `4_elliptical_regions/coordinates.txt` is missing, augmentation still runs but only produces stages 1-2
+- To generate augmented ellipses without pre-existing coordinates, run `cut_elliptical_regions.m` on `augmented_2_concentration_rectangles/` after augmentation
+
+**Coordinate preservation:**
+- All transformations (perspective, rotation, translation) are recorded in output coordinates.txt files
+- Ellipse transformations use conic section mathematics to preserve accuracy
+- Coordinates are validated (degenerate ellipses/polygons are skipped with warnings)
+
+**Quality control:**
+- Original version (aug_000) uses identity transformations for debugging
+- Photometric augmentation is color-safe (preserves relative hue relationships)
+- At most one blur type is applied per image (prevents over-softening)
 
 ---
 
@@ -347,3 +569,44 @@ Sample rows from `5_extract_features/robust_lactate_t0_features.xlsx` (showing s
 - During training, all 3 replicates per test zone contain the same chemical at the same concentration
 - Full table has 80+ columns (only some shown above)
 - Can split data into separate training and testing files
+
+---
+
+## Future Work: Android Smartphone Application
+
+This MATLAB pipeline serves as the **data preparation and training infrastructure** for an Android smartphone application that will:
+
+1. **Capture microPAD photos** using the smartphone camera
+2. **Auto-detect test zones** using polygon detection AI (trained on `augmented_1_dataset/`)
+3. **Predict biomarker concentrations** (urea, creatinine, lactate) using regression models (trained on features from `5_extract_features/`)
+4. **Display results** to the user in real-time
+
+### **AI Model Training Workflow**
+
+```
+MATLAB Pipeline (this repository)
+    ↓
+augmented_1_dataset/ → Train polygon detector (YOLO/Faster R-CNN)
+    ↓
+5_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
+    ↓
+Export to TensorFlow Lite (.tflite)
+    ↓
+Android Application (separate repository, coming soon)
+```
+
+### **Key Features of Android App**
+
+- **Real-time detection** - Auto-locate test zones in live camera feed
+- **Lighting compensation** - White reference strategy (same as MATLAB pipeline)
+- **Multi-biomarker support** - Separate models for urea, creatinine, lactate
+- **Offline inference** - Embedded TensorFlow Lite models (no internet required)
+- **Result history** - Save and track measurements over time
+
+### **Current Status**
+
+✅ **Completed**: MATLAB data preparation pipeline (this repository)
+🔄 **In Progress**: AI model training and validation
+📋 **Planned**: Android application development
+
+Stay tuned for the Android app repository link!
