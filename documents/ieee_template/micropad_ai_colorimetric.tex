@@ -1,10 +1,11 @@
-% Ensure the local IEEEtran.cls in documents/ieee_template is used even
-% when compiling from the repository root.
-\makeatletter
-\def\input@path{{documents/ieee_template/}}
-\makeatother
+% Overleaf-ready IEEE conference paper for microPAD colorimetric analysis
+% Uses local IEEEtran.cls in this folder when present.
+\IfFileExists{documents/ieee_template/IEEEtran.cls}{%
+  \makeatletter\def\input@path{{documents/ieee_template/}}\makeatother
+}{}
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
+
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithmic}
@@ -12,6 +13,7 @@
 \usepackage{textcomp}
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
+\graphicspath{{figures/}{./}}
 
 \title{Smartphone-Based AI Pipeline for Colorimetric Quantification of Urea, Creatinine, and Lactate on Microfluidic Paper-Based Analytical Devices}
 
@@ -46,13 +48,38 @@ Each paper strip contains seven test zones (concentrations), and each zone compr
 Hydrophobic barrier patterns are designed digitally to accommodate seven concentration test zones per strip, each subdivided into three elliptical measurement regions. Wax printing followed by thermal reflow defines the hydrophobic boundaries that confine reagent droplets; \textbf{TODO-USER: Provide CAD software version, wax printer model, heating temperature, and duration.} Detection zones are functionalized with the appropriate enzyme and chromogenic mixtures for urea, creatinine, and lactate. Droplet volumes of approximately 0.8--1~\textmu L are dispensed into each region to ensure uniform reagent coverage; \textbf{TODO-USER: Confirm exact deposition volumes and drying conditions (room temperature versus refrigerated).}
 
 \subsection{Image Acquisition}
-The dataset is structured to capture real-world variability by combining four smartphone models---iPhone~11, iPhone~15, Realme~C55, and Samsung~A75---across seven controlled lighting configurations. Each microPAD instance yields seven images corresponding to distinct lamp combinations ranging from single-source to all-lamps-on conditions. Stage~1 raw photographs reside in `1\_dataset/{phone\_model}/` directories, Stage~2 cropping isolates individual strips, Stage~3 extracts rectangular concentration zones, and Stage~4 generates the three elliptical regions per zone. Consistent coordinate files accompany each stage to enable exact regeneration of processed imagery. \textbf{TODO-USER: Document camera-to-sample distance, incidence angle, white balance settings, and tripod or fixture details.} \textbf{TODO-USER: Provide information about ambient temperature, humidity control, and repeatability across acquisition sessions.}
+The dataset is structured to capture real-world variability by combining four smartphone models---iPhone~11, iPhone~15, Realme~C55, and Samsung~A75---across seven controlled lighting configurations. Each microPAD instance yields seven images corresponding to distinct lamp combinations ranging from single-source to all-lamps-on conditions. Stage~1 raw photographs reside in \texttt{1\_dataset/\{phone\_model\}/} directories, Stage~2 cropping isolates individual strips, Stage~3 extracts rectangular concentration zones, and Stage~4 generates the three elliptical regions per zone. Consistent coordinate files accompany each stage to enable exact regeneration of processed imagery. \textbf{TODO-USER: Document camera-to-sample distance, incidence angle, white balance settings, and tripod or fixture details.} \textbf{TODO-USER: Provide information about ambient temperature, humidity control, and repeatability across acquisition sessions.}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{stage1_original_image.jpeg}
+  \caption{Representative Stage\,1 raw capture from smartphone.}
+  \label{fig:stage1}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{stage2_micropad_paper.jpeg}
+  \caption{Stage\,2 crop isolating a single microPAD paper strip.}
+  \label{fig:stage2}
+\end{figure}
 
 \subsection{Dataset Organization and Naming}
-The processing pipeline writes sequential outputs to stage folders: `1\_dataset/` \textrightarrow{} `2\_micropad\_papers/` \textrightarrow{} `3\_concentration\_rectangles/` \textrightarrow{} `4\_elliptical\_regions/` \textrightarrow{} `5\_extract\_features/`. For Stage~4 patches, filenames follow `{base}\_con\{N\}\_rep\{M\}.ext` where `rep\{M\}` with $M\in\{0,1,2\}$ denotes the three replicates per concentration zone. A coordinate log (`coordinates.txt`) is generated atomically at each stage to preserve reproducibility across reruns. \textbf{CAUTION:} Do not edit `coordinates.txt` manually; if corrupted, delete and rerun the corresponding stage.
+The processing pipeline writes sequential outputs to stage folders: \texttt{1\_dataset/} \textrightarrow{} \texttt{2\_micropad\_papers/} \textrightarrow{} \texttt{3\_concentration\_rectangles/} \textrightarrow{} \texttt{4\_elliptical\_regions/} \textrightarrow{} \texttt{5\_extract\_features/}. For Stage~4 patches, filenames follow \texttt{\{base\}\_con\{N\}\_rep\{M\}.ext} where \texttt{rep\{M\}} with $M\in\{0,1,2\}$ denotes the three replicates per concentration zone. A coordinate log (\texttt{coordinates.txt}) is generated atomically at each stage to preserve reproducibility across reruns. \textbf{CAUTION:} Do not edit \texttt{coordinates.txt} manually; if corrupted, delete and rerun the corresponding stage.
 
-\subsection{AI-Based Colorimetric Quantification}
-The MATLAB pipeline computes a comprehensive feature set from the extracted elliptical patches, including relative RGB ratios, HSV and Lab statistics, and texture descriptors that capture homogeneity, contrast, and gradient patterns. Features are paired with paper-reference measurements from the corresponding concentration rectangles to mitigate lighting effects. These datasets are intended for regression models that output continuous analyte concentrations for urea, creatinine, and lactate. \textbf{TODO-USER: Detail the selected machine learning or deep learning algorithms, hyperparameter tuning strategy, and training/validation/test splits (e.g., 80/20 with validation carved from training).} \textbf{TODO-USER: Report augmentation parameters, normalization pipelines, and model export steps (TensorFlow Lite, ONNX, or MATLAB Coder) when finalized.}
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{stage3_concentration_rectangle.jpeg}
+  \caption{Stage\,3 extraction of a concentration rectangle.}
+  \label{fig:stage3}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\linewidth]{stage4_elliptical_region_1.jpeg}
+  \caption{Stage\,4 example elliptical measurement region.}
+  \label{fig:stage4}
+\end{figure}
 
 \subsection{Image Processing Pipeline (MATLAB)}
 The standard processing flow is: (i) crop microPAD papers, (ii) cut concentration rectangles, (iii) cut elliptical regions, and (iv) extract features. Typical batch commands are:
@@ -64,11 +91,31 @@ The standard processing flow is: (i) crop microPAD papers, (ii) cut concentratio
 \end{itemize}
 All paths are relative, and each stage reads from `N_*` and writes to `(N+1)_*` to preserve stage independence.
 
+\subsection{AI-Based Colorimetric Quantification}
+The MATLAB pipeline computes a comprehensive feature set from the extracted elliptical patches, including relative RGB ratios, HSV and Lab statistics, and texture descriptors that capture homogeneity, contrast, and gradient patterns. Features are paired with paper-reference measurements from the corresponding concentration rectangles to mitigate lighting effects. These datasets are intended for regression models that output continuous analyte concentrations for urea, creatinine, and lactate. \textbf{TODO-USER: Detail the selected machine learning or deep learning algorithms, hyperparameter tuning strategy, and training/validation/test splits (e.g., 80/20 with validation carved from training).} \textbf{TODO-USER: Report augmentation parameters, normalization pipelines, and model export steps (TensorFlow Lite, ONNX, or MATLAB Coder) when finalized.}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{augmented_dataset_1.jpg}
+  \caption{Example augmented dataset visualization used for model robustness.}
+  \label{fig:augment}
+\end{figure}
+
 \subsection{Smartphone Application Integration}
 A dedicated Android application is planned to embed the trained models for offline inference, enabling immediate results without cloud connectivity. The app workflow will guide users through image capture, segmentation, and concentration readout. \textbf{TODO-USER: Provide application name, development environment (e.g., Android Studio version), UI screenshots, and inference latency measurements.} Model deployment will follow conversion to on-device formats and incorporate fail-safe checks for lighting and focus.
 
 \subsection{Selectivity and Validation}
 To confirm analytical specificity, interferent studies with compounds such as uric acid, ascorbic acid, and dopamine should be performed on representative microPADs. \textbf{TODO-USER: Summarize experimental protocols, concentrations, and acceptance thresholds for selectivity metrics.} Real-sample validation using clinically relevant matrices (e.g., urine or sweat) is encouraged once ethical approvals and sample handling procedures are defined.
+
+\subsection{White Reference and Normalization}
+If a white reference region is used to normalize illumination effects, document the extraction method and pixel selection criteria. An example overlay is shown in Fig.~\ref{fig:white}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\linewidth]{white_referenced_pixels_on_rectangle.png}
+  \caption{Illustration of white-referenced pixel selection on a concentration rectangle.}
+  \label{fig:white}
+\end{figure}
 
 \subsection{Statistical Analysis}
 \textbf{TODO-USER:} Specify the statistical tests (e.g., ANOVA, Bland--Altman analysis), confidence intervals, number of replicates per concentration, and criteria for outlier removal. Report mean~\textpm{}~SD unless otherwise stated.
@@ -87,7 +134,7 @@ As experiments conclude, this section will be updated with quantitative analyses
 We presented the current status of a smartphone-based AI pipeline for colorimetric quantification of urea, creatinine, and lactate on microfluidic paper-based analytical devices. The documented MATLAB workflow preserves reproducible processing through coordinate logs, accommodates acquisition variability across multiple smartphones and lighting setups, and prepares feature-rich datasets for machine learning. Future efforts will finalize experimental measurements, complete regression model development, and integrate inference models into an offline-capable smartphone application. Successful deployment will enable rapid, low-cost biochemical monitoring suitable for home diagnostics and resource-limited healthcare environments.
 
 \section*{Acknowledgment}
-\textbf{TODO-USER: Insert funding acknowledgments, project identifiers, or collaborating laboratories as appropriate.}
+\textbf{TODO-USER:} Insert funding acknowledgments, project identifiers, or collaborating laboratories as appropriate.
 
 \section*{Data and Code Availability}
 \textbf{TODO-USER:} Provide the public repository link for code and a statement about data availability (e.g., upon reasonable request or via archived DOI). Ensure image assets are excluded from version control per project policy.
