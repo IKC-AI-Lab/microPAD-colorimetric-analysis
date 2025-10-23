@@ -1,3 +1,8 @@
+% Ensure the local IEEEtran.cls in documents/ieee_template is used even
+% when compiling from the repository root.
+\makeatletter
+\def\input@path{{documents/ieee_template/}}
+\makeatother
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
 \usepackage{cite}
@@ -6,6 +11,7 @@
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
 
 \title{Smartphone-Based AI Pipeline for Colorimetric Quantification of Urea, Creatinine, and Lactate on Microfluidic Paper-Based Analytical Devices}
 
@@ -23,7 +29,7 @@ Accessible colorimetric diagnostics on microfluidic paper-based analytical devic
 \end{abstract}
 
 \begin{IEEEkeywords}
-smartphone; colorimetric analysis; microfluidic paper-based analytical device; machine learning; urea sensing; creatinine; lactate detection
+smartphone; colorimetric; microfluidic paper-based analytical device; machine learning; regression; urea; creatinine; lactate
 \end{IEEEkeywords}
 
 \section{Introduction}
@@ -33,20 +39,39 @@ Recently, smartphone-based point-of-care testing solutions have emerged as cruci
 \subsection{Materials}
 The platform employs Whatman qualitative filter paper grade~1 as the substrate for microfluidic structuring. Colorimetric chemistries are prepared to target urea, creatinine, and lactate; \textbf{TODO-USER: Specify enzyme complexes, chromogenic reagents, concentrations, and suppliers (e.g., Sigma Aldrich, Merck).} Artificial biofluid simulants and calibration standards should be documented with compositions and storage conditions. \textbf{TODO-USER: List buffer formulations, stabilizers, and preservatives used during paper preparation and testing.}
 
+\subsection{Experimental Design}
+Each paper strip contains seven test zones (concentrations), and each zone comprises three elliptical measurement regions that act as replicates. In the training phase, all three regions within a zone contain the same chemical at the same concentration, yielding three replicate measurements per level. In the final device design, the three regions per zone will be functionalized for distinct analytes (urea, creatinine, lactate). \textbf{TODO-USER: Cross-reference calibration ranges and any analyte-specific kinetics that impact readout times.}
+
 \subsection{Design and Fabrication of $\mu$PADs}
 Hydrophobic barrier patterns are designed digitally to accommodate seven concentration test zones per strip, each subdivided into three elliptical measurement regions. Wax printing followed by thermal reflow defines the hydrophobic boundaries that confine reagent droplets; \textbf{TODO-USER: Provide CAD software version, wax printer model, heating temperature, and duration.} Detection zones are functionalized with the appropriate enzyme and chromogenic mixtures for urea, creatinine, and lactate. Droplet volumes of approximately 0.8--1~\textmu L are dispensed into each region to ensure uniform reagent coverage; \textbf{TODO-USER: Confirm exact deposition volumes and drying conditions (room temperature versus refrigerated).}
 
 \subsection{Image Acquisition}
 The dataset is structured to capture real-world variability by combining four smartphone models---iPhone~11, iPhone~15, Realme~C55, and Samsung~A75---across seven controlled lighting configurations. Each microPAD instance yields seven images corresponding to distinct lamp combinations ranging from single-source to all-lamps-on conditions. Stage~1 raw photographs reside in `1\_dataset/{phone\_model}/` directories, Stage~2 cropping isolates individual strips, Stage~3 extracts rectangular concentration zones, and Stage~4 generates the three elliptical regions per zone. Consistent coordinate files accompany each stage to enable exact regeneration of processed imagery. \textbf{TODO-USER: Document camera-to-sample distance, incidence angle, white balance settings, and tripod or fixture details.} \textbf{TODO-USER: Provide information about ambient temperature, humidity control, and repeatability across acquisition sessions.}
 
+\subsection{Dataset Organization and Naming}
+The processing pipeline writes sequential outputs to stage folders: `1\_dataset/` \textrightarrow{} `2\_micropad\_papers/` \textrightarrow{} `3\_concentration\_rectangles/` \textrightarrow{} `4\_elliptical\_regions/` \textrightarrow{} `5\_extract\_features/`. For Stage~4 patches, filenames follow `{base}\_con\{N\}\_rep\{M\}.ext` where `rep\{M\}` with $M\in\{0,1,2\}$ denotes the three replicates per concentration zone. A coordinate log (`coordinates.txt`) is generated atomically at each stage to preserve reproducibility across reruns. \textbf{CAUTION:} Do not edit `coordinates.txt` manually; if corrupted, delete and rerun the corresponding stage.
+
 \subsection{AI-Based Colorimetric Quantification}
 The MATLAB pipeline computes a comprehensive feature set from the extracted elliptical patches, including relative RGB ratios, HSV and Lab statistics, and texture descriptors that capture homogeneity, contrast, and gradient patterns. Features are paired with paper-reference measurements from the corresponding concentration rectangles to mitigate lighting effects. These datasets are intended for regression models that output continuous analyte concentrations for urea, creatinine, and lactate. \textbf{TODO-USER: Detail the selected machine learning or deep learning algorithms, hyperparameter tuning strategy, and training/validation/test splits (e.g., 80/20 with validation carved from training).} \textbf{TODO-USER: Report augmentation parameters, normalization pipelines, and model export steps (TensorFlow Lite, ONNX, or MATLAB Coder) when finalized.}
+
+\subsection{Image Processing Pipeline (MATLAB)}
+The standard processing flow is: (i) crop microPAD papers, (ii) cut concentration rectangles, (iii) cut elliptical regions, and (iv) extract features. Typical batch commands are:
+\begin{itemize}
+    \item \texttt{matlab -batch "addpath('matlab\_scripts'); cut\_concentration\_rectangles;"}
+    \item \texttt{matlab -batch "addpath('matlab\_scripts'); cut\_elliptical\_regions;"}
+    \item \texttt{matlab -batch "addpath('matlab\_scripts'); extract\_features(''preset'',''robust'',''chemical'',''lactate'');"}
+    \item Optional augmentation: \texttt{matlab -batch "addpath('matlab\_scripts'); augment\_dataset(''numAugmentations'',5);"}
+\end{itemize}
+All paths are relative, and each stage reads from `N_*` and writes to `(N+1)_*` to preserve stage independence.
 
 \subsection{Smartphone Application Integration}
 A dedicated Android application is planned to embed the trained models for offline inference, enabling immediate results without cloud connectivity. The app workflow will guide users through image capture, segmentation, and concentration readout. \textbf{TODO-USER: Provide application name, development environment (e.g., Android Studio version), UI screenshots, and inference latency measurements.} Model deployment will follow conversion to on-device formats and incorporate fail-safe checks for lighting and focus.
 
 \subsection{Selectivity and Validation}
 To confirm analytical specificity, interferent studies with compounds such as uric acid, ascorbic acid, and dopamine should be performed on representative microPADs. \textbf{TODO-USER: Summarize experimental protocols, concentrations, and acceptance thresholds for selectivity metrics.} Real-sample validation using clinically relevant matrices (e.g., urine or sweat) is encouraged once ethical approvals and sample handling procedures are defined.
+
+\subsection{Statistical Analysis}
+\textbf{TODO-USER:} Specify the statistical tests (e.g., ANOVA, Bland--Altman analysis), confidence intervals, number of replicates per concentration, and criteria for outlier removal. Report mean~\textpm{}~SD unless otherwise stated.
 
 \section{Results and Discussion}
 \textbf{NOTE:} Experimental data collection and model training are in progress. The following milestones remain outstanding:
@@ -63,6 +88,12 @@ We presented the current status of a smartphone-based AI pipeline for colorimetr
 
 \section*{Acknowledgment}
 \textbf{TODO-USER: Insert funding acknowledgments, project identifiers, or collaborating laboratories as appropriate.}
+
+\section*{Data and Code Availability}
+\textbf{TODO-USER:} Provide the public repository link for code and a statement about data availability (e.g., upon reasonable request or via archived DOI). Ensure image assets are excluded from version control per project policy.
+
+\section*{Ethics Statement}
+\textbf{TODO-USER:} If human, clinical, or patient-derived samples are used, describe ethics approval identifiers, consent procedures, and data privacy safeguards. If not applicable, state explicitly.
 
 \begin{thebibliography}{00}
 \bibitem{b1} \textbf{TODO-USER:} Add foundational references on microfluidic paper-based analytical devices and colorimetric sensing.
