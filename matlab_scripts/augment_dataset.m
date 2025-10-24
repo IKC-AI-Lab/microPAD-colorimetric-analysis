@@ -67,12 +67,12 @@ function augment_dataset(varargin)
 
     % Camera/transformation parameters
     CAMERA = struct( ...
-        'maxAngleDeg', 45, ...
-        'xRange', [-0.5, 0.5], ...
-        'yRange', [-0.5, 0.5], ...
-        'zRange', [1.4, 2.6], ...
+        'maxAngleDeg', 60, ...
+        'xRange', [-0.8, 0.8], ...
+        'yRange', [-0.8, 0.8], ...
+        'zRange', [1.2, 3.0], ...
         'coverageCenter', 0.97, ...
-        'coverageOffcenter', 0.95);
+        'coverageOffcenter', 0.90);
 
     ROTATION_RANGE = [0, 180];
 
@@ -94,7 +94,9 @@ function augment_dataset(varargin)
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
-        'countRange', [1, 20], ...
+        'countRange', [5, 30], ...
+        'cornerProximityBias', 0.3, ...
+        'cornerExclusionRadius', 8, ...
         'sizeRangePercent', [0.01, 1.0], ...
         'probability', 1.0, ...
         'minSizePixels', 3, ...
@@ -115,6 +117,21 @@ function augment_dataset(varargin)
         'lineIntensityRange', [-80, -40], ...
         'blobDarkIntensityRange', [-60, -30], ...
         'blobLightIntensityRange', [20, 50]);
+
+    % === CORNER ROBUSTNESS AUGMENTATION ===
+    CORNER_OCCLUSION = struct( ...
+        'probability', 0.15, ...
+        'occlusionTypes', {{'finger', 'shadow', 'small_object'}}, ...
+        'sizeRange', [15, 40], ...
+        'maxCornersPerPolygon', 2, ...
+        'intensityRange', [-80, -30]);
+
+    EDGE_DEGRADATION = struct( ...
+        'probability', 0.25, ...
+        'blurTypes', {{'gaussian', 'motion'}}, ...
+        'blurRadiusRange', [1.5, 4.0], ...
+        'affectsEdgesOnly', true, ...
+        'edgeWidth', 10);
 
     % Polygon placement parameters
     PLACEMENT = struct( ...
@@ -140,6 +157,9 @@ function augment_dataset(varargin)
     addParameter(parser, 'motionBlurProbability', 0.15, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', false, @islogical);
+    addParameter(parser, 'multiScale', true, @islogical);
+    addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
+    addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -171,6 +191,11 @@ function augment_dataset(varargin)
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
+    cfg.cornerOcclusion = CORNER_OCCLUSION;
+    cfg.edgeDegradation = EDGE_DEGRADATION;
+    cfg.multiScale = opts.multiScale;
+    cfg.scales = opts.scales;
+    cfg.extremeCasesProbability = opts.extremeCasesProbability;
 
     % Resolve paths
     projectRoot = find_project_root(DEFAULT_INPUT_STAGE2);
@@ -205,13 +230,31 @@ function augment_dataset(varargin)
         error('augmentDataset:noPhones', 'No phone folders found in %s', cfg.paths.stage2Input);
     end
 
+    % Validate configuration consistency
+    if cfg.independentRotation && cfg.extremeCasesProbability > 0.5
+        warning('augmentDataset:config', ...
+            'Independent rotation + high extreme cases may generate too-difficult samples');
+    end
+
     % Process each phone
-    fprintf('\n=== Starting Dataset Augmentation ===\n');
+    fprintf('\n=== Augmentation Configuration ===\n');
+    fprintf('Camera perspective: %.0f° max angle, X=[%.1f,%.1f], Y=[%.1f,%.1f], Z=[%.1f,%.1f]\n', ...
+        cfg.camera.maxAngleDeg, cfg.camera.xRange, cfg.camera.yRange, cfg.camera.zRange);
+    fprintf('Corner occlusion: %.0f%% probability, max %d corners/polygon\n', ...
+        cfg.cornerOcclusion.probability*100, cfg.cornerOcclusion.maxCornersPerPolygon);
+    fprintf('Edge degradation: %.0f%% probability\n', cfg.edgeDegradation.probability*100);
+    fprintf('Multi-scale: %s (scales: %s)\n', ...
+        string(cfg.multiScale), strjoin(string(cfg.scales), ', '));
+    fprintf('Artifacts: %d-%d per image, %.0f%% near corners\n', ...
+        cfg.artifacts.countRange(1), cfg.artifacts.countRange(2), ...
+        cfg.artifacts.cornerProximityBias*100);
+    fprintf('Extreme cases: %.0f%% probability\n', cfg.extremeCasesProbability*100);
     fprintf('Augmentations per paper: %d\n', cfg.numAugmentations);
     fprintf('Background size: %dx%d\n', cfg.backgroundSize(1), cfg.backgroundSize(2));
     fprintf('Backgrounds: 4 types (uniform, speckled, laminate, skin)\n');
     fprintf('Photometric augmentation: %s\n', char(string(cfg.photometricAugmentation)));
     fprintf('Blur probability: %.1f%%\n', cfg.blurProbability * 100);
+    fprintf('==================================\n');
 
     for i = 1:numel(phoneList)
         phoneName = phoneList{i};
@@ -330,7 +373,17 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
         tformRot = affine2d(eye(3));
     else
         % Standard random transformations for augmented versions
-        viewParams = sample_viewpoint(cfg.camera);
+        % Phase 1.7: Extreme edge cases
+        if rand() < cfg.extremeCasesProbability
+            % Extreme camera viewpoint
+            extremeCamera = cfg.camera;
+            extremeCamera.maxAngleDeg = 75;
+            extremeCamera.zRange = [0.8, 4.0];
+            viewParams = sample_viewpoint(extremeCamera);
+        else
+            % Normal camera viewpoint
+            viewParams = sample_viewpoint(cfg.camera);
+        end
         tformPersp = compute_homography(size(stage2Img), viewParams, cfg.camera);
         rotAngle = rand_range(cfg.rotationRange);
         tformRot = centered_rotation_tform(size(stage2Img), rotAngle);
@@ -619,7 +672,12 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
 
     % Apply photometric augmentation and non-overlapping blur before saving
     if cfg.photometricAugmentation
-        background = apply_photometric_augmentation(background, 'subtle');
+        % Phase 1.7: Extreme photometric conditions (low lighting)
+        if rand() < cfg.extremeCasesProbability
+            background = apply_photometric_augmentation(background, 'extreme');
+        else
+            background = apply_photometric_augmentation(background, 'subtle');
+        end
     end
 
     % Ensure at most one blur type is applied to avoid double-softening
@@ -637,6 +695,36 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
     sceneFileName = sprintf('%s%s', sceneName, '.jpg');
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
+
+    % Export corner keypoint labels (Phase 1.4)
+    export_corner_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
+
+    % Multi-scale scene generation (Phase 1.3)
+    if cfg.multiScale && numel(cfg.scales) > 0
+        [origH, origW, ~] = size(background);
+        for scaleIdx = 1:numel(cfg.scales)
+            targetSize = cfg.scales(scaleIdx);
+
+            % Resize scene to target scale
+            scaleFactor = targetSize / max(origH, origW);
+            scaledScene = imresize(background, scaleFactor);
+
+            % Scale polygon coordinates proportionally
+            scaledPolygons = cell(size(scenePolygons));
+            for i = 1:numel(scenePolygons)
+                scaledPolygons{i} = scenePolygons{i} * scaleFactor;
+            end
+
+            % Save with scale suffix
+            scaleSceneName = sprintf('%s_scale%d', sceneName, targetSize);
+            scaleFileName = sprintf('%s%s', scaleSceneName, '.jpg');
+            scaleOutPath = fullfile(stage1PhoneOut, scaleFileName);
+            imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
+
+            % Export labels for this scale
+            export_corner_labels(stage1PhoneOut, scaleSceneName, scaledPolygons, size(scaledScene));
+        end
+    end
 
     % Trim coordinate arrays to actual size
     stage2Coords = stage2Coords(1:s2Count);
@@ -1233,7 +1321,7 @@ function img = apply_photometric_augmentation(img, mode)
     %
     % Inputs:
     %   img - RGB image (uint8)
-    %   mode - 'subtle' (default) or 'moderate'
+    %   mode - 'subtle' (default), 'moderate', or 'extreme' (Phase 1.7)
 
     if nargin < 2
         mode = 'subtle';
@@ -1245,6 +1333,8 @@ function img = apply_photometric_augmentation(img, mode)
     % 1. Global brightness adjustment
     if strcmp(mode, 'subtle')
         brightRange = [0.95, 1.05];  % ±5% (reduced from ±10%)
+    elseif strcmp(mode, 'extreme')
+        brightRange = [0.40, 0.60];  % Very low lighting (Phase 1.7)
     else
         brightRange = [0.90, 1.10];  % ±10% (reduced from ±15%)
     end
@@ -2058,4 +2148,125 @@ function projectRoot = find_project_root(inputFolder)
     warning('augmentDataset:pathResolution', ...
             'Could not find input folder "%s". Using current directory.', inputFolder);
     projectRoot = currentDir;
+end
+
+%% =========================================================================
+%% CORNER KEYPOINT LABEL EXPORT FUNCTIONS (Phase 1.4)
+%% =========================================================================
+
+function export_corner_labels(outputDir, imageName, polygons, imageSize)
+    % Export corner labels in keypoint detection format
+    % Format: JSON with corner heatmap targets + sub-pixel offsets + embeddings
+
+    labelDir = fullfile(outputDir, 'labels');
+    if ~isfolder(labelDir), mkdir(labelDir); end
+
+    labelPath = fullfile(labelDir, [imageName '.json']);
+
+    labels = struct();
+    labels.image_size = imageSize;
+    labels.image_name = imageName;
+    labels.quads = [];
+
+    for i = 1:numel(polygons)
+        quad = polygons{i};  % Extract 4x2 vertices from cell array
+
+        % Order corners: TL, TR, BR, BL (clockwise from top-left)
+        quad = order_corners_clockwise(quad);
+
+        % Generate Gaussian heatmap targets (sigma=3 for sub-pixel accuracy)
+        heatmaps = generate_gaussian_targets(quad, imageSize, 3);
+
+        % Compute sub-pixel offsets (CRITICAL for <3px accuracy)
+        offsets = compute_subpixel_offsets(quad, imageSize);
+
+        % Embedding ID for grouping (each quad gets unique ID)
+        embeddingID = i;
+
+        quadStruct = struct( ...
+            'quad_id', i, ...
+            'corners', quad, ...
+            'corners_normalized', quad ./ [imageSize(2), imageSize(1)], ...
+            'heatmaps', heatmaps, ...
+            'offsets', offsets, ...
+            'embedding_id', embeddingID);
+
+        if isempty(labels.quads)
+            labels.quads = quadStruct;
+        else
+            labels.quads(end+1) = quadStruct;
+        end
+    end
+
+    % Write JSON (atomic write pattern)
+    tmpPath = tempname(labelDir);
+    fid = fopen(tmpPath, 'w');
+    if fid < 0
+        error('augmentDataset:jsonWrite', 'Cannot write label file: %s', labelPath);
+    end
+    jsonStr = jsonencode(labels, 'PrettyPrint', true);
+    fprintf(fid, '%s', jsonStr);
+    fclose(fid);
+    movefile(tmpPath, labelPath, 'f');
+end
+
+function quad_ordered = order_corners_clockwise(quad)
+    % Order vertices: TL, TR, BR, BL (clockwise from top-left)
+    % Method: Sort by angle from centroid, then rotate to start from top-left
+
+    centroid = mean(quad, 1);
+    angles = atan2(quad(:,2) - centroid(2), quad(:,1) - centroid(1));
+    [~, order] = sort(angles);
+    quad_ordered = quad(order, :);
+
+    % Ensure top-left corner is first (minimum distance from origin)
+    [~, topLeftIdx] = min(sum(quad_ordered.^2, 2));
+    quad_ordered = circshift(quad_ordered, -topLeftIdx + 1, 1);
+end
+
+function heatmaps = generate_gaussian_targets(quad, imageSize, sigma)
+    % Generate 4 separate heatmaps (one per corner type: TL, TR, BR, BL)
+    % Output resolution: imageSize / 4 (downsampled for efficiency)
+
+    H = round(imageSize(1) / 4);
+    W = round(imageSize(2) / 4);
+    heatmaps = zeros(4, H, W, 'single');
+
+    for i = 1:4
+        % Normalize corner to downsampled space
+        cx = quad(i, 1) * W / imageSize(2);
+        cy = quad(i, 2) * H / imageSize(1);
+
+        % Generate 2D Gaussian centered at (cx, cy)
+        [X, Y] = meshgrid(1:W, 1:H);
+        gaussian = exp(-((X - cx).^2 + (Y - cy).^2) / (2 * sigma^2));
+
+        % Normalize to [0, 1]
+        if max(gaussian(:)) > 0
+            heatmaps(i, :, :) = gaussian / max(gaussian(:));
+        end
+    end
+end
+
+function offsets = compute_subpixel_offsets(quad, imageSize)
+    % Compute fractional pixel offsets for sub-pixel accuracy
+    % These offsets allow the model to predict corners with <1px precision
+
+    H = round(imageSize(1) / 4);
+    W = round(imageSize(2) / 4);
+    offsets = zeros(4, 2, 'single');
+
+    for i = 1:4
+        % Normalize coordinates to downsampled space
+        cx = quad(i, 1) * W / imageSize(2);
+        cy = quad(i, 2) * H / imageSize(1);
+
+        % Separate integer and fractional parts
+        cx_int = floor(cx);
+        cy_int = floor(cy);
+
+        % Fractional offsets (0 to 1)
+        offsets(i, 1) = cx - cx_int;  % dx
+        offsets(i, 2) = cy - cy_int;  % dy
+    end
 end
