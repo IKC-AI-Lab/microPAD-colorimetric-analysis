@@ -17,10 +17,11 @@ function augment_dataset(varargin)
     % transformations to microPAD paper images and their labeled concentration regions.
     %
     % PIPELINE:
-    % 1. Read microPAD paper images from 2_micropad_papers/
+    % 1. Copy real captures from 1_dataset/ into augmented_1_dataset/ (passthrough)
     % 2. Load polygon coordinates from 3_concentration_rectangles/
-    % 3. Generate 1 original + N augmented versions per paper (N+1 total)
-    % 4. Write outputs to augmented_* directories
+    % 3. Load ellipse coordinates from 4_elliptical_regions/ (optional)
+    % 4. Generate N synthetic augmentations per paper (augIdx = 1..N)
+    % 5. Write outputs to augmented_* directories
     %
     % TRANSFORMATION ORDER (applied to each concentration region):
     %   a) Shared perspective transformation (same for all regions from one paper)
@@ -30,29 +31,30 @@ function augment_dataset(varargin)
     %   e) Composite onto procedural background
     %
     % OUTPUT STRUCTURE:
-    %   augmented_1_dataset/[phone]/           - Full synthetic scenes
+    %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
+    %   augmented_1_dataset/[phone]/scales/    - Optional multi-scale synthetic scenes
     %   augmented_2_concentration_rectangles/  - Polygon crops + coordinates.txt
     %
     % Parameters (Name-Value):
-    % - 'numAugmentations' (positive integer, default 3): augmented versions per paper
-    %   Note: Total output is numAugmentations + 1 (includes original at aug_000)
+% - 'numAugmentations' (positive integer, default 3): synthetic versions per paper
+%   Note: Real captures are always copied; synthetic scenes are labelled *_aug_XXX
     % - 'rngSeed' (numeric, optional): for reproducibility
     % - 'phones' (cellstr/string array): subset of phones to process
-    % - 'backgroundWidth' (positive integer, default 4000): background width
-    % - 'backgroundHeight' (positive integer, default 3000): background height
-    % - 'scenePrefix' (char/string, default 'synthetic'): output naming prefix
+% - 'backgroundWidth' (positive integer, default 4000): optional synthetic background width override
+% - 'backgroundHeight' (positive integer, default 3000): optional synthetic background height override
+% - 'scenePrefix' (char/string, default 'synthetic'): optional synthetic filename prefix
     % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
     % - 'blurProbability' (0-1, default 0.25): fraction of samples with slight blur
     % - 'papersPerScene' (positive integer, default 1): papers combined per scene (reserved for future use)
     %
-    % Examples:
-    % augment_dataset('numAugmentations', 5, 'rngSeed', 42)  % Generates 6 versions total (1 original + 5 augmented)
+% Examples:
+% augment_dataset('numAugmentations', 5, 'rngSeed', 42)  % Copies real data + 5 synthetic scenes
     % augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
 
     %% =====================================================================
     %% CONFIGURATION CONSTANTS
     %% =====================================================================
-    DEFAULT_INPUT_STAGE2 = '2_micropad_papers';
+    DEFAULT_INPUT_STAGE1 = '1_dataset';
     DEFAULT_INPUT_STAGE3_COORDS = '3_concentration_rectangles';
     DEFAULT_INPUT_STAGE4_COORDS = '4_elliptical_regions';
     DEFAULT_OUTPUT_STAGE1 = 'augmented_1_dataset';
@@ -137,8 +139,7 @@ function augment_dataset(varargin)
     PLACEMENT = struct( ...
         'margin', 50, ...
         'minSpacing', 30, ...
-        'maxAttempts', 50, ...
-        'expandFactor', 1.3);
+        'maxAttempts', 50);
 
     %% =====================================================================
     %% INPUT PARSING
@@ -157,7 +158,7 @@ function augment_dataset(varargin)
     addParameter(parser, 'motionBlurProbability', 0.15, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', false, @islogical);
-    addParameter(parser, 'multiScale', true, @islogical);
+    addParameter(parser, 'multiScale', false, @islogical);
     addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
 
@@ -171,11 +172,29 @@ function augment_dataset(varargin)
         rng(opts.rngSeed);
     end
 
+    % Determine which optional parameters were provided explicitly
+    defaultsUsed = parser.UsingDefaults;
+    if ~iscell(defaultsUsed)
+        defaultsUsed = cellstr(defaultsUsed);
+    end
+    customBgWidth = ~ismember('backgroundWidth', defaultsUsed);
+    customBgHeight = ~ismember('backgroundHeight', defaultsUsed);
+    customScenePrefix = ~ismember('scenePrefix', defaultsUsed);
+
     % Build configuration
     cfg = struct();
     cfg.numAugmentations = opts.numAugmentations;
-    cfg.backgroundSize = [opts.backgroundWidth, opts.backgroundHeight];
-    cfg.scenePrefix = char(opts.scenePrefix); 
+    cfg.backgroundOverride = struct( ...
+        'useWidth', customBgWidth, ...
+        'useHeight', customBgHeight, ...
+        'width', opts.backgroundWidth, ...
+        'height', opts.backgroundHeight);
+    cfg.scenePrefix = char(opts.scenePrefix);
+    cfg.useScenePrefix = customScenePrefix;
+    if ~cfg.useScenePrefix || isempty(cfg.scenePrefix)
+        cfg.scenePrefix = '';
+        cfg.useScenePrefix = false;
+    end
     cfg.photometricAugmentation = opts.photometricAugmentation;
     cfg.blurProbability = opts.blurProbability;
     cfg.motionBlurProbability = opts.motionBlurProbability;
@@ -198,10 +217,10 @@ function augment_dataset(varargin)
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
 
     % Resolve paths
-    projectRoot = find_project_root(DEFAULT_INPUT_STAGE2);
+    projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
     cfg.projectRoot = projectRoot;
     cfg.paths = struct( ...
-        'stage2Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE2), ...
+        'stage1Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE1), ...
         'stage3Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE3_COORDS), ...
         'stage4Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE4_COORDS), ...
         'stage1Output', DEFAULT_OUTPUT_STAGE1, ...
@@ -209,8 +228,10 @@ function augment_dataset(varargin)
         'stage3Output', DEFAULT_OUTPUT_STAGE3);
 
     % Validate inputs exist
-    if ~isfolder(cfg.paths.stage2Input)
-        error('augmentDataset:missingInput', 'Stage 2 input not found: %s', cfg.paths.stage2Input);
+    if ~isfolder(cfg.paths.stage1Input)
+        warning('augmentDataset:missingStage1', ...
+            'Stage 1 input not found: %s. Passthrough copies will be skipped.', ...
+            cfg.paths.stage1Input);
     end
     if ~isfolder(cfg.paths.stage3Coords)
         error('augmentDataset:missingCoords', 'Stage 3 coordinates folder not found: %s', cfg.paths.stage3Coords);
@@ -225,9 +246,9 @@ function augment_dataset(varargin)
     requestedPhones = string(opts.phones);
     requestedPhones = requestedPhones(requestedPhones ~= "");
 
-    phoneList = list_phones(cfg.paths.stage2Input);
+    phoneList = list_phones(cfg.paths.stage1Input);
     if isempty(phoneList)
-        error('augmentDataset:noPhones', 'No phone folders found in %s', cfg.paths.stage2Input);
+        error('augmentDataset:noPhones', 'No phone folders found in %s', cfg.paths.stage1Input);
     end
 
     % Validate configuration consistency
@@ -250,7 +271,24 @@ function augment_dataset(varargin)
         cfg.artifacts.cornerProximityBias*100);
     fprintf('Extreme cases: %.0f%% probability\n', cfg.extremeCasesProbability*100);
     fprintf('Augmentations per paper: %d\n', cfg.numAugmentations);
-    fprintf('Background size: %dx%d\n', cfg.backgroundSize(1), cfg.backgroundSize(2));
+    widthStr = 'source width';
+    if cfg.backgroundOverride.useWidth
+        widthStr = sprintf('%d px', cfg.backgroundOverride.width);
+    end
+    heightStr = 'source height';
+    if cfg.backgroundOverride.useHeight
+        heightStr = sprintf('%d px', cfg.backgroundOverride.height);
+    end
+    if cfg.backgroundOverride.useWidth || cfg.backgroundOverride.useHeight
+        fprintf('Background override: width=%s, height=%s\n', widthStr, heightStr);
+    else
+        fprintf('Background size: matches source image dimensions\n');
+    end
+    if cfg.useScenePrefix
+        fprintf('Scene prefix: %s\n', cfg.scenePrefix);
+    else
+        fprintf('Scene prefix: (none)\n');
+    end
     fprintf('Backgrounds: 4 types (uniform, speckled, laminate, skin)\n');
     fprintf('Photometric augmentation: %s\n', char(string(cfg.photometricAugmentation)));
     fprintf('Blur probability: %.1f%%\n', cfg.blurProbability * 100);
@@ -274,13 +312,13 @@ function augment_phone(phoneName, cfg)
     % Strategy: For each paper, generate N augmented versions
 
     % Define phone-specific paths
-    stage2PhoneDir = fullfile(cfg.paths.stage2Input, phoneName);
+    stage1PhoneDir = fullfile(cfg.paths.stage1Input, phoneName);
     stage3PhoneCoords = fullfile(cfg.paths.stage3Coords, phoneName, cfg.files.coordinates);
     stage4PhoneCoords = fullfile(cfg.paths.stage4Coords, phoneName, cfg.files.coordinates);
 
-    % Validate stage 2 images exist
-    if ~isfolder(stage2PhoneDir)
-        warning('augmentDataset:missingPhone', 'Stage 2 folder not found for %s', phoneName);
+    % Validate stage 1 images exist
+    if ~isfolder(stage1PhoneDir)
+        warning('augmentDataset:missingPhone', 'Stage 1 folder not found for %s', phoneName);
         return;
     end
 
@@ -330,19 +368,19 @@ function augment_phone(phoneName, cfg)
         paperBase = paperNames{paperIdx};
         fprintf('  -> Paper %d/%d: %s\n', paperIdx, numel(paperNames), paperBase);
 
-        % Find stage 2 image
-        imgPath = find_stage2_image(stage2PhoneDir, paperBase, cfg.supportedFormats);
+        % Find stage 1 image
+        imgPath = find_stage1_image(stage1PhoneDir, paperBase, cfg.supportedFormats);
         if isempty(imgPath)
-            warning('augmentDataset:missingImage', 'Stage 2 image not found for %s', paperBase);
+            warning('augmentDataset:missingImage', 'Stage 1 image not found for %s', paperBase);
             continue;
         end
 
         % Load image once (using imread_raw to handle EXIF orientation)
-        stage2Img = imread_raw(imgPath);
+        stage1Img = imread_raw(imgPath);
 
         % Convert grayscale to RGB (synthetic backgrounds are always RGB)
-        if size(stage2Img, 3) == 1
-            stage2Img = repmat(stage2Img, [1, 1, 3]);
+        if size(stage1Img, 3) == 1
+            stage1Img = repmat(stage1Img, [1, 1, 3]);
         end
 
         [~, ~, imgExt] = fileparts(imgPath);
@@ -350,44 +388,189 @@ function augment_phone(phoneName, cfg)
         % Get all polygons from this paper
         polygons = paperGroups(paperBase);
 
-        % Generate N augmented versions + 1 original (augIdx=0)
-        for augIdx = 0:cfg.numAugmentations
-            augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap, ...
+        % Emit passthrough sample (augIdx = 0) with original geometry
+        emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellipseMap, ...
+                                 hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
+                                 stage3PhoneOut, cfg);
+
+        % Generate synthetic augmentations only
+        if cfg.numAugmentations < 1
+            continue;
+        end
+        for augIdx = 1:cfg.numAugmentations
+            augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
                                  hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
                                  stage3PhoneOut, cfg);
         end
     end
+
 end
 
 %% -------------------------------------------------------------------------
-function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap, ...
+function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellipseMap, ...
+                                 hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
+                                 stage3PhoneOut, cfg)
+    % Generate aug_000 assets by reusing original captures without augmentation
+
+    [~, ~, imgExt] = fileparts(imgPath);
+    if cfg.useScenePrefix
+        baseSceneId = sprintf('%s_%s', cfg.scenePrefix, paperBase);
+    else
+        baseSceneId = paperBase;
+    end
+    sceneName = sprintf('%s_aug_%03d', baseSceneId, 0);
+    sceneFileName = sprintf('%s%s', sceneName, imgExt);
+
+    ensure_folder(stage1PhoneOut);
+    sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
+
+    % Copy original capture; fallback to re-encoding if copy fails
+    [copied, msg, msgid] = copyfile(imgPath, sceneOutPath, 'f');
+    if ~copied
+        warning('augmentDataset:passthroughCopy', ...
+                'Copy failed for %s -> %s (%s: %s). Re-encoding.', ...
+                imgPath, sceneOutPath, msgid, msg);
+        try
+            if any(strcmpi(imgExt, {'.jpg', '.jpeg'}))
+                imwrite(stage1Img, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
+            else
+                imwrite(stage1Img, sceneOutPath);
+            end
+        catch writeErr
+            error('augmentDataset:passthroughSceneWrite', ...
+                  'Cannot emit passthrough scene %s: %s', sceneOutPath, writeErr.message);
+        end
+    end
+
+    polygonCells = cell(numel(polygons), 1);
+    stage2Coords = cell(numel(polygons), 1);
+    stage3Coords = cell(max(1, numel(polygons) * 3), 1);
+    polyCount = 0;
+    s2Count = 0;
+    s3Count = 0;
+
+    for idx = 1:numel(polygons)
+        poly = polygons(idx);
+        origVertices = double(poly.vertices);
+
+        if ~is_valid_polygon(origVertices, cfg.minValidPolygonArea)
+            warning('augmentDataset:passthroughInvalidPolygon', ...
+                    '  ! Polygon %s con %d invalid for passthrough. Skipping.', ...
+                    paperBase, poly.concentration);
+            continue;
+        end
+
+        [polygonImg, ~] = extract_polygon_masked(stage1Img, origVertices);
+        if isempty(polygonImg)
+            warning('augmentDataset:passthroughEmptyCrop', ...
+                    '  ! Polygon %s con %d produced empty crop.', ...
+                    paperBase, poly.concentration);
+            continue;
+        end
+
+        concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
+        ensure_folder(concDir);
+        polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, poly.concentration, imgExt);
+        polygonOutPath = fullfile(concDir, polygonFileName);
+        imwrite(polygonImg, polygonOutPath);
+
+        polyCount = polyCount + 1;
+        polygonCells{polyCount} = origVertices;
+
+        s2Count = s2Count + 1;
+        stage2Coords{s2Count} = struct( ...
+            'image', polygonFileName, ...
+            'concentration', poly.concentration, ...
+            'vertices', origVertices);
+
+        ellipseKey = sprintf('%s#%d', paperBase, poly.concentration);
+        if hasEllipses && isKey(ellipseMap, ellipseKey)
+            ellipseList = ellipseMap(ellipseKey);
+            for eIdx = 1:numel(ellipseList)
+                ellipseIn = ellipseList(eIdx);
+                ellipseGeom = struct( ...
+                    'center', ellipseIn.center, ...
+                    'semiMajor', ellipseIn.semiMajor, ...
+                    'semiMinor', ellipseIn.semiMinor, ...
+                    'rotation', ellipseIn.rotation);
+
+                [patchImg, patchValid] = crop_ellipse_patch(polygonImg, ellipseGeom);
+                if ~patchValid || isempty(patchImg)
+                    warning('augmentDataset:passthroughPatchInvalid', ...
+                            '  ! Ellipse %s con %d rep %d invalid for passthrough.', ...
+                            paperBase, poly.concentration, ellipseIn.replicate);
+                    continue;
+                end
+
+                ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
+                ensure_folder(ellipseDir);
+                patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
+                                        poly.concentration, ellipseIn.replicate, imgExt);
+                patchOutPath = fullfile(ellipseDir, patchFileName);
+                imwrite(patchImg, patchOutPath);
+
+                s3Count = s3Count + 1;
+                if s3Count > numel(stage3Coords)
+                    stage3Coords{end + numel(ellipseList)} = [];
+                end
+                stage3Coords{s3Count} = struct( ...
+                    'image', polygonFileName, ...
+                    'concentration', poly.concentration, ...
+                    'replicate', ellipseIn.replicate, ...
+                    'center', ellipseGeom.center, ...
+                    'semiMajor', ellipseGeom.semiMajor, ...
+                    'semiMinor', ellipseGeom.semiMinor, ...
+                    'rotation', ellipseGeom.rotation);
+            end
+        end
+    end
+
+    if polyCount == 0
+        warning('augmentDataset:passthroughNoPolygons', ...
+                '  ! No valid polygons for passthrough %s. Removing scene.', sceneName);
+        if exist(sceneOutPath, 'file') == 2
+            delete(sceneOutPath);
+        end
+        return;
+    end
+
+    polygonCells = polygonCells(1:polyCount);
+    stage2Coords = stage2Coords(1:s2Count);
+    stage3Coords = stage3Coords(1:s3Count);
+
+    write_stage2_coordinates(stage2Coords, stage2PhoneOut, cfg.files.coordinates);
+    if s3Count > 0
+        write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
+    end
+
+    export_corner_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
+
+    fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
+            sceneFileName, numel(stage2Coords), numel(stage3Coords));
+end
+
+%% -------------------------------------------------------------------------
+function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
                                hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
                                stage3PhoneOut, cfg)
     % Generate one augmented version of a paper with all its concentration regions
 
+    [origHeight, origWidth, ~] = size(stage1Img);
+
     % Sample transformation (same for all regions in this augmentation)
-    % Special case: augIdx=0 uses identity transformations (original, non-transformed)
-    if augIdx == 0
-        % Identity transformations: no perspective distortion, no rotation
-        tformPersp = affine2d(eye(3));
-        tformRot = affine2d(eye(3));
+    if rand() < cfg.extremeCasesProbability
+        % Extreme camera viewpoint
+        extremeCamera = cfg.camera;
+        extremeCamera.maxAngleDeg = 75;
+        extremeCamera.zRange = [0.8, 4.0];
+        viewParams = sample_viewpoint(extremeCamera);
     else
-        % Standard random transformations for augmented versions
-        % Phase 1.7: Extreme edge cases
-        if rand() < cfg.extremeCasesProbability
-            % Extreme camera viewpoint
-            extremeCamera = cfg.camera;
-            extremeCamera.maxAngleDeg = 75;
-            extremeCamera.zRange = [0.8, 4.0];
-            viewParams = sample_viewpoint(extremeCamera);
-        else
-            % Normal camera viewpoint
-            viewParams = sample_viewpoint(cfg.camera);
-        end
-        tformPersp = compute_homography(size(stage2Img), viewParams, cfg.camera);
-        rotAngle = rand_range(cfg.rotationRange);
-        tformRot = centered_rotation_tform(size(stage2Img), rotAngle);
+        % Normal camera viewpoint
+        viewParams = sample_viewpoint(cfg.camera);
     end
+    tformPersp = compute_homography(size(stage1Img), viewParams, cfg.camera);
+    rotAngle = rand_range(cfg.rotationRange);
+    tformRot = centered_rotation_tform(size(stage1Img), rotAngle);
 
     % Pre-allocate coordinate accumulators
     % Stage 2: one entry per polygon (upper bound = validCount after validation)
@@ -413,9 +596,9 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
         augVertices = transform_polygon(augVertices, tformRot);
 
         % Apply independent rotation per polygon if enabled
-        if cfg.independentRotation && augIdx ~= 0
+        if cfg.independentRotation
             independentRotAngle = rand_range(cfg.rotationRange);
-            tformIndepRot = centered_rotation_tform(size(stage2Img), independentRotAngle);
+            tformIndepRot = centered_rotation_tform(size(stage1Img), independentRotAngle);
             augVertices = transform_polygon(augVertices, tformIndepRot);
         else
             independentRotAngle = 0;
@@ -430,7 +613,7 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
         end
 
         % Extract polygon content with masking
-        [polygonContent, contentBbox] = extract_polygon_masked(stage2Img, origVertices);
+        [polygonContent, contentBbox] = extract_polygon_masked(stage1Img, origVertices);
 
         % Transform extracted content to match augmented shape
         augPolygonImg = transform_polygon_content(polygonContent, ...
@@ -468,9 +651,15 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
             'height', max(verts(:,2)) - min(verts(:,2)));
     end
 
-    % Start with default background size
-    bgWidth = double(cfg.backgroundSize(1));
-    bgHeight = double(cfg.backgroundSize(2));
+    % Start with default background size (real capture resolution)
+    bgWidth = double(origWidth);
+    bgHeight = double(origHeight);
+    if cfg.backgroundOverride.useWidth
+        bgWidth = double(cfg.backgroundOverride.width);
+    end
+    if cfg.backgroundOverride.useHeight
+        bgHeight = double(cfg.backgroundOverride.height);
+    end
 
     % Place polygons at random non-overlapping positions
     randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
@@ -480,20 +669,15 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
                                                      cfg.placement.maxAttempts);
 
     if isempty(randomPositions)
-        % Expand background and retry once
-        bgWidth = round(bgWidth * cfg.placement.expandFactor);
-        bgHeight = round(bgHeight * cfg.placement.expandFactor);
-        fprintf('     Expanding background to %dx%d\n', bgWidth, bgHeight);
-
-        randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
-                                                         bgWidth, bgHeight, ...
-                                                         cfg.placement.margin, ...
-                                                         cfg.placement.minSpacing, ...
-                                                         cfg.placement.maxAttempts);
-
+        warning('augmentDataset:positioningOverlap', ...
+                '  ! Non-overlapping placement failed for %s aug %d. Allowing overlaps.', ...
+                paperBase, augIdx);
+        randomPositions = fallback_overlap_positions(polygonBboxes, ...
+                                                     bgWidth, bgHeight, ...
+                                                     cfg.placement.margin);
         if isempty(randomPositions)
             warning('augmentDataset:positioningFailed', ...
-                    '  ! Could not place polygons for %s aug %d. Skipping.', ...
+                    '  ! Overlap fallback also failed for %s aug %d. Skipping.', ...
                     paperBase, augIdx);
             return;
         end
@@ -503,7 +687,12 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
     background = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
 
     % Composite each region onto background and save outputs
-    sceneName = sprintf('%s_aug_%03d', paperBase, augIdx);
+    if cfg.useScenePrefix
+        baseSceneId = sprintf('%s_%s', cfg.scenePrefix, paperBase);
+    else
+        baseSceneId = paperBase;
+    end
+    sceneName = sprintf('%s_aug_%03d', baseSceneId, augIdx);
     scenePolygons = {};
 
     for i = 1:validCount
@@ -586,7 +775,7 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
                 end
 
                 % Apply same independent rotation as the parent polygon
-                tformIndepRot = centered_rotation_tform(size(stage2Img), region.independentRotAngle);
+                tformIndepRot = centered_rotation_tform(size(stage1Img), region.independentRotAngle);
                 ellipseAug = transform_ellipse(ellipseAug, tformIndepRot);
                 if ~ellipseAug.valid
                     warning('augmentDataset:ellipseInvalid3', ...
@@ -718,11 +907,13 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
             % Save with scale suffix
             scaleSceneName = sprintf('%s_scale%d', sceneName, targetSize);
             scaleFileName = sprintf('%s%s', scaleSceneName, '.jpg');
-            scaleOutPath = fullfile(stage1PhoneOut, scaleFileName);
+            scaleStageDir = fullfile(stage1PhoneOut, 'scales', sprintf('scale%d', targetSize));
+            ensure_folder(scaleStageDir);
+            scaleOutPath = fullfile(scaleStageDir, scaleFileName);
             imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
             % Export labels for this scale
-            export_corner_labels(stage1PhoneOut, scaleSceneName, scaledPolygons, size(scaledScene));
+            export_corner_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
         end
     end
 
@@ -736,13 +927,8 @@ function augment_single_paper(paperBase, imgExt, stage2Img, polygons, ellipseMap
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    if augIdx == 0
-        fprintf('     Generated: %s [ORIGINAL] (%d polygons, %d ellipses)\n', ...
-                sceneFileName, numel(stage2Coords), numel(stage3Coords));
-    else
-        fprintf('     Generated: %s (%d polygons, %d ellipses)\n', ...
-                sceneFileName, numel(stage2Coords), numel(stage3Coords));
-    end
+    fprintf('     Generated: %s (%d polygons, %d ellipses)\n', ...
+            sceneFileName, numel(stage2Coords), numel(stage3Coords));
 end
 
 %% =========================================================================
@@ -2054,8 +2240,8 @@ function overlap = bboxes_overlap(bbox1, bbox2, minSpacing)
                 bbox1_expanded(2) > bbox2_expanded(4));       % bbox1 is below bbox2
 end
 
-function imgPath = find_stage2_image(folder, baseName, supportedFormats)
-    % Find stage 2 image by base name
+function imgPath = find_stage1_image(folder, baseName, supportedFormats)
+    % Find stage 1 image by base name
     imgPath = '';
     for i = 1:numel(supportedFormats)
         candidate = fullfile(folder, [baseName supportedFormats{i}]);
@@ -2063,6 +2249,37 @@ function imgPath = find_stage2_image(folder, baseName, supportedFormats)
             imgPath = candidate;
             return;
         end
+    end
+end
+
+function positions = fallback_overlap_positions(polygonBboxes, bgWidth, bgHeight, margin)
+    % Fallback placement allowing overlaps while keeping polygons within bounds
+
+    numPolygons = numel(polygonBboxes);
+    positions = cell(numPolygons, 1);
+
+    for i = 1:numPolygons
+        bbox = polygonBboxes{i};
+        width = bbox.width;
+        height = bbox.height;
+
+        availX = max(0, bgWidth - width - 2 * margin);
+        if availX > 0
+            posX = margin + rand() * availX;
+        else
+            posX = max(0, (bgWidth - width) / 2);
+        end
+        posX = min(posX, bgWidth - width);
+
+        availY = max(0, bgHeight - height - 2 * margin);
+        if availY > 0
+            posY = margin + rand() * availY;
+        else
+            posY = max(0, (bgHeight - height) / 2);
+        end
+        posY = min(posY, bgHeight - height);
+
+        positions{i} = struct('x', posX, 'y', posY);
     end
 end
 
