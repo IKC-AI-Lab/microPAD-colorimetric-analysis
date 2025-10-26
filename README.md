@@ -303,8 +303,8 @@ Augmentation **multiplies the training dataset** by 5-10x without requiring addi
 ### **Transformation Pipeline**
 
 **Geometric Transformations (per paper)**
-1. **3D perspective projection** - Simulates camera viewing angles (±45° pitch/yaw)
-2. **Rotation** - Random orientation (0-180°)
+1. **3D perspective projection** - Simulates camera viewing angles (+/-60 deg pitch/yaw) and back-projects Stage 2 strip coordinates into Stage 1 image space before augmentation
+2. **Rotation** - Random orientation (0-360 deg)
 3. **Spatial placement** - Random non-overlapping positions via grid acceleration
 4. **Optional per-region rotation** - Independent orientation for each concentration zone
 
@@ -315,10 +315,11 @@ Augmentation **multiplies the training dataset** by 5-10x without requiring addi
 - **Gamma correction** - Exposure simulation (0.92-1.08)
 
 **Background Generation (Procedural)**
-- **Uniform surfaces** - Clean laboratory benches (220±15 RGB)
+- **Uniform surfaces** - Clean laboratory benches (220 +/- 15 RGB)
 - **Speckled textures** - Granite, composite materials
 - **Laminate** - High-contrast white/black surfaces (245 or 30 RGB)
 - **Skin tones** - Human hand/arm backgrounds (HSV-based)
+- **Texture pooling** - 16 cached variants per surface type with random shifts, flips, and scale jitter to avoid regeneration artifacts
 
 **Distractor Artifacts (1-20 per image)**
 - **Shapes**: Ellipses, rectangles, quadrilaterals, triangles, lines
@@ -357,6 +358,9 @@ augment_dataset('numAugmentations', 3, ...
 
 % Reproducible augmentation for ablation studies
 augment_dataset('numAugmentations', 5, 'rngSeed', 12345)
+
+% Emit JSON labels for CornerNet-style training
+augment_dataset('numAugmentations', 5, 'exportCornerLabels', true)
 ```
 
 ---
@@ -364,9 +368,9 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 12345)
 ### **Performance**
 
 **Speed**: ~1.0 second per augmented image (3x faster than v1)
-- Grid-based spatial acceleration (O(1) collision detection vs O(n²))
+- Grid-based spatial acceleration (O(1) collision detection vs O(n^2))
 - Simplified polygon warping (nearest-neighbor vs bilinear)
-- Reduced background complexity (4 types vs 7)
+- Background texture pooling (reuses 4 procedural types with cached surfaces instead of regenerating each frame)
 
 **Memory**: Low overhead
 - Processes one paper at a time

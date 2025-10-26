@@ -48,25 +48,25 @@ The codebase implements a **5-stage sequential colorimetric analysis pipeline** 
 ### Stage Flow
 ```
 1_dataset (raw images)
-    ↓ crop_micropad_papers.m
+    -> crop_micropad_papers.m
 2_micropad_papers (cropped paper strips)
-    ↓ cut_concentration_rectangles.m
+    -> cut_concentration_rectangles.m
 3_concentration_rectangles (polygonal concentration regions)
-    ↓ cut_elliptical_regions.m
+    -> cut_elliptical_regions.m
 4_elliptical_regions (elliptical patches + coordinates)
-    ↓ extract_features.m
+    -> extract_features.m
 5_extract_features (feature tables)
 ```
 
 Additionally, `augment_dataset.m` creates synthetic training data from stage 2 outputs:
 ```
+
 2_micropad_papers
-    ↓ augment_dataset.m
+    -> augment_dataset.m
 augmented_1_dataset (synthetic scenes)
 augmented_2_concentration_rectangles (transformed polygons)
 augmented_3_elliptical_regions (transformed ellipses)
 ```
-
 ### Key Design Principles
 
 1. **Stage Independence**: Each script reads from `N_*` and writes to `(N+1)_*`
@@ -148,18 +148,19 @@ All scripts use `imread_raw()` helper function that:
 
 ### Augmentation Strategy
 `augment_dataset.m` generates synthetic training data for polygon detection training by:
-1. Applying shared perspective + rotation per paper
-2. Optional independent rotation per region (default disabled for speed)
-3. Placing regions via grid-accelerated random sampling (guaranteed non-overlapping)
-4. Compositing onto procedural backgrounds: uniform, speckled, laminate (white/black), skin
-5. Adding moderate-density distractor artifacts (1-20 per image)
-6. Applying color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
-7. Optionally adding at most one blur type (motion or Gaussian) and thin occlusions
+1. Back-projecting Stage 2 strip coordinates into Stage 1 image space using recorded crop metadata
+2. Applying shared perspective and rotation per paper (+/-60 deg pitch/yaw, 0-360 deg roll)
+3. Optional independent rotation per region (default disabled for speed)
+4. Placing regions via grid-accelerated random sampling (guaranteed non-overlapping)
+5. Compositing onto procedural backgrounds drawn from uniform, speckled, laminate, and skin surface pools (16 cached variants each with jitter)
+6. Adding moderate-density distractor artifacts (1-20 per image)
+7. Applying color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
+8. Optionally adding at most one blur type (motion or Gaussian) and thin occlusions
 
 **Performance optimizations (v2):**
-- Grid-based spatial acceleration for O(1) collision detection (vs O(n²))
+- Grid-based spatial acceleration for O(1) collision detection (vs O(n^2))
 - Simplified polygon warping without alpha blending (3x faster)
-- Reduced background texture types from 7 to 4
+- Background texture pooling (reuses 4 procedural types from cached pools instead of regenerating each frame)
 - Reduced artifact density from 1-100 to 1-20
 - Overall speedup: 3x (1.0s vs 3.0s per augmented image)
 
@@ -167,9 +168,8 @@ All scripts use `imread_raw()` helper function that:
 - `numAugmentations`: number of synthetic versions per original (default 3)
 - `independentRotation`: enable per-polygon rotation (default false)
 - `occlusionProbability`: thin occlusions across polygons (default 0.0)
-- `backgroundWidth/Height`: output dimensions (default 4000×3000)
-
-## Memory and Performance
+- `exportCornerLabels`: emit JSON keypoint labels for passthrough, synthetic, and scale outputs (default false)
+- `backgroundWidth/Height`: output dimensions (default 4000x3000)
 
 ### Interactive GUI Sessions
 All interactive scripts maintain **persistent memory** across images in the same folder:
@@ -209,7 +209,7 @@ All interactive scripts maintain **persistent memory** across images in the same
 - Verify polygon vertex order (clockwise from top-left)
 - Confirm ellipse axes constraint: major >= minor
 - Script complexity (approximate line counts):
-  - augment_dataset.m: ~2000 lines (optimized from 2225)
+  - augment_dataset.m: ~2730 lines (label export, crop transforms, texture pooling)
   - crop_micropad_papers.m: ~1889 lines
   - cut_concentration_rectangles.m: ~1726 lines
   - cut_elliptical_regions.m: ~1457 lines
