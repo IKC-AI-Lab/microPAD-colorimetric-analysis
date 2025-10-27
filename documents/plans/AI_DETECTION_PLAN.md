@@ -358,6 +358,41 @@ This plan integrates with the existing MATLAB-based colorimetric analysis pipeli
 
 ---
 
+### 1.6.1 Polygon-Shaped Distractors (Advanced Negative Samples)
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 120-130, DISTRACTOR_POLYGONS struct; lines 1106-1196, add_polygon_distractors function)
+- [✅] **Task:** Add synthetic polygon-shaped distractors that look like real concentration rectangles but are false positives
+- [✅] **Changes Implemented (2025-10-27):**
+  - Removed deprecated `multiplier` field
+  - Implemented random distractor count (1-10 per image)
+  - Added variable size scaling (0.5×-1.5× of source polygon)
+  - Each distractor independently scaled and placed
+- [✅] **Current Configuration:**
+  ```matlab
+  DISTRACTOR_POLYGONS = struct( ...
+      'enabled', true, ...
+      'minCount', 1, ...
+      'maxCount', 10, ...
+      'sizeScaleRange', [0.5, 1.5], ...            % Uniform random scale applied to each distractor
+      'maxPlacementAttempts', 30, ...
+      'brightnessOffsetRange', [-20, 20], ...      % Applied in intensity space (uint8 scale)
+      'contrastScaleRange', [0.9, 1.15], ...
+      'noiseStd', 6);                              % Gaussian noise strength in uint8 units
+  ```
+- [✅] **Implementation Details:**
+  - Random count: `randi([minCount, maxCount])` instead of `multiplier × numSourcePolygons`
+  - Size variation: Each distractor gets random scale factor from `[0.5, 1.5]`
+  - Appearance: Synthesized from real polygon templates with photometric jitter
+  - Placement: Grid-accelerated collision detection ensures no overlaps
+  - Sharpness: Sharp by default, matches real polygons (scene blur only)
+- [✅] **Rationale:**
+  - **Hard negatives:** Distractors that look similar to real test zones force the AI to learn context and position cues, not just appearance
+  - **Scale invariance:** Variable sizes (0.5×-1.5×) train the model to handle polygons at different scales
+  - **Realistic diversity:** Random count (1-10) prevents model from learning fixed patterns
+  - **Appearance variation:** Photometric jitter ensures distractors don't look identical to real polygons
+- [✅] **Test:** Generate synthetic scenes, verify 1-10 distractor polygons per image with varied sizes (50%-150% of source)
+
+---
+
 ### 1.7 Add Extreme Edge Cases
 - [✅] **File:** `matlab_scripts/augment_dataset.m` (line 160, lines 377-390, lines 676-680)
 - [✅] **Task:** Generate 10% of samples with extreme conditions

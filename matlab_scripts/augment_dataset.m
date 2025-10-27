@@ -117,6 +117,17 @@ function augment_dataset(varargin)
         'minSpacing', 30, ...
         'maxAttempts', 50);
 
+    % Distractor polygon parameters (synthetic look-alikes)
+    DISTRACTOR_POLYGONS = struct( ...
+        'enabled', true, ...
+        'minCount', 1, ...
+        'maxCount', 10, ...
+        'sizeScaleRange', [0.5, 1.5], ...            % Uniform random scale applied to each distractor
+        'maxPlacementAttempts', 30, ...
+        'brightnessOffsetRange', [-20, 20], ...      % Applied in intensity space (uint8 scale)
+        'contrastScaleRange', [0.9, 1.15], ...
+        'noiseStd', 6);                              % Gaussian noise strength in uint8 units
+
     %% =====================================================================
     %% INPUT PARSING
     %% =====================================================================
@@ -138,6 +149,9 @@ function augment_dataset(varargin)
     addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     addParameter(parser, 'exportCornerLabels', true, @islogical);
+    addParameter(parser, 'enableDistractorPolygons', true, @islogical);
+    addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
+    addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -191,6 +205,17 @@ function augment_dataset(varargin)
     cfg.scales = opts.scales;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
     cfg.exportCornerLabels = opts.exportCornerLabels;
+    cfg.distractors = DISTRACTOR_POLYGONS;
+    cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorPolygons;
+    cfg.distractors.multiplier = max(0, opts.distractorMultiplier);
+    if opts.distractorMaxCount >= 0
+        cfg.distractors.maxCount = max(opts.distractorMaxCount, 0);
+    end
+    if cfg.distractors.maxCount > 0
+        cfg.distractors.maxCount = max(cfg.distractors.minCount, cfg.distractors.maxCount);
+    else
+        cfg.distractors.minCount = 0;
+    end
 
     % Resolve paths
     projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
@@ -412,7 +437,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     ensure_folder(stage1PhoneOut);
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
 
-    % Copy original capture; fallback to re-encoding if copy fails
+    % Copy original capture. If copy fails, re-encode image.
     [copied, msg, msgid] = copyfile(imgPath, sceneOutPath, 'f');
     if ~copied
         warning('augmentDataset:passthroughCopy', ...
@@ -642,35 +667,46 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     end
 
     % Start with default background size (real capture resolution)
-    bgWidth = double(origWidth);
-    bgHeight = double(origHeight);
+    bgWidth = origWidth;
+    bgHeight = origHeight;
     if cfg.backgroundOverride.useWidth
-        bgWidth = double(cfg.backgroundOverride.width);
+        bgWidth = cfg.backgroundOverride.width;
     end
     if cfg.backgroundOverride.useHeight
-        bgHeight = double(cfg.backgroundOverride.height);
+        bgHeight = cfg.backgroundOverride.height;
     end
 
     % Place polygons at random non-overlapping positions
+    % Calculate polygon density to adapt spacing requirements
+    totalPolygonArea = 0;
+    for i = 1:validCount
+        bbox = polygonBboxes{i};
+        totalPolygonArea = totalPolygonArea + (bbox.width * bbox.height);
+    end
+    availableArea = (bgWidth - 2*cfg.placement.margin) * (bgHeight - 2*cfg.placement.margin);
+    densityRatio = totalPolygonArea / max(1, availableArea);
+
+    % Adaptive spacing: reduce spacing requirement for high-density scenarios
+    adaptiveSpacing = cfg.placement.minSpacing;
+    adaptiveAttempts = cfg.placement.maxAttempts;
+    if densityRatio > 0.4
+        % High density: relax spacing and increase attempts
+        adaptiveSpacing = max(5, cfg.placement.minSpacing * (1 - densityRatio));
+        adaptiveAttempts = cfg.placement.maxAttempts * 2;
+    end
+
     randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
                                                      bgWidth, bgHeight, ...
                                                      cfg.placement.margin, ...
-                                                     cfg.placement.minSpacing, ...
-                                                     cfg.placement.maxAttempts);
+                                                     adaptiveSpacing, ...
+                                                     adaptiveAttempts);
 
     if isempty(randomPositions)
-        warning('augmentDataset:positioningOverlap', ...
-                '  ! Non-overlapping placement failed for %s aug %d. Allowing overlaps.', ...
-                paperBase, augIdx);
-        randomPositions = fallback_overlap_positions(polygonBboxes, ...
-                                                     bgWidth, bgHeight, ...
-                                                     cfg.placement.margin);
-        if isempty(randomPositions)
-            warning('augmentDataset:positioningFailed', ...
-                    '  ! Overlap fallback also failed for %s aug %d. Skipping.', ...
-                    paperBase, augIdx);
-            return;
-        end
+        % Placement impossible - log detailed diagnostics and skip
+        warning('augmentDataset:placementImpossible', ...
+                '  ! Placement impossible for %s aug %d: %d polygons, %.1f%% density (%.0f px² / %.0f px²). Skipping.', ...
+                paperBase, augIdx, validCount, densityRatio*100, totalPolygonArea, availableArea);
+        return;
     end
 
     % Generate realistic background with final size
@@ -684,6 +720,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     end
     sceneName = sprintf('%s_aug_%03d', baseSceneId, augIdx);
     scenePolygons = {};
+    occupiedBboxes = zeros(validCount, 4);
 
     for i = 1:validCount
         region = transformedRegions{i};
@@ -708,6 +745,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         background = composite_to_background(background, augPolygonImg, sceneVertices);
 
         % Paper lies flat on surface; no shadows needed
+        minSceneX = min(sceneVertices(:,1));
+        minSceneY = min(sceneVertices(:,2));
+        maxSceneX = max(sceneVertices(:,1));
+        maxSceneY = max(sceneVertices(:,2));
+        occupiedBboxes(i, :) = [minSceneX, minSceneY, maxSceneX, maxSceneY];
 
         % Save polygon crop (stage 2 output)
         concDirOut = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
@@ -844,6 +886,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         end
     end
 
+    additionalDistractors = 0;
+    if cfg.distractors.enabled && cfg.distractors.multiplier > 0
+        [background, additionalDistractors] = add_polygon_distractors(background, transformedRegions, polygonBboxes, occupiedBboxes, cfg);
+    end
+
     % Optional: add thin occlusions (e.g., hair/strap-like) over polygons
     if cfg.occlusionProbability > 0 && ~isempty(scenePolygons)
         background = add_polygon_occlusions(background, scenePolygons, cfg.occlusionProbability);
@@ -921,8 +968,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    fprintf('     Generated: %s (%d polygons, %d ellipses)\n', ...
-            sceneFileName, numel(stage2Coords), numel(stage3Coords));
+    fprintf('     Generated: %s (%d polygons, %d ellipses, %d distractors)\n', ...
+            sceneFileName, numel(stage2Coords), numel(stage3Coords), additionalDistractors);
 end
 
 %% =========================================================================
@@ -1056,6 +1103,274 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
     bg(minY:maxY, minX:maxX, :) = bgRegion;
 end
 
+function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes, occupiedBboxes, cfg)
+    % Inject additional polygon-shaped distractors matching source geometry statistics.
+
+    distractorCfg = cfg.distractors;
+    if isempty(regions) || ~distractorCfg.enabled
+        placedCount = 0;
+        return;
+    end
+
+    targetCount = randi([distractorCfg.minCount, distractorCfg.maxCount]);
+    if targetCount <= 0
+        placedCount = 0;
+        return;
+    end
+
+    [bgHeight, bgWidth, ~] = size(bg);
+    if bgHeight < 1 || bgWidth < 1
+        placedCount = 0;
+        return;
+    end
+
+    numSource = numel(regions);
+    if isempty(occupiedBboxes)
+        allBboxes = zeros(0, 4);
+    else
+        allBboxes = double(occupiedBboxes);
+    end
+
+    placedCount = 0;
+    for k = 1:targetCount
+        srcIdx = randi(numSource);
+        region = regions{srcIdx};
+        bboxInfo = polygonBboxes{srcIdx};
+        templatePatch = region.augPolygonImg;
+
+        if isempty(templatePatch) || bboxInfo.width <= 0 || bboxInfo.height <= 0
+            continue;
+        end
+
+        patch = synthesize_distractor_patch(templatePatch, cfg.texture);
+        if isempty(patch)
+            continue;
+        end
+
+        patch = jitter_polygon_patch(patch, distractorCfg);
+
+        % Apply random uniform scaling to distractor
+        scaleRange = distractorCfg.sizeScaleRange;
+        scaleFactor = scaleRange(1) + rand() * diff(scaleRange);
+        [patch, localVerts] = scale_distractor_patch(patch, region.augVertices, bboxInfo, scaleFactor);
+
+        if isempty(patch)
+            continue;
+        end
+
+        % Compute scaled bbox dimensions
+        scaledWidth = round(bboxInfo.width * scaleFactor);
+        scaledHeight = round(bboxInfo.height * scaleFactor);
+        if scaledWidth <= 0 || scaledHeight <= 0
+            continue;
+        end
+
+        bboxStruct = struct('width', scaledWidth, 'height', scaledHeight);
+        for attempt = 1:distractorCfg.maxPlacementAttempts
+            [xCandidate, yCandidate] = random_top_left(bboxStruct, cfg.placement.margin, bgWidth, bgHeight);
+            if ~isfinite(xCandidate) || ~isfinite(yCandidate)
+                continue;
+            end
+
+            candidateBbox = [xCandidate, yCandidate, xCandidate + scaledWidth, yCandidate + scaledHeight];
+
+            % Check collision with all placed bboxes (O(n) iteration acceptable for small distractor counts)
+            hasConflict = false;
+            for j = 1:size(allBboxes, 1)
+                if bboxes_overlap(candidateBbox, allBboxes(j, :), cfg.placement.minSpacing)
+                    hasConflict = true;
+                    break;
+                end
+            end
+            if hasConflict
+                continue;
+            end
+
+            sceneVerts = localVerts + [xCandidate, yCandidate];
+
+            bg = composite_to_background(bg, patch, sceneVerts);
+            allBboxes(end+1, :) = candidateBbox; %#ok<AGROW>
+            placedCount = placedCount + 1;
+            break;
+        end
+    end
+end
+
+function patch = synthesize_distractor_patch(templatePatch, textureCfg)
+    % Create a solid-look synthetic polygon using the original mask as a template.
+
+    if isempty(templatePatch)
+        patch = templatePatch;
+        return;
+    end
+
+    mask = template_patch_mask(templatePatch);
+    if ~any(mask(:))
+        patch = [];
+        return;
+    end
+
+    [height, width, numChannels] = size(templatePatch);
+    baseColor = sample_distractor_color(textureCfg, numChannels);
+
+    maskFloat = single(mask);
+    patchFloat = zeros(height, width, numChannels, 'single');
+    baseColorNorm = single(baseColor / 255);
+
+    for c = 1:numChannels
+        patchFloat(:,:,c) = maskFloat * baseColorNorm(c);
+    end
+
+    patchFloat = min(max(patchFloat, 0), 1);
+
+    patch = convert_float_patch_to_template(patchFloat, templatePatch);
+
+    mask3 = repmat(mask, [1, 1, numChannels]);
+    patch(~mask3) = 0;
+end
+
+function baseColor = sample_distractor_color(textureCfg, numChannels)
+    if nargin < 2
+        numChannels = 3;
+    end
+
+    surfaceType = randi(4);
+    switch surfaceType
+        case 1  % Uniform surface
+            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
+        case 2  % Speckled surface
+            baseGray = 160 + randi([-25, 25]);
+            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
+        case 3  % Laminate surface
+            if rand() < 0.5
+                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
+            else
+                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
+            end
+        otherwise  % Skin-like hues
+            h = 0.03 + rand() * 0.07;
+            s = 0.25 + rand() * 0.35;
+            v = 0.55 + rand() * 0.35;
+            baseRGB = round(255 * hsv2rgb([h, s, v]));
+    end
+
+    baseRGB = max(80, min(220, baseRGB));
+
+    if numChannels ~= numel(baseRGB)
+        if numChannels < numel(baseRGB)
+            baseColor = baseRGB(1:numChannels);
+        else
+            baseColor = repmat(baseRGB(end), 1, numChannels);
+            baseColor(1:numel(baseRGB)) = baseRGB;
+        end
+    else
+        baseColor = baseRGB;
+    end
+end
+
+function mask = template_patch_mask(patch)
+    mask = any(patch > 0, 3);
+end
+
+function patch = convert_float_patch_to_template(patchFloat, templatePatch)
+    if isa(templatePatch, 'uint8')
+        patch = im2uint8(patchFloat);
+    elseif isa(templatePatch, 'uint16')
+        patch = im2uint16(patchFloat);
+    elseif isa(templatePatch, 'single')
+        patch = patchFloat;
+    else
+        patch = cast(patchFloat, 'like', templatePatch);
+    end
+end
+
+function jittered = jitter_polygon_patch(patch, distractorCfg, mask)
+    % Apply lightweight photometric jitter while preserving mask boundaries.
+
+    if isempty(patch)
+        jittered = patch;
+        return;
+    end
+
+    if nargin < 3 || isempty(mask)
+        mask = any(patch > 0, 3);
+    end
+    if ~any(mask(:))
+        jittered = patch;
+        return;
+    end
+
+    if isa(patch, 'uint8')
+        patchFloat = im2single(patch);
+    elseif isa(patch, 'uint16')
+        patchFloat = im2single(patch);
+    else
+        patchFloat = single(patch);
+    end
+
+    contrastRange = distractorCfg.contrastScaleRange;
+    if numel(contrastRange) ~= 2
+        contrastRange = [1, 1];
+    end
+    contrastScale = contrastRange(1) + rand() * diff(contrastRange);
+
+    brightnessRange = distractorCfg.brightnessOffsetRange;
+    if numel(brightnessRange) ~= 2
+        brightnessRange = [0, 0];
+    end
+    brightnessOffset = (brightnessRange(1) + rand() * diff(brightnessRange)) / 255;
+
+    patchFloat = (patchFloat - 0.5) * contrastScale + 0.5 + brightnessOffset;
+
+    if isfield(distractorCfg, 'noiseStd') && distractorCfg.noiseStd > 0
+        sigma = distractorCfg.noiseStd / 255;
+        noise = sigma * randn(size(patchFloat), 'like', patchFloat);
+        patchFloat = patchFloat + noise;
+    end
+
+    patchFloat = min(1, max(0, patchFloat));
+    mask3 = repmat(cast(mask, 'like', patchFloat), [1, 1, size(patchFloat, 3)]);
+    patchFloat = patchFloat .* mask3;
+
+    if isa(patch, 'uint8')
+        jittered = im2uint8(patchFloat);
+    elseif isa(patch, 'uint16')
+        jittered = im2uint16(patchFloat);
+    elseif isa(patch, 'single')
+        jittered = patchFloat;
+    else
+        jittered = cast(patchFloat, 'like', patch);
+    end
+end
+
+function [scaledPatch, scaledLocalVerts] = scale_distractor_patch(patch, vertices, bboxInfo, scaleFactor)
+    % Apply uniform scaling to distractor patch and vertices.
+    % Scales patch via imresize and adjusts vertices to match new dimensions.
+
+    if isempty(patch) || scaleFactor <= 0
+        scaledPatch = [];
+        scaledLocalVerts = [];
+        return;
+    end
+
+    % Resize patch image
+    [origHeight, origWidth, ~] = size(patch);
+    newHeight = round(origHeight * scaleFactor);
+    newWidth = round(origWidth * scaleFactor);
+
+    if newHeight < 1 || newWidth < 1
+        scaledPatch = [];
+        scaledLocalVerts = [];
+        return;
+    end
+
+    scaledPatch = imresize(patch, [newHeight, newWidth], 'nearest');
+
+    % Scale vertices relative to bbox origin
+    localVerts = vertices - [bboxInfo.minX, bboxInfo.minY];
+    scaledLocalVerts = localVerts * scaleFactor;
+end
+
 function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
     % Crop elliptical patch from polygon image
     [imgHeight, imgWidth, ~] = size(polygonImg);
@@ -1184,7 +1499,7 @@ function texture = borrow_background_texture(surfaceType, width, height, texture
         entry.textures{slot} = baseTexture;
     end
 
-    texture = apply_texture_pool_jitter(baseTexture, poolState, surfaceType);
+    texture = apply_texture_pool_jitter(baseTexture, poolState);
 
     entry.usage(slot) = entry.usage(slot) + 1;
     if entry.usage(slot) >= poolState.refreshInterval
@@ -1262,7 +1577,7 @@ function texture = generate_surface_texture_base(surfaceType, width, height, tex
 
             texture = randBuffer1 + randBuffer2;
         case 3  % Laminate grain
-            texture = generate_laminate_texture(width, height, textureCfg);
+            texture = generate_laminate_texture(width, height);
         case 4  % Skin-like microtexture
             texture = generate_skin_texture(width, height);
         otherwise
@@ -1271,7 +1586,8 @@ function texture = generate_surface_texture_base(surfaceType, width, height, tex
     end
 end
 
-function texture = apply_texture_pool_jitter(baseTexture, poolState, surfaceType) %#ok<INUSD>
+function texture = apply_texture_pool_jitter(baseTexture, poolState)
+    % Apply random jitter to pooled texture
     texture = baseTexture;
 
     if poolState.shiftPixels > 0
@@ -1298,22 +1614,28 @@ function texture = apply_texture_pool_jitter(baseTexture, poolState, surfaceType
     end
 end
 
-function texture = generate_laminate_texture(width, height, ~)
+function texture = generate_laminate_texture(width, height)
     % Generate high-contrast laminate surface with subtle noise (single precision).
+    NOISE_STRENGTH = 5;  % Noise amplitude
+
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
 
-    texture = single(randn(height, width)) .* single(5);
+    texture = single(randn(height, width)) .* single(NOISE_STRENGTH);
 end
 
 function texture = generate_skin_texture(width, height)
     % Generate subtle skin-like microtexture (single precision).
+    LOW_FREQ_STRENGTH = 6;   % Low-frequency component amplitude
+    MID_FREQ_STRENGTH = 2;   % Mid-frequency component amplitude
+    HIGH_FREQ_STRENGTH = 1;  % High-frequency component amplitude
+
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
 
-    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(6);
-    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(2);
-    highFreq = single(randn(height, width)) .* single(1);
+    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(LOW_FREQ_STRENGTH);
+    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(MID_FREQ_STRENGTH);
+    highFreq = single(randn(height, width)) .* single(HIGH_FREQ_STRENGTH);
 
     texture = lowFreq + midFreq + highFreq;
 end
@@ -1356,9 +1678,9 @@ end
 function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
     % Add variable-density artifacts anywhere on background for robust detection training
     %
-    % OPTIMIZATION: Uses unit-square normalization (default 64x64 defined in artifactCfg.unitMaskSize)
-    % to eliminate multi-GB meshgrid allocations. Each artifact is synthesized in normalized space,
-    % then upscaled with nearest-neighbor interpolation, cutting peak memory from multi-GB to O(unitMaskSize^2).
+    % OPTIMIZATION: Ellipses/lines use unit-square normalization (default 64x64 defined
+    % in artifactCfg.unitMaskSize) to avoid large meshgrid allocations. Polygonal artifacts
+    % render directly at target resolution so corner geometry remains crisp.
     %
     % Artifacts: rectangles, quadrilaterals, triangles, ellipses, lines
     % Count: configurable via artifactCfg.countRange (default 5-30)
@@ -1387,7 +1709,6 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
     [unitGridX, unitGridY] = meshgrid(unitCoords, unitCoords);
     unitCenteredX = unitGridX - 0.5;
     unitCenteredY = unitGridY - 0.5;
-    unitScale = max(1, unitMaskSize - 1);
 
     for i = 1:numArtifacts
         % Select artifact type (equal probability)
@@ -1426,7 +1747,8 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
         x = randi([xMin, xMax]);
         y = randi([yMin, yMax]);
 
-        % Create artifact mask based on type using unit-square normalization
+        % Create artifact mask; polygons draw directly at target resolution to keep sharp edges
+        mask = [];
         unitMask = [];
         switch artifactType
             case 'ellipse'
@@ -1444,14 +1766,21 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
             case 'rectangle'
                 rectWidthFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
                 rectHeightFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHalfWidth = max(rectWidthFraction / 2, 1e-3);
-                rectHalfHeight = max(rectHeightFraction / 2, 1e-3);
+                rectHalfWidth = max(rectWidthFraction * artifactSize / 2, 0.5);
+                rectHalfHeight = max(rectHeightFraction * artifactSize / 2, 0.5);
                 angle = rand() * pi;
                 cosTheta = cos(angle);
                 sinTheta = sin(angle);
-                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
-                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
-                unitMask = single((abs(xRot) <= rectHalfWidth) & (abs(yRot) <= rectHalfHeight));
+                baseVerts = [
+                    -rectHalfWidth, -rectHalfHeight;
+                    rectHalfWidth, -rectHalfHeight;
+                    rectHalfWidth,  rectHalfHeight;
+                    -rectHalfWidth,  rectHalfHeight];
+                rotMatrix = [cosTheta, -sinTheta; sinTheta, cosTheta];
+                rotatedVerts = baseVerts * rotMatrix';
+                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
+                verticesPix = rotatedVerts + centerPix;
+                mask = generate_polygon_mask(verticesPix, artifactSize);
 
             case 'quadrilateral'
                 baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
@@ -1465,28 +1794,24 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
                     0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction;
                     0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction
                 ];
-                verticesNorm = min(max(verticesNorm, 0), 1);
-                verticesPix = 1 + unitScale * verticesNorm;
-                polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), unitMaskSize, unitMaskSize);
-                if any(polyMask(:))
-                    unitMask = single(polyMask);
-                end
+                centeredVerts = (verticesNorm - 0.5) * (artifactSize - 1);
+                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
+                verticesPix = centeredVerts + centerPix;
+                mask = generate_polygon_mask(verticesPix, artifactSize);
 
             case 'triangle'
                 baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
-                radius = max(baseSizeFraction / 2, 1e-3);
+                radius = max(baseSizeFraction * (artifactSize - 1) / 2, 0.5);
                 angle = rand() * 2 * pi;
                 verticesNorm = [
-                    0.5 + radius * cos(angle),           0.5 + radius * sin(angle);
-                    0.5 + radius * cos(angle + 2*pi/3),  0.5 + radius * sin(angle + 2*pi/3);
-                    0.5 + radius * cos(angle + 4*pi/3),  0.5 + radius * sin(angle + 4*pi/3)
+                    cos(angle),           sin(angle);
+                    cos(angle + 2*pi/3),  sin(angle + 2*pi/3);
+                    cos(angle + 4*pi/3),  sin(angle + 4*pi/3)
                 ];
-                verticesNorm = min(max(verticesNorm, 0), 1);
-                verticesPix = 1 + unitScale * verticesNorm;
-                polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), unitMaskSize, unitMaskSize);
-                if any(polyMask(:))
-                    unitMask = single(polyMask);
-                end
+                centeredVerts = radius * verticesNorm;
+                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
+                verticesPix = centeredVerts + centerPix;
+                mask = generate_polygon_mask(verticesPix, artifactSize);
 
             otherwise  % 'line'
                 angle = rand() * pi;
@@ -1501,13 +1826,15 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
                 unitMask = single(lineCore);
         end
 
-        if isempty(unitMask)
+        if isempty(mask) && isempty(unitMask)
             continue;
         end
 
-        mask = imresize(unitMask, [artifactSize, artifactSize], 'nearest');
-        mask = max(mask, single(0));
-        mask = min(mask, single(1));
+        if isempty(mask)
+            mask = imresize(unitMask, [artifactSize, artifactSize], 'nearest');
+            mask = max(mask, single(0));
+            mask = min(mask, single(1));
+        end
         if ~any(mask(:))
             continue;
         end
@@ -1551,6 +1878,23 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
             bg(yStart:yEnd, xStart:xEnd, c) = clamp_uint8(region);
         end
     end
+end
+
+function mask = generate_polygon_mask(verticesPix, targetSize)
+    % Rasterize polygon vertices expressed in pixel coordinates into a binary mask.
+    if isempty(verticesPix) || size(verticesPix, 2) ~= 2
+        mask = [];
+        return;
+    end
+
+    verticesPix = double(verticesPix);
+    polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), targetSize, targetSize);
+    if ~any(polyMask(:))
+        mask = [];
+        return;
+    end
+
+    mask = single(polyMask);
 end
 
 function bg = add_polygon_occlusions(bg, scenePolygons, probability)
@@ -1754,13 +2098,15 @@ function projected = project_corners(imgWidth, imgHeight, yawDeg, pitchDeg, view
 end
 
 function aligned = fit_points_to_frame(projected, imgWidth, imgHeight, coverage)
+    MIN_DIMENSION = 1.0;  % Minimum valid dimension in pixels
+
     minX = min(projected(:,1));
     maxX = max(projected(:,1));
     minY = min(projected(:,2));
     maxY = max(projected(:,2));
     width = maxX - minX;
     height = maxY - minY;
-    if width < eps || height < eps
+    if width < MIN_DIMENSION || height < MIN_DIMENSION
         aligned = projected;
         return;
     end
@@ -1816,6 +2162,8 @@ function ellipseImageSpace = map_ellipse_crop_to_image(ellipseCrop, cropBbox)
 end
 
 function conic = ellipse_to_conic(ellipse)
+    MIN_AXIS = 0.1;  % Minimum ellipse axis length in pixels
+
     xc = ellipse.center(1);
     yc = ellipse.center(2);
     a = ellipse.semiMajor;
@@ -1823,8 +2171,6 @@ function conic = ellipse_to_conic(ellipse)
     theta = deg2rad(ellipse.rotation);
 
     % Validate axes are positive to prevent division by zero
-    % Minimum threshold prevents numerical instability
-    MIN_AXIS = 0.1;  % pixels
     if a < MIN_AXIS || b < MIN_AXIS || ~isfinite(a) || ~isfinite(b)
         % Return degenerate conic that will be detected by conic_to_ellipse
         conic = zeros(3, 3);
@@ -1994,10 +2340,9 @@ function write_stage2_coordinates(coords, outputDir, filename)
     end
     fclose(fid);
 
-    % Atomic write using movefile (handles same-volume and cross-volume cases)
+    % Atomic write using movefile. On failure, use copyfile for cross-volume operations.
     [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
     if ~ok
-        % Fallback for cross-volume operations where movefile fails
         warning('augmentDataset:coordMove', ...
                 'movefile failed (%s: %s). Attempting copyfile (cross-volume or locked file).', ...
                 msgid, msg);
@@ -2057,10 +2402,9 @@ function write_stage3_coordinates(coords, outputDir, filename)
     end
     fclose(fid);
 
-    % Atomic write using movefile (handles same-volume and cross-volume cases)
+    % Atomic write using movefile. On failure, use copyfile for cross-volume operations.
     [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
     if ~ok
-        % Fallback for cross-volume operations where movefile fails
         warning('augmentDataset:coordMove', ...
                 'movefile failed (%s: %s). Attempting copyfile (cross-volume or locked file).', ...
                 msgid, msg);
@@ -2557,36 +2901,6 @@ function imgPath = find_stage1_image(folder, baseName, supportedFormats)
     end
 end
 
-function positions = fallback_overlap_positions(polygonBboxes, bgWidth, bgHeight, margin)
-    % Fallback placement allowing overlaps while keeping polygons within bounds
-
-    numPolygons = numel(polygonBboxes);
-    positions = cell(numPolygons, 1);
-
-    for i = 1:numPolygons
-        bbox = polygonBboxes{i};
-        width = bbox.width;
-        height = bbox.height;
-
-        availX = max(0, bgWidth - width - 2 * margin);
-        if availX > 0
-            posX = margin + rand() * availX;
-        else
-            posX = max(0, (bgWidth - width) / 2);
-        end
-        posX = min(posX, bgWidth - width);
-
-        availY = max(0, bgHeight - height - 2 * margin);
-        if availY > 0
-            posY = margin + rand() * availY;
-        else
-            posY = max(0, (bgHeight - height) / 2);
-        end
-        posY = min(posY, bgHeight - height);
-
-        positions{i} = struct('x', posX, 'y', posY);
-    end
-end
 
 function phoneDirs = list_phones(stage2Root)
     if ~isfolder(stage2Root)
@@ -2960,7 +3274,7 @@ function entries = read_rectangular_crop_coordinates(coordPath)
         end
     end
 
-    % Fallback: assume x y width height format without header
+    % Parse bounding box format (image x y width height [rotation])
     for i = startIdx:numel(lines)
         ln = strtrim(lines{i});
         if isempty(ln)

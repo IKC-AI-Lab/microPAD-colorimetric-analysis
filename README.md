@@ -329,6 +329,13 @@ Augmentation **multiplies the training dataset** by 5-10x without requiring addi
 - **Rendering**: Nearest-neighbor interpolation to preserve crisp edges
 - **Purpose**: Train polygon detector to ignore false positives while maintaining realistic appearance
 
+**Distractor Polygons (Synthetic Look-Alikes)**
+- **Count**: Random 1-10 per image (independent of real polygon count)
+- **Size Variation**: Each distractor randomly scaled 50%-150% of source polygon size
+- **Appearance**: Synthesized from real polygons with jittered colors and textures
+- **Placement**: Non-overlapping collision detection, respects spacing constraints
+- **Purpose**: Train AI to distinguish real test zones from similar-looking objects by position/context rather than appearance alone
+
 **Blur and Occlusions (Optional)**
 - **Scene-wide blur** - Applied to entire image (polygons + artifacts) when enabled
 - **Motion blur** - Camera shake simulation (15% probability)

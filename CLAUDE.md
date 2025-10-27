@@ -208,9 +208,10 @@ All scripts use `imread_raw()` helper function that:
 3. Optional independent rotation per region
 4. Placing regions via grid-accelerated random sampling (guaranteed non-overlapping)
 5. Compositing onto procedural backgrounds drawn from uniform, speckled, laminate, and skin surface pools (cached variants with jitter)
-6. Adding moderate-density distractor artifacts
-7. Applying color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
-8. Optionally adding at most one blur type (motion or Gaussian) and thin occlusions
+6. Adding moderate-density distractor artifacts (5-40 geometric shapes per image)
+7. Adding polygon-shaped distractors (1-10 synthetic look-alikes with random sizes 0.5×-1.5× of real polygons)
+8. Applying color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
+9. Optionally adding at most one blur type (motion or Gaussian) and thin occlusions
 
 **Performance optimizations (v2):**
 - Grid-based spatial acceleration for O(1) collision detection (vs O(n^2))
