@@ -1,8 +1,8 @@
 # Quadrilateral Auto-Detection Implementation Plan
 
 **Last Updated:** 2025-10-28
-**Current Phase:** Phase 1 Complete, Phase 2 Next
-**Overall Progress:** Phase 1 complete (8 tasks); later phases pending
+**Current Phase:** Phase 1 Complete (All 8 tasks), Phase 2 Next
+**Overall Progress:** Phase 1 complete (8/8 tasks); later phases pending
 **Architecture:** YOLOv11n Instance Segmentation (Ultralytics) + Enhanced Post-Processing
 
 ## Project Overview
@@ -83,23 +83,23 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 ---
 
 ### 1.3 Export YOLOv11 Segmentation Labels
-- [ ] **File:** `matlab_scripts/augment_dataset.m`
-- [ ] **Task:** Replace old JSON label export with YOLOv11 segmentation polygon format
+- [✅] **File:** `matlab_scripts/augment_dataset.m`
+- [✅] **Task:** Replace old JSON label export with YOLOv11 segmentation polygon format
 
 #### 1.3.1 Remove Old JSON Label Export
-- [ ] **Cleanup:** Remove deprecated corner label functions
-- [ ] **Functions to Remove:**
+- [✅] **Cleanup:** Remove deprecated corner label functions
+- [✅] **Functions to Remove:**
   - `export_corner_labels()` (lines ~2713-2886)
   - `generate_gaussian_targets()` (if exists)
   - `compute_subpixel_offsets()` (if exists)
   - MAT heatmap export logic
-- [ ] **Parameters to Remove:**
+- [✅] **Parameters to Remove:**
   - `exportCornerLabels` parameter
   - Any heatmap-related configuration
-- [ ] **Remove Calls:** Search and remove all calls to `export_corner_labels()`
+- [✅] **Remove Calls:** Search and remove all calls to `export_corner_labels()`
 
 #### 1.3.2 Add YOLOv11 Segmentation Label Export Function
-- [ ] **New Function:** Replace `export_corner_labels()` (lines 3213-3306) with simplified version:
+- [✅] **New Function:** Replace `export_corner_labels()` (lines 3213-3306) with simplified version:
   ```matlab
   function export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize)
       % Export YOLOv11 segmentation format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized)
@@ -130,17 +130,17 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
       movefile(tmpPath, labelPath, 'f');
   end
   ```
-- [ ] **Note:** Removed distractor class support - use standard augmentation instead of synthetic distractors
+- [✅] **Note:** Removed distractor class support - use standard augmentation instead of synthetic distractors
 
 #### 1.3.3 Integration
-- [ ] **Rename Parameter:** Change `exportCornerLabels` → `exportYOLOLabels` (line 155)
-- [ ] **Replace Calls:** Replace `export_corner_labels()` calls (lines 564, 931, 960) with:
+- [✅] **Rename Parameter:** Change `exportCornerLabels` → `exportYOLOLabels` (line 155)
+- [✅] **Replace Calls:** Replace `export_corner_labels()` calls (lines 564, 931, 960) with:
   ```matlab
   if cfg.exportYOLOLabels
       export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize);
   end
   ```
-- [ ] **Test:** Run `augment_dataset('numAugmentations', 3, 'rngSeed', 42)` and verify:
+- [✅] **Test:** Run `augment_dataset('numAugmentations', 3, 'rngSeed', 42)` and verify:
   - `augmented_1_dataset/labels/*.txt` files exist
   - Each line format: `0 x1 y1 x2 y2 x3 y3 x4 y4` (9 values, space-separated)
   - All coordinates in [0, 1] range
@@ -505,9 +505,8 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 ## Progress Tracking
 
 ### Overall Status
-- [✅] Phase 1: Refactor `augment_dataset.m` (7/8 tasks complete, 88%)
-  - [✅] 1.1-1.2, 1.4-1.8 Complete
-  - [ ] 1.3: YOLOv11 label export (CRITICAL - blocks training)
+- [✅] Phase 1: Refactor `augment_dataset.m` (8/8 tasks complete, 100%)
+  - [✅] 1.1-1.8 Complete (all tasks finished)
 - [ ] Phase 2: Dataset Curation & Synthetic Generation (0/3 tasks)
 - [ ] Phase 3: YOLOv11 Training (0/4 tasks)
 - [ ] Phase 4: MATLAB Integration (0/3 tasks)
@@ -515,8 +514,9 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 - [ ] Phase 6: Validation & Deployment (0/3 tasks)
 
 ### Key Milestones
-- [✅] Augmentation refactor complete
-- [ ] **NEXT:** Implement YOLO label export (Phase 1.3) - BLOCKING
+- [✅] Augmentation refactor complete (Phase 1 finished)
+- [✅] YOLO label export implemented (Phase 1.3 complete)
+- [ ] **NEXT:** Manual labeling sprint (Phase 2.1)
 - [ ] Manual labeling: 50 images × 4 phones
 - [ ] Generate 24,000 synthetic samples
 - [ ] Train YOLOv11n-seg: mask mAP@50 > 0.85
@@ -594,4 +594,4 @@ augmented_1_dataset/
 **Repository:** microPAD-colorimetric-analysis  
 **Branch:** claude/auto-detect-polygons  
 
-**Next Action:** Implement Phase 1.3 (YOLO label export in `augment_dataset.m`)
+**Next Action:** Begin Phase 2.1 (Manual labeling sprint: 50 images × 4 phones)

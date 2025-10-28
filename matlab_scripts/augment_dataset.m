@@ -45,7 +45,7 @@ function augment_dataset(varargin)
 % - 'scenePrefix' (char/string, default 'synthetic'): optional synthetic filename prefix
     % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
     % - 'blurProbability' (0-1, default 0.25): fraction of samples with slight blur
-    % - 'exportCornerLabels' (logical, default false): export corner keypoint labels as JSON
+    % - 'exportYOLOLabels' (logical, default false): export YOLOv11 segmentation labels as TXT
     %
 % Examples:
 % augment_dataset('numAugmentations', 5, 'rngSeed', 42)  % Copies real data + 5 synthetic scenes
@@ -138,7 +138,7 @@ function augment_dataset(varargin)
     parser = inputParser();
     parser.FunctionName = mfilename;
 
-    addParameter(parser, 'numAugmentations', 3, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
+    addParameter(parser, 'numAugmentations', 5, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
     addParameter(parser, 'rngSeed', [], @(n) isempty(n) || isnumeric(n));
     addParameter(parser, 'phones', {}, @(c) iscellstr(c) || isstring(c));
     addParameter(parser, 'backgroundWidth', 4000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>',0}));
@@ -152,7 +152,7 @@ function augment_dataset(varargin)
     addParameter(parser, 'multiScale', true, @islogical);
     addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(parser, 'exportCornerLabels', true, @islogical);
+    addParameter(parser, 'exportYOLOLabels', true, @islogical);
     addParameter(parser, 'enableDistractorPolygons', true, @islogical);
     addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
     addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
@@ -208,7 +208,7 @@ function augment_dataset(varargin)
     cfg.multiScale = opts.multiScale;
     cfg.scales = opts.scales;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
-    cfg.exportCornerLabels = opts.exportCornerLabels;
+    cfg.exportYOLOLabels = opts.exportYOLOLabels;
     cfg.distractors = DISTRACTOR_POLYGONS;
     cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorPolygons;
     cfg.distractors.multiplier = max(0, opts.distractorMultiplier);
@@ -560,8 +560,8 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    if cfg.exportCornerLabels
-        export_corner_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
+    if cfg.exportYOLOLabels
+        export_yolo_segmentation_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
     end
 
     fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
@@ -926,9 +926,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
-    % Export corner keypoint labels (Phase 1.4)
-    if cfg.exportCornerLabels
-        export_corner_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
+    % Export YOLO segmentation labels
+    if cfg.exportYOLOLabels
+        export_yolo_segmentation_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
     end
 
     % Multi-scale scene generation (Phase 1.3)
@@ -956,8 +956,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
             % Export labels for this scale
-            if cfg.exportCornerLabels
-                export_corner_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
+            if cfg.exportYOLOLabels
+                export_yolo_segmentation_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
             end
         end
     end
@@ -1484,7 +1484,7 @@ function value = sample_range_value(range)
         return;
     end
 
-    if numel(range) == 1 || range(2) <= range(1)
+    if isscalar(range) || range(2) <= range(1)
         value = range(1);
     else
         value = range(1) + rand() * (range(2) - range(1));
@@ -3149,102 +3149,36 @@ function projectRoot = find_project_root(inputFolder)
 end
 
 %% =========================================================================
-%% CORNER KEYPOINT LABEL EXPORT FUNCTIONS (Phase 1.4)
+%% YOLO SEGMENTATION LABEL EXPORT FUNCTIONS (Phase 1.3)
 %% =========================================================================
 
-function export_corner_labels(outputDir, imageName, polygons, imageSize)
-    % Export corner labels with metadata JSON and compressed MAT heatmaps
+function export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize)
+    % Export YOLOv11 segmentation format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized)
 
     labelDir = fullfile(outputDir, 'labels');
     if ~isfolder(labelDir), mkdir(labelDir); end
 
-    labelPath = fullfile(labelDir, [imageName '.json']);
-    heatmapFileName = [imageName '_heatmaps.mat'];
-    heatmapPath = fullfile(labelDir, heatmapFileName);
+    labelPath = fullfile(labelDir, [imageName '.txt']);
+    tmpPath = tempname(labelDir);
+    fid = fopen(tmpPath, 'wt');
 
-    numQuads = numel(polygons);
-    downsampleFactor = 4;
-    heatmapSigma = 3;
-    downsampledHeight = max(1, round(imageSize(1) / downsampleFactor));
-    downsampledWidth = max(1, round(imageSize(2) / downsampleFactor));
+    for i = 1:numel(polygons)
+        quad = polygons{i};
 
-    corner_heatmaps = zeros(4, downsampledHeight, downsampledWidth, numQuads, 'single');
-    corner_offsets = zeros(4, 2, numQuads, 'single');
-
-    labels = struct();
-    labels.image_size = imageSize;
-    labels.image_name = imageName;
-    labels.downsample_factor = downsampleFactor;
-    labels.heatmap_sigma = heatmapSigma;
-    labels.heatmap_format = 'mat-v7.3';
-    labels.heatmap_file = heatmapFileName;
-    labels.heatmap_dataset = 'corner_heatmaps';
-    labels.offset_dataset = 'corner_offsets';
-    labels.quads = [];
-    if numQuads > 0
-        quadTemplate = struct( ...
-            'quad_id', 0, ...
-            'corners', zeros(4, 2), ...
-            'corners_normalized', zeros(4, 2), ...
-            'heatmap_index', 0, ...
-            'offset_index', 0, ...
-            'embedding_id', 0);
-        labels.quads = repmat(quadTemplate, 1, numQuads);
-    end
-
-    corners_denom = reshape([imageSize(2), imageSize(1)], 1, 2);
-
-    for i = 1:numQuads
-        quad = polygons{i};  % Extract 4x2 vertices from cell array
-
-        % Order corners: TL, TR, BR, BL (clockwise from top-left)
+        % Order corners clockwise from top-left
         quad = order_corners_clockwise(quad);
 
-        % Generate Gaussian heatmap targets (sigma=3 for sub-pixel accuracy)
-        heatmaps = generate_gaussian_targets(quad, imageSize, heatmapSigma);
+        % Normalize to [0, 1]
+        normQuad = quad ./ [imageSize(2), imageSize(1)];
 
-        % Compute sub-pixel offsets (CRITICAL for <3px accuracy)
-        offsets = compute_subpixel_offsets(quad, imageSize);
-
-        corner_heatmaps(:, :, :, i) = heatmaps;
-        corner_offsets(:, :, i) = offsets;
-
-        % Embedding ID for grouping (each quad gets unique ID)
-        embeddingID = i;
-
-        labels.quads(i).quad_id = i;
-        labels.quads(i).corners = quad;
-        labels.quads(i).corners_normalized = quad ./ corners_denom;
-        labels.quads(i).heatmap_index = i;
-        labels.quads(i).offset_index = i;
-        labels.quads(i).embedding_id = embeddingID;
+        % Write: 0 x1 y1 x2 y2 x3 y3 x4 y4
+        fprintf(fid, '0');
+        fprintf(fid, ' %.6f %.6f', normQuad');
+        fprintf(fid, '\n');
     end
 
-    % Write MAT heatmap store (atomic write pattern)
-    tmpMatPath = [tempname(labelDir) '.mat'];
-    matCleanup = onCleanup(@() cleanup_temp_file(tmpMatPath));
-    save(tmpMatPath, 'corner_heatmaps', 'corner_offsets', '-v7.3');
-    movefile(tmpMatPath, heatmapPath, 'f');
-    clear matCleanup;
-
-    % Write JSON metadata (atomic write pattern)
-    tmpJsonPath = tempname(labelDir);
-    jsonCleanup = onCleanup(@() cleanup_temp_file(tmpJsonPath));
-    fid = fopen(tmpJsonPath, 'w');
-    if fid < 0
-        error('augmentDataset:jsonWrite', 'Cannot write label file: %s', labelPath);
-    end
-    jsonStr = jsonencode(labels, 'PrettyPrint', true);
-    fprintf(fid, '%s', jsonStr);
     fclose(fid);
-    movefile(tmpJsonPath, labelPath, 'f');
-    clear jsonCleanup;
-
-    function cleanup_temp_file(pathStr)
-        if exist(pathStr, 'file')
-            delete(pathStr);
-        end
-    end
+    movefile(tmpPath, labelPath, 'f');
 end
 
 function quad_ordered = order_corners_clockwise(quad)
@@ -3259,53 +3193,6 @@ function quad_ordered = order_corners_clockwise(quad)
     % Ensure top-left corner is first (minimum distance from origin)
     [~, topLeftIdx] = min(sum(quad_ordered.^2, 2));
     quad_ordered = circshift(quad_ordered, -topLeftIdx + 1, 1);
-end
-
-function heatmaps = generate_gaussian_targets(quad, imageSize, sigma)
-    % Generate 4 separate heatmaps (one per corner type: TL, TR, BR, BL)
-    % Output resolution: imageSize / 4 (downsampled for efficiency)
-
-    H = round(imageSize(1) / 4);
-    W = round(imageSize(2) / 4);
-    heatmaps = zeros(4, H, W, 'single');
-
-    for i = 1:4
-        % Normalize corner to downsampled space
-        cx = quad(i, 1) * W / imageSize(2);
-        cy = quad(i, 2) * H / imageSize(1);
-
-        % Generate 2D Gaussian centered at (cx, cy)
-        [X, Y] = meshgrid(1:W, 1:H);
-        gaussian = exp(-((X - cx).^2 + (Y - cy).^2) / (2 * sigma^2));
-
-        % Normalize to [0, 1]
-        if max(gaussian(:)) > 0
-            heatmaps(i, :, :) = gaussian / max(gaussian(:));
-        end
-    end
-end
-
-function offsets = compute_subpixel_offsets(quad, imageSize)
-    % Compute fractional pixel offsets for sub-pixel accuracy
-    % These offsets allow the model to predict corners with <1px precision
-
-    H = round(imageSize(1) / 4);
-    W = round(imageSize(2) / 4);
-    offsets = zeros(4, 2, 'single');
-
-    for i = 1:4
-        % Normalize coordinates to downsampled space
-        cx = quad(i, 1) * W / imageSize(2);
-        cy = quad(i, 2) * H / imageSize(1);
-
-        % Separate integer and fractional parts
-        cx_int = floor(cx);
-        cy_int = floor(cy);
-
-        % Fractional offsets (0 to 1)
-        offsets(i, 1) = cx - cx_int;  % dx
-        offsets(i, 2) = cy - cy_int;  % dy
-    end
 end
 
 %% -------------------------------------------------------------------------
