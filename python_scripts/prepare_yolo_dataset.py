@@ -23,17 +23,28 @@ CONFIGS_DIR = PROJECT_ROOT / "python_scripts" / "configs"
 CONFIGS_DIR.mkdir(exist_ok=True)
 
 
-def collect_image_paths(phone_dir: str, relative_to_dataset: bool = True) -> List[str]:
-    """Collect all image paths from a phone directory."""
-    phone_path = AUGMENTED_DATASET / phone_dir
+def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List[str]:
+    """Collect all image paths from a phone directory.
+
+    Args:
+        phone_dir: Phone directory name (e.g., 'iphone_11')
+        use_absolute_paths: If True, return absolute paths; if False, return relative paths
+
+    Returns:
+        Sorted list of image paths (absolute by default)
+    """
+    phone_path = AUGMENTED_DATASET / phone_dir / "images"
     images = []
 
     for ext in ["*.jpg", "*.jpeg", "*.png"]:
         images.extend(phone_path.glob(ext))
 
-    if relative_to_dataset:
+    if use_absolute_paths:
+        # Return absolute paths (required for YOLO when train.txt is accessed from different cwd)
+        images = [str(img.absolute()) for img in images]
+    else:
         # Return paths relative to augmented_1_dataset
-        images = [f"{phone_dir}/{img.name}" for img in images]
+        images = [f"{phone_dir}/images/{img.name}" for img in images]
 
     return sorted(images)
 
@@ -118,7 +129,7 @@ def verify_labels() -> bool:
     missing_labels = []
 
     for phone in PHONE_DIRS:
-        images = collect_image_paths(phone, relative_to_dataset=False)
+        images = collect_image_paths(phone, use_absolute_paths=True)
         labels_dir = AUGMENTED_DATASET / phone / "labels"
 
         for img_path in images:

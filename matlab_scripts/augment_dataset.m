@@ -438,8 +438,10 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     sceneName = sprintf('%s_aug_%03d', baseSceneId, 0);
     sceneFileName = sprintf('%s%s', sceneName, imgExt);
 
-    ensure_folder(stage1PhoneOut);
-    sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
+    % Ensure YOLO-compatible structure: images/ and labels/ subdirectories
+    imagesDir = fullfile(stage1PhoneOut, 'images');
+    ensure_folder(imagesDir);
+    sceneOutPath = fullfile(imagesDir, sceneFileName);
 
     % Copy original capture. If copy fails, re-encode image.
     [copied, msg, msgid] = copyfile(imgPath, sceneOutPath, 'f');
@@ -921,9 +923,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         background = imgaussfilt(background, blurSigma);
     end
 
-    % Save synthetic scene (stage 1 output)
+    % Save synthetic scene (stage 1 output) - YOLO-compatible structure
     sceneFileName = sprintf('%s%s', sceneName, '.jpg');
-    sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
+    imagesDir = fullfile(stage1PhoneOut, 'images');
+    ensure_folder(imagesDir);
+    sceneOutPath = fullfile(imagesDir, sceneFileName);
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
     % Export YOLO segmentation labels
@@ -947,12 +951,13 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 scaledPolygons{i} = scenePolygons{i} * scaleFactor;
             end
 
-            % Save with scale suffix
+            % Save with scale suffix - YOLO-compatible structure
             scaleSceneName = sprintf('%s_scale%d', sceneName, targetSize);
             scaleFileName = sprintf('%s%s', scaleSceneName, '.jpg');
             scaleStageDir = fullfile(stage1PhoneOut, 'scales', sprintf('scale%d', targetSize));
-            ensure_folder(scaleStageDir);
-            scaleOutPath = fullfile(scaleStageDir, scaleFileName);
+            scaleImagesDir = fullfile(scaleStageDir, 'images');
+            ensure_folder(scaleImagesDir);
+            scaleOutPath = fullfile(scaleImagesDir, scaleFileName);
             imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
             % Export labels for this scale

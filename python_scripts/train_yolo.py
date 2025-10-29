@@ -2,14 +2,32 @@
 """
 YOLOv11 Training Script for microPAD Quadrilateral Auto-Detection
 
-This script implements a two-stage training pipeline:
-- Stage 1: Pretraining on synthetic data
+QUICK START (VS Code Terminal):
+    conda activate microPAD-python-env
+    python train_yolo.py --stage 1
+
+This will start Stage 1 training with optimized defaults:
+- Devices: GPUs 0,1 (dual A6000 with NVLink)
+- Batch size: 32 (optimized for 126-image training set)
+- Epochs: 150 with early stopping (patience=20)
+- Results: micropad_detection/yolo11n_synth/
+
+TRAINING PIPELINE:
+- Stage 1: Pretraining on synthetic data (current)
 - Stage 2: Fine-tuning on mixed synthetic + manual labels (future)
 
 Also provides validation and export capabilities for MATLAB/Android deployment.
 
-Hardware: Dual A6000 GPUs (48GB each, NVLink), 256GB RAM, 64 cores/128 threads
-Target: Mask mAP@50 > 0.85, detection rate > 85%, inference < 50ms on Android
+HARDWARE REQUIREMENTS:
+- GPUs: Dual RTX A6000 (48GB each, NVLink connected on CUDA devices 0,1)
+- RAM: 256GB
+- CPUs: 64 cores / 128 threads
+- Storage: 20TB NVMe
+
+PERFORMANCE TARGETS:
+- Mask mAP@50 > 0.85
+- Detection rate > 85%
+- Inference < 50ms on Android devices
 """
 
 import argparse
@@ -63,7 +81,7 @@ class YOLOTrainer:
         data: str = 'micropad_synth.yaml',
         epochs: int = 150,
         imgsz: int = 640,
-        batch: int = 128,
+        batch: int = 32,
         device: str = '0,1',
         patience: int = 20,
         name: str = 'yolo11n_synth',
@@ -76,8 +94,8 @@ class YOLOTrainer:
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
             imgsz: Input image size (640 recommended)
-            batch: Batch size (128 for dual A6000)
-            device: GPU device(s) - '0,1' for dual GPUs, '0' for single
+            batch: Batch size (32 optimized for dataset size)
+            device: GPU device(s) - '0,1' for dual A6000 GPUs, '0' for single
             patience: Early stopping patience
             name: Experiment name
             **kwargs: Additional training arguments passed to YOLO
@@ -461,7 +479,7 @@ Examples:
     parser.add_argument('--weights', type=str,
                        help='Path to model weights (required for stage 2, validate, export)')
     parser.add_argument('--device', type=str, default='0,1',
-                       help='GPU device(s) (default: 0,1 for dual GPUs)')
+                       help='GPU device(s) (default: 0,1 for NVLink A6000 GPUs)')
     parser.add_argument('--imgsz', type=int, default=640,
                        help='Input image size (default: 640)')
 
@@ -469,7 +487,7 @@ Examples:
     parser.add_argument('--epochs', type=int,
                        help='Training epochs (default: 150 for stage 1, 80 for stage 2)')
     parser.add_argument('--batch', type=int,
-                       help='Batch size (default: 128 for stage 1, 96 for stage 2)')
+                       help='Batch size (default: 32 for stage 1 optimized for dataset size, 96 for stage 2)')
     parser.add_argument('--patience', type=int,
                        help='Early stopping patience (default: 20 for stage 1, 15 for stage 2)')
     parser.add_argument('--lr0', type=float,
