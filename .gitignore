@@ -1,6 +1,12 @@
-/backup
+backup/
+.ssh/
 
-.asv
+*.asv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 
 # Claude Code settings
 .claude/settings.local.json
