@@ -8,6 +8,7 @@ Usage:
 import os
 from pathlib import Path
 import random
+from typing import List, Tuple
 import yaml
 
 # Configuration
@@ -22,7 +23,7 @@ CONFIGS_DIR = PROJECT_ROOT / "python_scripts" / "configs"
 CONFIGS_DIR.mkdir(exist_ok=True)
 
 
-def collect_image_paths(phone_dir, relative_to_dataset=True):
+def collect_image_paths(phone_dir: str, relative_to_dataset: bool = True) -> List[str]:
     """Collect all image paths from a phone directory."""
     phone_path = AUGMENTED_DATASET / phone_dir
     images = []
@@ -37,7 +38,7 @@ def collect_image_paths(phone_dir, relative_to_dataset=True):
     return sorted(images)
 
 
-def create_train_val_txt():
+def create_train_val_txt() -> Tuple[int, int]:
     """Create train.txt and val.txt with image paths."""
     # Collect training images (3 phones)
     train_images = []
@@ -67,10 +68,10 @@ def create_train_val_txt():
     return len(train_images), len(val_images)
 
 
-def create_yolo_config(config_name, description):
+def create_yolo_config(config_name: str, description: str) -> Path:
     """Create YOLO dataset configuration file."""
     config = {
-        'path': str(AUGMENTED_DATASET.absolute()),
+        'path': str(AUGMENTED_DATASET.absolute()).replace('\\', '/'),
         'train': 'train.txt',
         'val': 'val.txt',
         'nc': 1,
@@ -88,7 +89,7 @@ def create_yolo_config(config_name, description):
     return config_path
 
 
-def print_summary(train_count, val_count):
+def print_summary(train_count: int, val_count: int) -> None:
     """Print dataset summary."""
     print("\n" + "="*60)
     print("YOLO Dataset Preparation Complete")
@@ -112,7 +113,7 @@ def print_summary(train_count, val_count):
     print("="*60)
 
 
-def verify_labels():
+def verify_labels() -> bool:
     """Verify that label files exist for all images."""
     missing_labels = []
 
@@ -139,7 +140,7 @@ def verify_labels():
         return True
 
 
-def main():
+def main() -> None:
     """Main execution."""
     print("="*60)
     print("microPAD YOLO Dataset Preparation")

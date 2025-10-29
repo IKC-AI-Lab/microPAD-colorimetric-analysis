@@ -60,6 +60,38 @@ This script:
 
 **On workstation with dual A6000 GPUs:**
 
+#### Using train_yolo.py (Recommended)
+
+The `train_yolo.py` script provides a comprehensive CLI interface for training, validation, and export:
+
+```bash
+conda activate microPAD-python-env
+cd python_scripts
+
+# Stage 1: Train on synthetic data (automatic pretraining)
+python train_yolo.py --stage 1
+
+# Stage 2: Fine-tune with manual labels (when available)
+python train_yolo.py --stage 2 --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+
+# Validate trained model
+python train_yolo.py --validate --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+
+# Export to ONNX and TFLite
+python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+```
+
+**Custom training parameters:**
+```bash
+# Custom epochs, batch size, single GPU
+python train_yolo.py --stage 1 --epochs 200 --batch 96 --device 0
+
+# Export with INT8 quantization for Android
+python train_yolo.py --export --weights best.pt --formats tflite --int8
+```
+
+#### Using YOLO CLI directly (Alternative)
+
 ```bash
 conda activate microPAD-python-env
 
@@ -78,11 +110,11 @@ yolo segment train \
 
 **Training parameters explained:**
 - `model=yolo11n-seg.pt`: YOLOv11-nano segmentation (smallest, fastest)
-- `epochs=150`: Maximum training epochs
+- `epochs=150`: Maximum training epochs (Stage 1), 80 (Stage 2)
 - `imgsz=640`: Input image size
-- `batch=128`: Batch size (adjust based on GPU memory)
+- `batch=128`: Batch size for Stage 1 (96 for Stage 2)
 - `device=0,1`: Use both A6000 GPUs
-- `patience=20`: Early stopping patience
+- `patience=20`: Early stopping patience (15 for Stage 2)
 
 **Expected training time:**
 - ~1-2 hours on dual A6000 (48GB each)
@@ -105,7 +137,20 @@ tensorboard --logdir micropad_detection/yolo11n_synth
 
 ### Phase 3.4: Export for Deployment
 
-After training completes, export models for MATLAB and Android:
+#### Using train_yolo.py (Recommended)
+
+```bash
+# Export to ONNX (MATLAB) and TFLite (Android) with one command
+python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+
+# Export only ONNX
+python train_yolo.py --export --weights best.pt --formats onnx
+
+# Export TFLite with INT8 quantization (if FP16 > 50ms)
+python train_yolo.py --export --weights best.pt --formats tflite --int8
+```
+
+#### Using YOLO CLI directly (Alternative)
 
 ```bash
 # 1. ONNX for MATLAB
@@ -132,7 +177,7 @@ yolo export \
 
 **Exported files:**
 - `best.onnx`: For MATLAB integration
-- `best_fp16.tflite`: For Android (start with this)
+- `best_fp16.tflite` or `best_saved_model/`: For Android (start with FP16)
 - `best_int8.tflite`: For Android (if FP16 too slow)
 
 ## Project Structure
@@ -142,10 +187,11 @@ python_scripts/
 ├── README.md                    # This file
 ├── requirements.txt             # Python dependencies
 ├── prepare_yolo_dataset.py      # Dataset preparation script
+├── train_yolo.py                # Comprehensive training/export CLI
 ├── configs/
-│   └── micropad_synth.yaml      # YOLO dataset config
+│   └── micropad_synth.yaml      # YOLO dataset config (synthetic only)
+│   └── micropad_mixed.yaml      # [Future] Mixed synthetic + manual labels
 └── [future scripts]
-    ├── train_yolo.py            # Training wrapper (optional)
     ├── evaluate_model.py        # Evaluation script
     └── visualize_predictions.py # Visualization tools
 ```
