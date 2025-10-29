@@ -1,5 +1,6 @@
 backup/
 .ssh/
+.vscode/
 
 *.asv
 
@@ -7,6 +8,9 @@ backup/
 __pycache__/
 *.pyc
 *.pyo
+
+# Augmented datasets
+augmented_*/
 
 # Claude Code settings
 .claude/settings.local.json
