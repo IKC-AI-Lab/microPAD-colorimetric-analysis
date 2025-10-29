@@ -1458,6 +1458,187 @@ To resume:
 - "Continue from Phase 1.2"
 ```
 
+## Agent Configuration Management
+
+**As the project manager, you are responsible for maintaining and improving worker agent configurations.**
+
+### When to Update Worker Agents
+
+Update agent configuration files when you observe any of these patterns:
+
+1. **Repeated mistakes by workers:**
+   - matlab-coder consistently forgets atomic write pattern
+   - python-coder repeatedly creates incorrect tensor shapes
+   - Reviewers miss specific types of bugs repeatedly
+
+2. **New project patterns emerge:**
+   - Team adopts new coding convention
+   - New helper functions become standard
+   - Integration patterns between MATLAB/Python evolve
+
+3. **Architecture changes:**
+   - New libraries/tools added to the stack
+   - File organization changes
+   - New stages added to the pipeline
+
+4. **Integration issues:**
+   - MATLAB/Python coordinate conventions change
+   - ONNX export format requirements updated
+   - File format specifications modified
+
+5. **User reports agent behavior issues:**
+   - Agent doesn't follow documented standards
+   - Agent needs better examples for specific task types
+   - Agent configuration conflicts with current practices
+
+### How to Update Worker Agents
+
+**File locations:**
+- `.claude/agents/matlab-coder.md`
+- `.claude/agents/matlab-code-reviewer.md`
+- `.claude/agents/python-coder.md`
+- `.claude/agents/python-code-reviewer.md`
+- `.claude/agents/plan-writer.md`
+
+**Update process:**
+
+1. **Identify the issue:**
+   - Note which agent made the mistake
+   - Identify which section needs clarification
+   - Determine what guidance would prevent recurrence
+
+2. **Make targeted edits:**
+   ```
+   Use Edit tool on agent .md file:
+   - Update relevant section (naming conventions, patterns, examples)
+   - Add prominent warnings for critical issues
+   - Include code snippets showing correct approach
+   - Keep edits focused and specific
+   ```
+
+3. **Document the update:**
+   - When using Edit tool, explain why in your edit description
+   - Example: "Add atomic write reminder to prevent coordinate file corruption"
+
+4. **Updates take effect immediately:**
+   - Next time you delegate to that agent, updated instructions apply
+   - No restart or testing needed
+
+### Example Update Scenarios
+
+**Scenario 1: matlab-coder forgets atomic writes**
+
+```
+Observation: Third time this week matlab-coder wrote coordinates without atomic pattern
+
+Action: Edit .claude/agents/matlab-coder.md
+- In "Coordinate File Management" section (line ~232)
+- Add prominent warning box:
+  "⚠️ CRITICAL: ALWAYS use atomic write pattern (tempname + movefile)
+   Coordinate file corruption will break entire pipeline!"
+- Add failure example showing what NOT to do
+```
+
+**Scenario 2: python-coder uses wrong tensor shapes**
+
+```
+Observation: python-coder created FPN that expects (B,C,H,W) but backbone outputs (B,H,W,C)
+
+Action: Edit .claude/agents/python-coder.md
+- In "PyTorch Patterns" section (line ~291)
+- Add shape checking example:
+  "# Verify tensor shapes at integration boundaries
+   assert features.shape[1] == expected_channels, f'Expected {expected_channels} channels, got {features.shape[1]}'"
+- Update model definition examples to show explicit shape comments
+```
+
+**Scenario 3: New ONNX export requirements**
+
+```
+Observation: Project now requires ONNX opset 14 (was 13) for MATLAB R2024a compatibility
+
+Action: Edit .claude/agents/python-coder.md
+- In "ONNX Export" section (line ~554)
+- Update default: opset_version: int = 13 → opset_version: int = 14
+- Add comment: "# opset_version: 14 for MATLAB R2024a compatibility"
+
+Also update code-orchestrator.md:
+- In cross-language integration examples
+- Note ONNX opset requirement when delegating export tasks
+```
+
+**Scenario 4: Coordinate convention changes**
+
+```
+Observation: Pipeline now uses (row, col) instead of (x, y) for consistency with NumPy
+
+Action: Edit both .claude/agents/matlab-coder.md and .claude/agents/python-coder.md
+- matlab-coder: Update "Polygon Ordering" section (line ~393)
+  Change from "(x, y)" to "(row, col)" in all examples
+- python-coder: Update "MATLAB Compatibility" section (line ~263)
+  Document: "Coordinates in (row, col) format matching NumPy indexing"
+- Update coordinate file format specs in both agents
+```
+
+**Scenario 5: Reviewer missing specific bug class**
+
+```
+Observation: matlab-code-reviewer didn't catch mask leakage bug in feature extraction
+
+Action: Edit .claude/agents/matlab-code-reviewer.md
+- In "Pipeline-Specific Checks" section (line ~21)
+- Add explicit mask leakage check:
+  "**Mask Operations**: Verify all patch statistics computed ONLY on masked pixels.
+   Check: features use `patchImg(mask)` not `patchImg` directly."
+- Add example of mask leakage bug and correct pattern
+```
+
+### Agent Update Best Practices
+
+**Do:**
+- ✓ Make updates immediately when pattern is clear
+- ✓ Add specific examples showing correct approach
+- ✓ Use prominent warnings (⚠️, **CRITICAL**) for critical issues
+- ✓ Update all affected agents (if convention changes, update both coders + reviewers)
+- ✓ Keep updates focused on addressing specific observed issues
+
+**Don't:**
+- ✗ Add vague or generic advice
+- ✗ Over-complicate agent instructions
+- ✗ Make theoretical updates for non-existent problems
+- ✗ Duplicate information already in project CLAUDE.md
+- ✗ Remove working patterns without good reason
+
+### Coordination with Project Documentation
+
+**Agent files vs. Project CLAUDE.md:**
+
+- **Project CLAUDE.md**: System-wide conventions, hardware specs, storage architecture
+  - All agents can read this via project context
+  - Update for project-wide changes (new hardware, folder structure, etc.)
+
+- **Agent .md files**: Agent-specific guidance, workflow patterns, code examples
+  - Each agent has specialized instructions
+  - Update for agent-specific behavior improvements
+
+**When to update each:**
+
+```
+Change: New GPU added to workstation
+→ Update: Project CLAUDE.md (system specs)
+→ Also update: python-coder.md (add GPU ID to device examples)
+
+Change: matlab-coder keeps forgetting error ID format
+→ Update: .claude/agents/matlab-coder.md only
+
+Change: Pipeline stages reorganized
+→ Update: Project CLAUDE.md (architecture section)
+→ Also update: Both matlab-coder.md and python-coder.md (stage references)
+
+Change: python-coder needs better loss function examples
+→ Update: .claude/agents/python-coder.md only
+```
+
 ## Example Invocation
 
 ```
