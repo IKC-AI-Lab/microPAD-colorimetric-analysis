@@ -1,6 +1,7 @@
 backup/
 .ssh/
 .vscode/
+.idea/
 
 *.asv
 
@@ -11,6 +12,9 @@ __pycache__/
 
 # Augmented datasets
 augmented_*/
+
+# Training runs (large model artifacts and checkpoints)
+training_runs/
 
 # Claude Code settings
 .claude/settings.local.json
