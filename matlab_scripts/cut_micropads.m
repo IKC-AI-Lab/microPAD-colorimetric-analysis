@@ -70,8 +70,18 @@ function cut_micropads(varargin)
     DEFAULT_USE_AI_DETECTION = true;
     DEFAULT_DETECTION_MODEL = 'models/yolo11n_micropad_seg.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
+
+    % IMPORTANT: Edit this path to match your Python installation!
+    % Common locations:
+    %   Windows: 'C:\Users\YourName\miniconda3\envs\YourPythonEnv\python.exe'
+    %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
+    %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
+
     DEFAULT_INFERENCE_SIZE = 640;
+
+    % === ROTATION CONSTANTS ===
+    ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations
 
     % === NAMING / FILE CONSTANTS ===
     COORDINATE_FILENAME = 'coordinates.txt';
@@ -139,6 +149,7 @@ function cut_micropads(varargin)
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, PRESERVE_FORMAT, JPEG_QUALITY, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
+                              ROTATION_ANGLE_TOLERANCE, ...
                               COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, UI_CONST, varargin{:});
 
     try
@@ -156,6 +167,7 @@ end
 function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jpegQuality, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
+                                   rotationAngleTolerance, ...
                                    coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, UI_CONST, varargin)
     parser = inputParser;
     parser.addParameter('numSquares', defaultNumSquares, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',1,'<=',20}));
@@ -215,6 +227,9 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     end
     cfg.geometry.gapPercentWidth = gp;
     cfg.coverage = parser.Results.coverage;
+
+    % Rotation configuration
+    cfg.rotation.angleTolerance = rotationAngleTolerance;
 
     % UI configuration
     cfg.ui.fontSize = UI_CONST.fontSize;
@@ -520,12 +535,15 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
                 close(fig);
                 error('User stopped execution');
             case 'accept'
-                % Preview mode - store rotation in savedRotation field
+                % Store rotation before preview mode
+                savedRotation = userRotation;
+
+                % Preview mode
                 clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, userPolygons);
 
                 % Store rotation in guiData for preview mode
                 guiData = get(fig, 'UserData');
-                guiData.savedRotation = userRotation;
+                guiData.savedRotation = savedRotation;
                 set(fig, 'UserData', guiData);
 
                 [prevAction, ~, ~] = waitForUserAction(fig);
@@ -661,7 +679,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Image display (show image with initial rotation if any)
     if initialRotation ~= 0
-        displayImg = applyRotation(img, initialRotation);
+        displayImg = applyRotation(img, initialRotation, cfg);
         guiData.currentImg = displayImg;
     else
         displayImg = img;
@@ -1030,7 +1048,8 @@ function applyRotation_UI(angle, fig, cfg)
     guiData.totalRotation = guiData.memoryRotation + angle;
 
     % Apply rotation to image
-    guiData.currentImg = applyRotation(guiData.baseImg, angle);
+    guiData.currentImg = applyRotation(guiData.baseImg, angle, cfg);
+    guiData.imageSize = size(guiData.currentImg);
 
     % Save polygon positions BEFORE clearing axes
     savedPositions = extractPolygonPositions(guiData);
@@ -1254,15 +1273,15 @@ function positions = extractPolygonPositions(guiData)
     end
 end
 
-function rotatedImg = applyRotation(img, rotation)
-    % Apply rotation to image (use loose mode to preserve entire image)
+function rotatedImg = applyRotation(img, rotation, cfg)
+    % Apply rotation to image (lossless rot90 for 90-deg multiples, bilinear with loose mode otherwise)
     if rotation == 0
         rotatedImg = img;
         return;
     end
 
     % For exact 90-degree multiples, use lossless rot90
-    if abs(mod(rotation, 90)) < 1e-6
+    if abs(mod(rotation, 90)) < cfg.rotation.angleTolerance
         numRotations = mod(round(rotation / 90), 4);
         if numRotations == 0
             rotatedImg = img;
@@ -1595,12 +1614,13 @@ function ensurePythonSetup(pythonPath)
 
         % Validate Python path is provided
         pythonPath = char(pythonPath);
-        if isempty(pythonPath)
+        if isempty(pythonPath) || strcmp(pythonPath, 'EDIT_THIS_PATH_TO_YOUR_PYTHON_EXE')
             error('cut_micropads:python_not_configured', ...
-                ['Python executable not configured.\n', ...
-                 'Resolution options:\n', ...
-                 '1. Set MICROPAD_PYTHON environment variable\n', ...
-                 '2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''C:\\path\\to\\python.exe'')']);
+                ['Python path not configured!\n\n', ...
+                 'Please edit DEFAULT_PYTHON_PATH (line 79) to point to your Python executable.\n\n', ...
+                 'Alternatively, you can:\n', ...
+                 '  1. Set MICROPAD_PYTHON environment variable, OR\n', ...
+                 '  2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''C:\\path\\to\\python.exe'')']);
         end
 
         if ~isfile(pythonPath)
@@ -1608,23 +1628,23 @@ function ensurePythonSetup(pythonPath)
                 'Python executable not found at: %s', pythonPath);
         end
 
-    currentPython = pyenv;
-    if strcmp(currentPython.Version, '')
-        fprintf('Configuring Python environment for auto-detection...\n');
-        pyenv('Version', pythonPath);
-        fprintf('[OK] Python environment configured\n');
-    elseif ~strcmp(currentPython.Executable, pythonPath)
-        warning('cut_micropads:python_mismatch', ...
-            'Python already initialized with different executable:\n  Current: %s\n  Expected: %s\nRestart MATLAB to switch environments.', ...
-            currentPython.Executable, pythonPath);
-    end
+        currentPython = pyenv;
+        if strcmp(currentPython.Version, '')
+            fprintf('Configuring Python environment for auto-detection...\n');
+            pyenv('Version', pythonPath);
+            fprintf('[OK] Python environment configured\n');
+        elseif ~strcmp(currentPython.Executable, pythonPath)
+            warning('cut_micropads:python_mismatch', ...
+                'Python already initialized with different executable:\n  Current: %s\n  Expected: %s\nRestart MATLAB to switch environments.', ...
+                currentPython.Executable, pythonPath);
+        end
 
-    try
-        py.importlib.import_module('ultralytics');
-    catch
-        error('cut_micropads:ultralytics_missing', ...
-            'Ultralytics package not found in Python environment.\nRun: pip install ultralytics');
-    end
+        try
+            py.importlib.import_module('ultralytics');
+        catch
+            error('cut_micropads:ultralytics_missing', ...
+                'Ultralytics package not found in Python environment.\nRun: pip install ultralytics');
+        end
 
         try
             py.importlib.import_module('cv2');
