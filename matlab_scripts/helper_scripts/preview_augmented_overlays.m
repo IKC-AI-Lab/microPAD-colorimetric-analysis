@@ -1,7 +1,7 @@
 function preview_augmented_overlays(varargin)
 %PREVIEW_AUGMENTED_OVERLAYS Visual integrity check for augmented overlays.
 %   Displays augmented scenes from augmented_1_dataset with concentration
-%   polygons from augmented_2_concentration_rectangles and ellipse fits
+%   polygons from augmented_2_micropads and ellipse fits
 %   from augmented_3_elliptical_regions overlaid on top.
 %
 %   This viewer aggregates all polygons and ellipses per base scene image,
@@ -27,9 +27,9 @@ parser.FunctionName = mfilename;
 
 addParameter(parser, 'stage1Folder', 'augmented_1_dataset', ...
     @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
-addParameter(parser, 'stage3Folder', 'augmented_2_concentration_rectangles', ...
+addParameter(parser, 'stage2Folder', 'augmented_2_micropads', ...
     @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
-addParameter(parser, 'stage4Folder', 'augmented_3_elliptical_regions', ...
+addParameter(parser, 'stage3Folder', 'augmented_3_elliptical_regions', ...
     @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
 addParameter(parser, 'phones', string.empty, ...
     @(c) isstring(c) || iscellstr(c));
@@ -43,28 +43,28 @@ requestedPhones = string(opts.phones);
 requestedPhones = requestedPhones(requestedPhones ~= "");
 
 stage1Root = resolve_repo_path(opts.stage1Folder);
+stage2Root = resolve_repo_path(opts.stage2Folder);
 stage3Root = resolve_repo_path(opts.stage3Folder);
-stage4Root = resolve_repo_path(opts.stage4Folder);
 
-phoneDirs = list_phone_dirs(stage3Root);
+phoneDirs = list_phone_dirs(stage2Root);
 if isempty(phoneDirs)
     error('preview_augmented_overlays:noPhones', ...
-        'No phone folders found in %s.', stage3Root);
+        'No phone folders found in %s.', stage2Root);
 end
 
 if ~isempty(requestedPhones)
     phoneDirs = intersect(phoneDirs, requestedPhones, 'stable');
     if isempty(phoneDirs)
         error('preview_augmented_overlays:noRequestedPhones', ...
-            'Requested phone folder(s) not present inside %s.', stage3Root);
+            'Requested phone folder(s) not present inside %s.', stage2Root);
     end
 end
 
-fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 3: %s\n  Stage 4: %s\n', ...
-    stage1Root, stage3Root, stage4Root);
+fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 2: %s\n  Stage 3: %s\n', ...
+    stage1Root, stage2Root, stage3Root);
 
 % Build preview plan aggregating all overlays per base scene
-plan = build_augmented_plan(stage1Root, stage3Root, stage4Root, phoneDirs, ...
+plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, ...
     opts.maxSamples, SUPPORTED_IMAGE_EXTENSIONS);
 
 if isempty(plan)
@@ -173,7 +173,7 @@ end
 
 %% Helper functions
 
-function plan = build_augmented_plan(stage1Root, stage3Root, stage4Root, phoneDirs, maxSamples, supportedExts)
+function plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, maxSamples, supportedExts)
 % Build preview plan aggregating all polygons and ellipses per base scene
 
 plan = struct('phoneName', {}, 'imageName', {}, 'imagePath', {}, ...
@@ -190,39 +190,39 @@ for pIdx = 1:numel(phoneDirs)
     phone = phoneDirs(pIdx);
     phoneStr = char(phone);
 
-    % Read stage-3 polygon coordinates
+    % Read stage-2 polygon coordinates
+    s2CoordPath = fullfile(stage2Root, phoneStr, 'coordinates.txt');
+    if ~isfile(s2CoordPath)
+        warning('preview_augmented_overlays:missingS2Coords', ...
+            'Missing stage-2 coordinates.txt for %s', phoneStr);
+        continue;
+    end
+
+    s2Table = read_polygon_table(s2CoordPath);
+    if isempty(s2Table)
+        continue;
+    end
+
+    % Read stage-3 ellipse coordinates
     s3CoordPath = fullfile(stage3Root, phoneStr, 'coordinates.txt');
-    if ~isfile(s3CoordPath)
-        warning('preview_augmented_overlays:missingS3Coords', ...
-            'Missing stage-3 coordinates.txt for %s', phoneStr);
-        continue;
-    end
-
-    s3Table = read_polygon_table(s3CoordPath);
-    if isempty(s3Table)
-        continue;
-    end
-
-    % Read stage-4 ellipse coordinates
-    s4CoordPath = fullfile(stage4Root, phoneStr, 'coordinates.txt');
-    if isfile(s4CoordPath)
-        s4Table = read_ellipse_table(s4CoordPath);
+    if isfile(s3CoordPath)
+        s3Table = read_ellipse_table(s3CoordPath);
     else
-        s4Table = table();
+        s3Table = table();
     end
 
     % Group polygons by base scene name
-    for rowIdx = 1:height(s3Table)
+    for rowIdx = 1:height(s2Table)
         if entryCount >= maxSamples
             break;
         end
 
-        imageName = s3Table.image(rowIdx);
-        concentration = s3Table.concentration(rowIdx);
+        imageName = s2Table.image(rowIdx);
+        concentration = s2Table.concentration(rowIdx);
         imageChar = char(imageName);
 
         % Extract base scene name (strip _con_X suffix AND handle extension mismatch)
-        % Stage-3: IMG_0957_aug_001_con_0.jpeg
+        % Stage-2: IMG_0957_aug_001_con_0.jpeg
         % Stage-1: IMG_0957_aug_001.jpg
         [~, baseName, ~] = fileparts(imageChar);  % Remove extension first
         conIdx = strfind(baseName, '_con_');
@@ -262,19 +262,19 @@ for pIdx = 1:numel(phoneDirs)
 
         % Add polygon to this entry
         polygon = [
-            s3Table.x1(rowIdx), s3Table.y1(rowIdx);
-            s3Table.x2(rowIdx), s3Table.y2(rowIdx);
-            s3Table.x3(rowIdx), s3Table.y3(rowIdx);
-            s3Table.x4(rowIdx), s3Table.y4(rowIdx);
+            s2Table.x1(rowIdx), s2Table.y1(rowIdx);
+            s2Table.x2(rowIdx), s2Table.y2(rowIdx);
+            s2Table.x3(rowIdx), s2Table.y3(rowIdx);
+            s2Table.x4(rowIdx), s2Table.y4(rowIdx);
         ];
         plan(idx).polygons{end+1} = polygon;
 
         % Find matching ellipses for this concentration polygon
-        if ~isempty(s4Table)
-            % Match by the full stage-3 filename (with extension)
-            nameMask = strcmpi(s4Table.image, string(imageChar));
-            concMask = s4Table.concentration == concentration;
-            ellipseRows = s4Table(nameMask & concMask, :);
+        if ~isempty(s3Table)
+            % Match by the full stage-2 filename (with extension)
+            nameMask = strcmpi(s3Table.image, string(imageChar));
+            concMask = s3Table.concentration == concentration;
+            ellipseRows = s3Table(nameMask & concMask, :);
 
             if ~isempty(ellipseRows)
                 % Transform ellipse coordinates from polygon-crop space to scene space

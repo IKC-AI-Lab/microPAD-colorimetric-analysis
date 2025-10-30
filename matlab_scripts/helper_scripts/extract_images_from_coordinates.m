@@ -8,26 +8,19 @@ function extract_images_from_coordinates(varargin)
     % based on saved coordinate data.
     %
     % Stages handled (in-order, with dependency checks):
-% - Step 1: 1_dataset -> 2_micropad_papers
-%   - If 2_micropad_papers/[phone]/coordinates.txt exists,
-    %     crops rectangular strips from originals and writes images.
-    %   - If coordinates.txt is missing but images exist, skip step 1 for that phone.
-    %   - If both coordinates and images are missing but a later step needs this
-    %     stage, error (dependency failure).
+% - Step 1: 1_dataset -> 2_micropads
+%   - Reads polygon coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4 [rotation]
+    %   - Crops polygon regions from originals into concentration subfolders (con_0 ...).
+    %   - Rotation column (10th field) is optional for backward compatibility.
     %
-% - Step 2: 2_micropad_papers -> 3_concentration_rectangles
-    %   - Reads polygon coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4
-    %   - Crops the rectangular images into concentration subfolders (con_0 ...).
-    %
-% - Step 3: 3_concentration_rectangles -> 4_elliptical_regions
+% - Step 2: 2_micropads -> 3_elliptical_regions
     %   - Reads elliptical coordinates: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
     %   - Extracts elliptical patches relative to the concentration polygons.
     %
     % Parameters (name-value):
     % - inputFolder    : folder for originals (default '1_dataset')
-% - rectFolder     : folder for rectangular crops (default '2_micropad_papers')
-% - polygonFolder  : folder for polygon crops (default '3_concentration_rectangles')
-% - patchFolder    : folder for elliptical patches (default '4_elliptical_regions')
+% - polygonFolder  : folder for polygon crops (default '2_micropads')
+% - patchFolder    : folder for elliptical patches (default '3_elliptical_regions')
     % - preserveFormat : logical (default true) - keep source extension when saving
     % - jpegQuality    : integer 0-100 (default 95) for JPEG writes when not preserving
     % - concFolderPrefix: prefix for concentration folders (default 'con_')
@@ -52,10 +45,9 @@ function extract_images_from_coordinates(varargin)
     %
     % Notes
     % - This script does not write coordinates.txt. It reads them to reconstruct images.
-    % - For Step 1 (rectangular), coordinates format is auto-detected. Supported forms:
-    %     1) 'image x y width height' [rotation optional as final column]
-    %     2) 'image x1 y1 x2 y2 x3 y3 x4 y4' (rectangle as polygon corners).
-    %   If no rect coordinates are present, existing rect images are used for later steps.
+    % - For Step 1 (polygon extraction), coordinates format:
+    %     'image concentration x1 y1 x2 y2 x3 y3 x4 y4 [rotation]'
+    %   Rotation column (10th field) is optional for backward compatibility.
     % - If a required prior stage has neither coordinates nor images, the process errors for that folder.
     %
     % Usage examples (from repo root):
@@ -63,23 +55,22 @@ function extract_images_from_coordinates(varargin)
     %   extract_images_from_coordinates();
     %   extract_images_from_coordinates('jpegQuality', 90);
     %
-% See also: cut_concentration_rectangles, cut_elliptical_regions, crop_micropad_papers
+% See also: cut_micropads, cut_elliptical_regions
 
 % ----------------------
     % Parse inputs and create configuration
     % ----------------------
     parser = inputParser;
     addParameter(parser, 'inputFolder', '1_dataset', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
-    addParameter(parser, 'rectFolder', '2_micropad_papers', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
-    addParameter(parser, 'polygonFolder', '3_concentration_rectangles', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
-    addParameter(parser, 'patchFolder', '4_elliptical_regions', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
+    addParameter(parser, 'polygonFolder', '2_micropads', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
+    addParameter(parser, 'patchFolder', '3_elliptical_regions', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     addParameter(parser, 'preserveFormat', true, @(b) ((islogical(b) && isscalar(b)) || (isnumeric(b) && isscalar(b))));
     addParameter(parser, 'jpegQuality', 100, @(n) (isnumeric(n) && isscalar(n) && n>=0 && n<=100));
     addParameter(parser, 'concFolderPrefix', 'con_', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     parse(parser, varargin{:});
 
     % Create configuration using standard pattern
-    cfg = createConfiguration(char(parser.Results.inputFolder), char(parser.Results.rectFolder), ...
+    cfg = createConfiguration(char(parser.Results.inputFolder), ...
                               char(parser.Results.polygonFolder), char(parser.Results.patchFolder), ...
                               logical(parser.Results.preserveFormat), parser.Results.jpegQuality, ...
                               char(parser.Results.concFolderPrefix));
@@ -203,12 +194,11 @@ function extract_images_from_coordinates(varargin)
     fprintf('\nReconstruction complete.\n');
 end
 
-function cfg = createConfiguration(inputFolder, rectFolder, polygonFolder, patchFolder, preserveFormat, jpegQuality, concFolderPrefix)
+function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, preserveFormat, jpegQuality, concFolderPrefix)
     % Create configuration with validation and path resolution
 
     % Validate inputs
     validateattributes(inputFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'inputFolder');
-    validateattributes(rectFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'rectFolder');
     validateattributes(polygonFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'polygonFolder');
     validateattributes(patchFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'patchFolder');
     validateattributes(preserveFormat, {'logical'}, {'scalar'}, 'createConfiguration', 'preserveFormat');
@@ -219,14 +209,13 @@ function cfg = createConfiguration(inputFolder, rectFolder, polygonFolder, patch
 
     % Resolve folder paths
     inputRoot = resolve_folder(repoRoot, char(inputFolder));
-    rectRoot = resolve_folder(repoRoot, char(rectFolder));
     polyRoot = resolve_folder(repoRoot, char(polygonFolder));
     patchRoot = resolve_folder(repoRoot, char(patchFolder));
 
     % Create configuration structure
     cfg = struct();
     cfg.projectRoot = repoRoot;
-    cfg.paths = struct('input', inputRoot, 'rect', rectRoot, 'poly', polyRoot, 'patch', patchRoot);
+    cfg.paths = struct('input', inputRoot, 'poly', polyRoot, 'patch', patchRoot);
     cfg.output = struct('preserveFormat', preserveFormat, ...
                         'jpegQuality', jpegQuality, ...
                         'supportedFormats', {{'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}});

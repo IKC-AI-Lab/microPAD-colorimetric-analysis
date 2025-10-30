@@ -17,12 +17,12 @@ function extract_features(varargin)
     % - 'randomSeed' double: Random seed for reproducible train/test splits (default: random).
     %
     % Output:
-    % - Writes a features file to 5_extract_features with columns defined by the registry.
+    % - Writes a features file to 4_extract_features with columns defined by the registry.
     %   No return value.
     %
     % Workflow:
-    % - Expects polygon crops in 3_concentration_rectangles/phone/con_*/
-    % - Uses elliptical patch coordinates from 4_elliptical_regions/phone/coordinates.txt (phone-level consolidated file)
+    % - Expects polygon crops in 2_micropads/phone/con_*/
+    % - Uses elliptical patch coordinates from 3_elliptical_regions/phone/coordinates.txt (phone-level consolidated file)
     % - Extracts features per patch and aggregates results by concentration replicate
     %
     % Usage:
@@ -45,9 +45,9 @@ function extract_features(varargin)
     %
     
     % === DATASET AND FOLDER STRUCTURE ===
-    ORIGINAL_IMAGES_FOLDER = 'augmented_2_concentration_rectangles';  % Parent polygon images
+    ORIGINAL_IMAGES_FOLDER = 'augmented_2_micropads';  % Parent polygon images
     COORDINATES_FOLDER = 'augmented_3_elliptical_regions';         % Coordinate data
-    OUTPUT_FOLDER = '5_extract_features';                    % Output features folder
+    OUTPUT_FOLDER = '4_extract_features';                    % Output features folder
 
     % === NAMING CONVENTIONS ===
     CONC_FOLDER_PREFIX = 'con_';                             % Concentration folder prefix (e.g., con_0)
@@ -3196,7 +3196,7 @@ end
 function validatePaths(cfg)
 
     if ~exist(cfg.originalImagesPath, 'dir')
-        error('extract_features:missingOriginalDir', 'Original images directory not found: %s\nPlease run cut_concentration_rectangles() first.', cfg.originalImagesPath);
+        error('extract_features:missingOriginalDir', 'Original images directory not found: %s\nPlease run cut_micropads() first.', cfg.originalImagesPath);
     end
 
     if ~exist(cfg.coordinatesPath, 'dir')

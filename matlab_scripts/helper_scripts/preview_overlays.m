@@ -8,18 +8,16 @@ function preview_overlays(varargin)
     %
     % INPUTS (name-value pairs):
     % - datasetFolder : root of original captures (default '1_dataset')
-% - rectFolder    : root of rectangular crops (default '2_micropad_papers')
-% - coordsFolder  : root of concentration polygons (default '3_concentration_rectangles')
-% - ellipseFolder : root of elliptical patches (default '4_elliptical_regions')
+% - coordsFolder  : root of concentration polygons (default '2_micropads')
+% - ellipseFolder : root of elliptical patches (default '3_elliptical_regions')
     %
     % OUTPUTS: none (opens a viewer window)
     %
     % USAGE:
     %   addpath('matlab_scripts/helper_scripts'); preview_overlays
 %   preview_overlays('datasetFolder','1_dataset', ...
-%                    'rectFolder','2_micropad_papers', ...
-%                    'coordsFolder','3_concentration_rectangles', ...
-%                    'ellipseFolder','4_elliptical_regions')
+%                    'coordsFolder','2_micropads', ...
+%                    'ellipseFolder','3_elliptical_regions')
     %
     % NOTES:
     % - Navigation: Click 'Next' or press 'n' to advance; press 'q' to close.
@@ -42,26 +40,22 @@ function preview_overlays(varargin)
     parser = inputParser;
 
     addParameter(parser, 'datasetFolder', '1_dataset', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
-    addParameter(parser, 'rectFolder', '2_micropad_papers', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
-    addParameter(parser, 'coordsFolder', '3_concentration_rectangles', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
-    addParameter(parser, 'ellipseFolder', '4_elliptical_regions', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
+    addParameter(parser, 'coordsFolder', '2_micropads', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
+    addParameter(parser, 'ellipseFolder', '3_elliptical_regions', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
 
     parse(parser, varargin{:});
 
     datasetRootIn = char(parser.Results.datasetFolder);
-    rectRootIn = char(parser.Results.rectFolder);
     coordsRootIn = char(parser.Results.coordsFolder);
     ellipseRootIn = char(parser.Results.ellipseFolder);
 
     % Resolve paths relative to repo root using standard findProjectRoot
     repoRoot = findProjectRoot(datasetRootIn, PROJECT_ROOT_SEARCH_DEPTH);
     datasetRoot = resolve_folder(repoRoot, datasetRootIn);
-    rectRoot = resolve_folder(repoRoot, rectRootIn);
     coordsRoot = resolve_folder(repoRoot, coordsRootIn);
     ellipseRoot = resolve_folder(repoRoot, ellipseRootIn);
 
     validate_folder_exists(datasetRoot, 'preview_concentration_overlays:missing_dataset_folder', 'Dataset folder not found: %s\nExpected path relative to project root.', datasetRootIn);
-    validate_folder_exists(rectRoot, 'preview_concentration_overlays:missing_rect_folder', 'Rectangular image folder not found: %s\nExpected path relative to project root.', rectRootIn);
     validate_folder_exists(coordsRoot, 'preview_concentration_overlays:missing_coords_folder', 'Coordinates folder not found: %s\nExpected path relative to project root.', coordsRootIn);
     validate_folder_exists(ellipseRoot, 'preview_concentration_overlays:missing_ellipse_folder', 'Elliptical patch folder not found: %s\nExpected path relative to project root.', ellipseRootIn);
 
@@ -74,12 +68,11 @@ function preview_overlays(varargin)
     end
 
     fprintf('Dataset root: %s\n', datasetRoot);
-    fprintf('Rectangular root: %s\n', rectRoot);
     fprintf('Concentration root: %s\n', coordsRoot);
     fprintf('Ellipse root: %s\n', ellipseRoot);
 
     % Build mapping from image path -> list of polygons and ellipses
-    plan = build_plan(datasetRoot, rectRoot, coordsRoot, ellipseRoot, SUPPORTED_IMAGE_EXTENSIONS);
+    plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, SUPPORTED_IMAGE_EXTENSIONS);
     if isempty(plan)
         error('preview_concentration_overlays:no_entries', ...
             ['Coordinate integrity failure: no valid entries found under %s.' ...
@@ -186,7 +179,7 @@ function preview_overlays(varargin)
 end
 
 %% ------------------------------------------------------------------------
-function plan = build_plan(datasetRoot, rectRoot, coordsRoot, ellipseRoot, supportedExts)
+function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
     %% Build preview plan mapping images to multi-stage overlays in dataset space
 
     coordFiles = find_concentration_coordinate_files(coordsRoot);

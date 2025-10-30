@@ -18,8 +18,8 @@ function augment_dataset(varargin)
     %
     % PIPELINE:
     % 1. Copy real captures from 1_dataset/ into augmented_1_dataset/ (passthrough)
-    % 2. Load polygon coordinates from 3_concentration_rectangles/
-    % 3. Load ellipse coordinates from 4_elliptical_regions/ (optional)
+    % 2. Load polygon coordinates from 2_micropads/
+    % 3. Load ellipse coordinates from 3_elliptical_regions/ (optional)
     % 4. Generate N synthetic augmentations per paper (augIdx = 1..N)
     % 5. Write outputs to augmented_* directories
     %
@@ -33,7 +33,7 @@ function augment_dataset(varargin)
     % OUTPUT STRUCTURE:
     %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
     %   augmented_1_dataset/[phone]/scales/    - Optional multi-scale synthetic scenes
-    %   augmented_2_concentration_rectangles/  - Polygon crops + coordinates.txt
+    %   augmented_2_micropads/  - Polygon crops + coordinates.txt
     %
     % Parameters (Name-Value):
 % - 'numAugmentations' (positive integer, default 3): synthetic versions per paper
@@ -55,11 +55,10 @@ function augment_dataset(varargin)
     %% CONFIGURATION CONSTANTS
     %% =====================================================================
     DEFAULT_INPUT_STAGE1 = '1_dataset';
-    DEFAULT_INPUT_STAGE2 = '2_micropad_papers';
-    DEFAULT_INPUT_STAGE3_COORDS = '3_concentration_rectangles';
-    DEFAULT_INPUT_STAGE4_COORDS = '4_elliptical_regions';
+    DEFAULT_INPUT_STAGE2_COORDS = '2_micropads';
+    DEFAULT_INPUT_STAGE3_COORDS = '3_elliptical_regions';
     DEFAULT_OUTPUT_STAGE1 = 'augmented_1_dataset';
-    DEFAULT_OUTPUT_STAGE2 = 'augmented_2_concentration_rectangles';
+    DEFAULT_OUTPUT_STAGE2 = 'augmented_2_micropads';
     DEFAULT_OUTPUT_STAGE3 = 'augmented_3_elliptical_regions';
 
     COORDINATE_FILENAME = 'coordinates.txt';

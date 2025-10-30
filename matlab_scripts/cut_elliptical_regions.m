@@ -9,14 +9,14 @@ function cut_elliptical_regions(varargin)
     % - 'saveCoordinates' (logical): write coordinates.txt entries (default true)
     %
     % Outputs/Side effects:
-    % - Writes elliptical patches to 4_elliptical_regions/[phone]/con_*/
+    % - Writes elliptical patches to 3_elliptical_regions/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level with format:
     %   image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
 %   where rotationAngle is in degrees (-180 to 180, clockwise from horizontal major axis)
     % - No duplicate rows per image (existing entries are replaced)
     %
     % Behavior:
-    % - Reads single-concentration polygon crops from 3_concentration_rectangles/[phone]/con_*/
+    % - Reads single-concentration polygon crops from 2_micropads/[phone]/con_*/
     % - Captures elliptical ROI masks for each replicate and logs coordinates to phone-level file
 
 %% ========================================================================
@@ -29,8 +29,8 @@ function cut_elliptical_regions(varargin)
     %
     
     % === DATASET AND FOLDER STRUCTURE ===
-    INPUT_FOLDER = '3_concentration_rectangles';   % Source folder from previous step
-    OUTPUT_FOLDER = '4_elliptical_regions';     % Output elliptical patches folder
+    INPUT_FOLDER = '2_micropads';   % Source folder from previous step
+    OUTPUT_FOLDER = '3_elliptical_regions';     % Output elliptical patches folder
     
     % === NAMING / FILE CONSTANTS ===
     CONC_FOLDER_PREFIX = 'con_';                         % Concentration folder prefix
@@ -1244,14 +1244,14 @@ function validatePaths(cfg)
     % Validate and create directories
     if ~exist(cfg.inputPath, 'dir')
         error('cutEllipticalPatches:MissingInputDirectory', ...
-              'Input directory not found: %s\n\nExpected stage 3 output from cut_concentration_rectangles.m', ...
+              'Input directory not found: %s\n\nExpected stage 2 output from cut_micropads.m', ...
               cfg.inputPath);
     end
 
-    % Validate stage numbering consistency (expected: 3_ -> 4_)
-    if ~contains(cfg.inputPath, '3_') || ~contains(cfg.outputPath, '4_')
+    % Validate stage numbering consistency (expected: 2_ -> 3_)
+    if ~contains(cfg.inputPath, '2_') || ~contains(cfg.outputPath, '3_')
         warning('cutEllipticalPatches:StageNumbering', ...
-                'Input/output folders do not follow expected pipeline stage numbering (3_ -> 4_).\nInput: %s\nOutput: %s', ...
+                'Input/output folders do not follow expected pipeline stage numbering (2_ -> 3_).\nInput: %s\nOutput: %s', ...
                 cfg.inputPath, cfg.outputPath);
     end
 
