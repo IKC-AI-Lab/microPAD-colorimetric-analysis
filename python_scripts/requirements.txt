@@ -10,11 +10,6 @@ torchvision>=0.15.0
 # YOLOv11 (Ultralytics)
 ultralytics>=8.3.0
 
-# ONNX Export and Optimization
-onnx>=1.15.0
-onnxsim>=0.4.0
-onnxruntime-gpu>=1.18.0  # For ONNX inference with GPU
-
 # Data Processing
 numpy>=1.23.0
 scipy>=1.4.1

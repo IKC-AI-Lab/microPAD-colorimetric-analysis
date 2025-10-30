@@ -10,13 +10,13 @@ This will start Stage 1 training with optimized defaults:
 - Devices: GPUs 0,1 (dual A6000 with NVLink)
 - Batch size: 32 (optimized for 126-image training set)
 - Epochs: 150 with early stopping (patience=20)
-- Results: micropad_detection/yolo11n_synth/
+- Results: training_runs/yolo11n_synth/
 
 TRAINING PIPELINE:
 - Stage 1: Pretraining on synthetic data (current)
 - Stage 2: Fine-tuning on mixed synthetic + manual labels (future)
 
-Also provides validation and export capabilities for MATLAB/Android deployment.
+Also provides validation capabilities. Export to TFLite is done on-demand for Android deployment.
 
 HARDWARE REQUIREMENTS:
 - GPUs: Dual RTX A6000 (48GB each, NVLink connected on CUDA devices 0,1)
@@ -66,7 +66,7 @@ class YOLOTrainer:
 
         self.project_root = Path(project_root)
         self.configs_dir = self.project_root / 'python_scripts' / 'configs'
-        self.results_dir = self.project_root / 'micropad_detection'
+        self.results_dir = self.project_root / 'training_runs'
 
         # Verify project structure
         if not self.configs_dir.exists():
@@ -357,21 +357,21 @@ class YOLOTrainer:
     def export(
         self,
         weights: str,
-        formats: list = ['onnx', 'tflite'],
+        formats: list = ['tflite'],
         imgsz: int = 640,
         half: bool = True,
-        simplify: bool = True,
         int8: bool = False,
         **kwargs
     ) -> Dict[str, Path]:
         """Export model for deployment.
 
+        NOTE: ONNX export removed - MATLAB uses PyTorch model directly via Python interface.
+
         Args:
             weights: Path to model weights
-            formats: Export formats ('onnx', 'tflite', etc.)
+            formats: Export formats ('tflite' for Android)
             imgsz: Input image size
             half: Use FP16 precision (TFLite only)
-            simplify: Simplify ONNX model
             int8: Use INT8 quantization (TFLite only, requires calibration)
             **kwargs: Additional export arguments
 
@@ -404,11 +404,8 @@ class YOLOTrainer:
                 'imgsz': imgsz,
             }
 
-            # Format-specific arguments
-            if fmt == 'onnx':
-                export_args['simplify'] = simplify
-                print(f"  Simplify: {simplify}")
-            elif fmt == 'tflite':
+            # TFLite-specific arguments
+            if fmt == 'tflite':
                 if int8:
                     export_args['int8'] = True
                     print(f"  Quantization: INT8")
@@ -425,10 +422,7 @@ class YOLOTrainer:
             print(f"\nExported: {export_path}")
 
             # Usage instructions
-            if fmt == 'onnx':
-                print(f"\nMATLAB Usage:")
-                print(f"  net = importONNXNetwork('{export_path}');")
-            elif fmt == 'tflite':
+            if fmt == 'tflite':
                 print(f"\nAndroid Usage:")
                 print(f"  Copy to: android/app/src/main/assets/")
 
@@ -450,16 +444,16 @@ Examples:
   python train_yolo.py --stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
-  python train_yolo.py --stage 2 --weights micropad_detection/yolo11n_synth/weights/best.pt
+  python train_yolo.py --stage 2 --weights models/yolo11n_micropad_seg.pt
 
   # Validate model
-  python train_yolo.py --validate --weights micropad_detection/yolo11n_synth/weights/best.pt
+  python train_yolo.py --validate --weights models/yolo11n_micropad_seg.pt
 
-  # Export to ONNX and TFLite
-  python train_yolo.py --export --weights micropad_detection/yolo11n_synth/weights/best.pt
+  # Export to TFLite for Android (when Phase 5 begins)
+  python train_yolo.py --export --weights models/yolo11n_micropad_seg.pt
 
   # Export with INT8 quantization for Android
-  python train_yolo.py --export --weights best.pt --formats tflite --int8
+  python train_yolo.py --export --weights models/yolo11n_micropad_seg.pt --formats tflite --int8
 
   # Custom training parameters
   python train_yolo.py --stage 1 --epochs 200 --batch 96 --device 0
@@ -494,15 +488,13 @@ Examples:
                        help='Initial learning rate (default: 0.01 for stage 2)')
 
     # Export arguments
-    parser.add_argument('--formats', nargs='+', default=['onnx', 'tflite'],
-                       choices=['onnx', 'tflite', 'torchscript', 'coreml'],
-                       help='Export formats (default: onnx tflite)')
+    parser.add_argument('--formats', nargs='+', default=['tflite'],
+                       choices=['tflite', 'torchscript', 'coreml'],
+                       help='Export formats (default: tflite for Android)')
     parser.add_argument('--half', action='store_true', default=True,
                        help='Use FP16 for TFLite (default: True)')
     parser.add_argument('--int8', action='store_true',
                        help='Use INT8 quantization for TFLite')
-    parser.add_argument('--simplify', action='store_true', default=True,
-                       help='Simplify ONNX model (default: True)')
 
     # Data arguments
     parser.add_argument('--data', type=str,
@@ -541,7 +533,7 @@ Examples:
             # Stage 2: Fine-tuning
             if not args.weights:
                 print("ERROR: --weights required for Stage 2 fine-tuning")
-                print("Example: --weights micropad_detection/yolo11n_synth/weights/best.pt")
+                print("Example: --weights models/yolo11n_micropad_seg.pt")
                 sys.exit(1)
 
             train_kwargs = {}
@@ -567,7 +559,7 @@ Examples:
             # Validation
             if not args.weights:
                 print("ERROR: --weights required for validation")
-                print("Example: --weights micropad_detection/yolo11n_synth/weights/best.pt")
+                print("Example: --weights models/yolo11n_micropad_seg.pt")
                 sys.exit(1)
 
             trainer.validate(
@@ -581,7 +573,7 @@ Examples:
             # Export
             if not args.weights:
                 print("ERROR: --weights required for export")
-                print("Example: --weights micropad_detection/yolo11n_synth/weights/best.pt")
+                print("Example: --weights models/yolo11n_micropad_seg.pt")
                 sys.exit(1)
 
             trainer.export(
@@ -589,7 +581,6 @@ Examples:
                 formats=args.formats,
                 imgsz=args.imgsz,
                 half=args.half,
-                simplify=args.simplify,
                 int8=args.int8
             )
 
