@@ -58,11 +58,11 @@ git commit -m "Complete Phase 1.3: Export corner labels
 ## Agents That Use This Directory
 
 - **plan-writer**: Creates and updates plan files
-- **code-orchestrator**: Manages plan execution, delegates to specialists
 - **matlab-coder**: Reads plans to understand implementation context
 - **python-coder**: Reads plans to understand implementation context
 
 ## Reference Documentation
 
-- Agent definitions: `.claude/agents/code-orchestrator.md`, `.claude/agents/plan-writer.md`
+- Orchestration workflow: `CLAUDE.md` (Orchestration and Task Management section)
+- Agent definitions: `.claude/agents/plan-writer.md`, `.claude/agents/matlab-coder.md`, `.claude/agents/python-coder.md`
 - Project standards: `CLAUDE.md`

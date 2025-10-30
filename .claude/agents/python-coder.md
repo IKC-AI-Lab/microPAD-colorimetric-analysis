@@ -9,6 +9,8 @@ color: green
 
 Write high-quality Python code for machine learning, computer vision, and data processing tasks in the microPAD colorimetric analysis project. Primary focus on deep learning model training, inference, and dataset preparation.
 
+**Orchestration Context**: This agent is invoked by the orchestration workflow defined in CLAUDE.md for Python implementation tasks. You implement code and perform quick sanity checks, but do NOT self-review. After implementation, control returns to orchestrator who will invoke python-code-reviewer for independent review.
+
 ## Project Context
 
 This agent works in the `python_codes/` directory, supporting:

@@ -2,6 +2,96 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Orchestration and Task Management
+
+When handling complex multi-phase implementations, follow this orchestration workflow:
+
+### Plan Management
+
+**When to create a plan file:**
+- Task requires 3+ distinct phases or stages
+- Modifies 4+ files across different directories
+- Involves both MATLAB and Python code
+- Restructures core pipeline architecture
+- User expects to work across multiple sessions
+- User explicitly requests implementation plan
+
+**Plan file location:** All plans stored in `documents/plans/` with naming convention `[TASK_NAME]_PLAN.md` (uppercase, underscores)
+
+**When NOT to create a plan:**
+- Simple single-file edits (bug fixes, parameter tweaks)
+- Trivial additions (new utility function, documentation update)
+- Tasks completable in <5 steps
+
+**Creating a plan:**
+Use the `plan-writer` agent to create structured implementation plans with checkboxes and progress tracking.
+
+### Task Delegation and Workflow
+
+**Standard workflow for complex tasks:**
+
+1. **Plan Phase** (if complexity criteria met)
+   - Delegate to `plan-writer` agent to create plan in `documents/plans/`
+   - Review plan with user before proceeding
+
+2. **Implementation Phase**
+   - Delegate MATLAB work to `matlab-coder` agent
+   - Delegate Python work to `python-coder` agent
+   - Agents perform quick sanity checks only (no self-review)
+
+3. **Independent Review Phase** (MANDATORY after each file implementation)
+   - Delegate MATLAB code review to `matlab-code-reviewer` agent
+   - Delegate Python code review to `python-code-reviewer` agent
+   - Reviewers identify issues but do NOT fix them
+
+4. **Iteration Phase**
+   - If issues found: Send back to appropriate coder agent with fix instructions
+   - Repeat review after fixes
+   - Continue until review is clean
+
+5. **Completion**
+   - Mark task complete in plan file only after passing review
+   - After entire plan completes: Ask user whether to delete plan file
+
+### Critical Rules for Orchestration
+
+**NEVER make low-confidence assumptions:**
+- If uncertain about requirements → ASK USER
+- If stuck on implementation approach → ASK USER
+- If multiple valid approaches exist → ASK USER which to use
+- Never create fallback code or workarounds due to uncertainty
+
+**Quality assurance:**
+- Every file implementation MUST be independently reviewed
+- No task marked complete without passing review
+- Issues found in review MUST be fixed before proceeding
+- Re-review after fixes until clean
+
+**Delegation patterns:**
+```
+MATLAB scripts → matlab-coder
+Python code → python-coder
+Plan creation/updates → plan-writer
+MATLAB review → matlab-code-reviewer (via Task tool)
+Python review → python-code-reviewer (via Task tool)
+```
+
+### Example Orchestration Flow
+
+```
+User: "Implement feature X that requires MATLAB and Python changes"
+
+1. Check complexity → 3 phases, cross-language → CREATE PLAN
+2. Delegate to plan-writer: Create plan in documents/plans/FEATURE_X_PLAN.md
+3. Review plan with user → Get approval
+4. For each task in plan:
+   a. Delegate to matlab-coder or python-coder
+   b. After implementation, delegate to respective code-reviewer
+   c. If issues found → Send back to coder with fixes → Re-review
+   d. Mark task complete only after clean review
+5. After all tasks complete: "Feature X complete. Delete documents/plans/FEATURE_X_PLAN.md? (Yes/No)"
+```
+
 ## Code Quality Standards
 
 **CRITICAL IMPLEMENTATION RULES:**
