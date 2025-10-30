@@ -11,12 +11,11 @@ Write production-quality MATLAB code for the microPAD colorimetric analysis pipe
 
 ## Project Context
 
-This is a **5-stage sequential pipeline** for microPAD analysis:
-1. `crop_micropad_papers.m` → 2_micropad_papers
-2. `cut_concentration_rectangles.m` → 3_concentration_rectangles
-3. `cut_elliptical_regions.m` → 4_elliptical_regions
-4. `extract_features.m` → 5_extract_features
-5. `augment_dataset.m` → augmented_* (synthetic training data)
+This is a **4-stage sequential pipeline** for microPAD analysis:
+1. `cut_micropads.m` → 2_micropads (AI detection + concentration polygons)
+2. `cut_elliptical_regions.m` → 3_elliptical_regions
+3. `extract_features.m` → 4_extract_features
+4. `augment_dataset.m` → augmented_* (synthetic training data)
 
 **Key Architecture:**
 - Phone-based organization (`iphone_11/`, `samsung_a75/`)

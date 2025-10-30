@@ -2,6 +2,31 @@
 
 Python scripts for YOLOv11 training and inference for microPAD quadrilateral auto-detection.
 
+## Pipeline Overview
+
+The microPAD analysis pipeline consists of **4 stages**:
+
+```
+1_dataset (raw images)
+    -> cut_micropads.m
+2_micropads (cropped regions with rotation)
+    -> cut_elliptical_regions.m
+3_elliptical_regions (elliptical patches)
+    -> extract_features.m
+4_extract_features (feature tables)
+```
+
+**Augmented data pipeline:**
+```
+1_dataset
+    -> augment_dataset.m
+augmented_1_dataset (synthetic scenes)
+augmented_2_micropads (transformed polygons)
+augmented_3_elliptical_regions (transformed ellipses)
+```
+
+**YOLOv11 training uses:** `augmented_1_dataset` for synthetic training data generation.
+
 ## Environment Setup
 
 ### Prerequisites
@@ -202,10 +227,22 @@ After successful training:
 
 1. ✅ **Phase 3.1-3.2**: Environment and dataset setup (DONE)
 2. **Phase 3.3**: Train model on workstation
-3. **Phase 3.4**: Export ONNX/TFLite models
-4. **Phase 4**: MATLAB integration (`detect_quads_yolo.m`)
+3. **Phase 3.4**: Export models for deployment
+4. **Phase 4**: MATLAB integration (PyTorch model via Python interface)
 5. **Phase 5**: Android integration (TFLite inference)
 6. **Phase 6**: Validation and deployment
+
+## Pipeline Integration
+
+**MATLAB Integration:**
+- MATLAB scripts use PyTorch models directly via Python interface
+- No ONNX export needed for MATLAB (uses native PyTorch inference)
+- Detection function: `detectQuadsYOLO.m` (calls Python YOLO model)
+
+**Android Integration:**
+- Export to TFLite format for mobile deployment
+- Target inference time: <50ms on Android devices
+- Quantization options: FP16 (default) or INT8 (if needed for speed)
 
 ## Troubleshooting
 
@@ -226,10 +263,13 @@ Run dataset preparation again:
 python prepare_yolo_dataset.py
 ```
 
-Check label format (9 values per line):
+Check label format (9 values per line for YOLO, 10 for MATLAB coordinates):
 ```bash
 head -1 augmented_1_dataset/iphone_11/labels/IMG_0957_aug_001.txt
-# Expected: 0 x1 y1 x2 y2 x3 y3 x4 y4
+# YOLO format: 0 x1 y1 x2 y2 x3 y3 x4 y4 (9 values, normalized)
+
+# MATLAB coordinate format (2_micropads/phone/coordinates.txt):
+# image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation (10 values, pixel coords)
 ```
 
 ## References

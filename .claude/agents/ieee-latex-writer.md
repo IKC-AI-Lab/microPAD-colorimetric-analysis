@@ -112,7 +112,7 @@ This research group specializes in **AI-enhanced smartphone-based colorimetric s
    - Cross-validation: k-fold (k=10 standard)
 
 5. **Current Project Specifics** (microPAD Pipeline):
-   - 5-stage sequential pipeline (1_dataset → 5_extract_features)
+   - 4-stage sequential pipeline (1_dataset → 4_elliptical_regions → extract_features)
    - microPAD design: 7 test zones × 3 elliptical regions per zone
    - Target analytes: urea, creatinine, lactate
    - Training paradigm: replicate measurements (all 3 regions = same chemical/concentration)
@@ -603,12 +603,12 @@ C. Szegedy et al., ``Rethinking the inception architecture for computer vision,'
 - Statistical terms: mean ± standard deviation (SD), not SEM unless specified
 
 **For Current microPAD Pipeline Project**:
-1. **Pipeline stages**: Describe all 5 stages (1_dataset → 5_extract_features) with:
+1. **Pipeline stages**: Describe all 4 stages (1_dataset → 4_elliptical_regions) with:
    - Input folder name and content type
-   - Processing script name
+   - Processing script name (cut_micropads.m for stages 2-4)
    - Output folder name and content type
    - Key parameters and their defaults
-   - Coordinate file format (if applicable)
+   - Coordinate file format: 10 columns (image, x, y, width, height, rotation, conc, semiMajor, semiMinor, ellipseAngle)
 
 2. **Atomic write pattern** for coordinates:
 ```latex
@@ -644,12 +644,10 @@ C. Szegedy et al., ``Rethinking the inception architecture for computer vision,'
 ```matlab
 % Run pipeline stages sequentially
 cd matlab_scripts
-crop_micropad_papers()  % Stage 1
-cut_concentration_rectangles('numSquares', 7)  % Stage 2
-cut_elliptical_regions()  % Stage 3
-extract_features('preset', 'robust', 'chemical', 'lactate')  % Stage 4
+cut_micropads()  % Stages 2-4: processes all regions in one pass
+extract_features('preset', 'robust', 'chemical', 'lactate')  % Feature extraction
 
-% Data augmentation (optional, between stages 2-3)
+% Data augmentation (optional, for training data)
 augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 ```
 
@@ -724,13 +722,13 @@ documents/ieee_template/
    - `samsung_a75/20250924_*.jpg`
    - `realme_c55/IMG20250924*.jpg`
 
-3. **`2_micropad_papers/{phone}/`** - Cropped paper strips (Stage 2 output)
+3. **`2_micropads/{phone}/`** - Cropped paper strips (Stage 2 output)
 
-4. **`3_concentration_rectangles/{phone}/con_N/`** - Individual concentration regions (Stage 3 output)
+4. **`3_concentration_regions/{phone}/con_N/`** - Individual concentration regions (Stage 3 output)
    - Shows color gradients across concentrations (con_0 through con_6)
 
 5. **`4_elliptical_regions/{phone}/con_N/`** - Elliptical patches (Stage 4 output)
-   - Format: `{base}_con{N}_rep{M}.jpeg` (M = 1,2,3 for three replicates)
+   - Format: `{base}_con{N}_rep{M}.jpeg` (M = 0,1,2 for three replicates)
 
 6. **Augmented datasets**:
    - `augmented_1_dataset/` - Synthetic scenes
@@ -746,7 +744,7 @@ documents/ieee_template/
 
 **For Research Papers** (μPAD colorimetric analysis):
 - **Figure 1 (System Overview)**: Use schematic placeholder or copy `stage1_original_image.jpeg`
-- **Figure 2 (Color Change Grid)**: Select concentration series from `3_concentration_rectangles/iphone_11/con_*/`
+- **Figure 2 (Color Change Grid)**: Select concentration series from `3_concentration_regions/iphone_11/con_*/`
   - Copy: `IMG_0957_con_0.jpeg`, `IMG_0957_con_1.jpeg`, ..., `IMG_0957_con_6.jpeg`
   - Shows concentration gradient (0 through 6)
 - **Figure 3 (Architecture)**: Use placeholder for DNN/CNN diagram
@@ -906,11 +904,12 @@ Priority: HIGH - Must complete before writing
 - [ ] **Conclusion**: Past tense contribution summary, advantages list, applications
 
 ### Pipeline-Specific Content (if applicable)
-- [ ] All 5 stages described: 1_dataset → 2_micropad_papers → 3_concentration_rectangles → 4_elliptical_regions → 5_extract_features
-- [ ] Coordinate file formats documented for Stages 2, 3, 4
+- [ ] All 4 stages described: 1_dataset → 2_micropads → 3_concentration_regions → 4_elliptical_regions
+- [ ] Feature extraction script (extract_features.m) processes stage 4 outputs
+- [ ] Coordinate file format documented (10-column format with rotation)
 - [ ] Atomic write pattern described (algorithm block)
 - [ ] EXIF orientation handling explained (imread_raw function)
-- [ ] Geometry models: Stage 2 (rotation), Stage 3 (homography), Stage 4 (ellipse)
+- [ ] Geometry models: Stage 2 (rotation + perspective), Stage 3 (homography warping), Stage 4 (ellipse extraction)
 - [ ] Feature extraction presets compared (minimal/robust/full)
 - [ ] Augmentation strategy: grid-based acceleration, performance (1.0s/image)
 - [ ] Helper utilities mentioned if applicable

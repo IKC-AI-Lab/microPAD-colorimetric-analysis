@@ -55,56 +55,48 @@ Each microPAD paper strip contains **7 test zones** (concentrations), and each t
 
 ## Pipeline Stages
 
-The pipeline processes images through **5 sequential stages**. Each stage reads from folder `N_*` and writes to `(N+1)_*`:
+The pipeline processes images through **4 sequential stages**. Each stage reads from folder `N_*` and writes to `(N+1)_*`:
 
-### **Stage 1 → 2: Extract microPAD Paper**
+### **Stage 1 → 2: Cut microPAD Concentration Regions**
 
-**Script:** `crop_micropad_papers.m`
+**Script:** `cut_micropads.m`
 
 **Input:** Raw smartphone photos in `1_dataset/{phone_model}/`
-**Output:** Cropped paper strips in `2_micropad_papers/{phone_model}/`
+**Output:** Individual concentration rectangles in `2_micropads/{phone_model}/con_{N}/`
 
-![Stage 1 to 2](demo_images/stage2_micropad_paper.jpeg)
+![Stage 1 to 2](demo_images/stage3_concentration_rectangle.jpeg)
 
-Isolates the microPAD paper from the background using interactive rotation and cropping.
+Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered polygon detection (YOLOv11) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
 
----
-
-### **Stage 2 → 3: Cut Concentration Regions**
-
-**Script:** `cut_concentration_rectangles.m`
-
-**Input:** Cropped papers from `2_micropad_papers/`
-**Output:** Individual concentration rectangles in `3_concentration_rectangles/{phone_model}/con_{N}/`
-
-![Stage 2 to 3](demo_images/stage3_concentration_rectangle.jpeg)
-
-Cuts out individual test zones from each paper strip (default: 7 zones per strip).
+**Key Features:**
+- AI-based auto-detection of test zones (YOLOv11 segmentation)
+- Interactive rotation control with cumulative rotation memory
+- Saves 10-column coordinate format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation`
 
 ---
 
-### **Stage 3 → 4: Extract Elliptical Patches**
+### **Stage 2 → 3: Extract Elliptical Patches**
 
 **Script:** `cut_elliptical_regions.m`
 
-**Input:** Concentration rectangles from `3_concentration_rectangles/`
-**Output:** Elliptical patches in `4_elliptical_regions/{phone_model}/con_{N}/`
+**Input:** Concentration rectangles from `2_micropads/`
+**Output:** Elliptical patches in `3_elliptical_regions/{phone_model}/con_{N}/`
 
-![Stage 3 to 4](demo_images/stage4_elliptical_region_1.jpeg)
+![Stage 2 to 3](demo_images/stage4_elliptical_region_1.jpeg)
 
 Extracts three elliptical measurement regions from each test zone. In the final microPAD design, these three regions will contain different chemicals (urea, creatinine, lactate). For training purposes, each experiment fills all three regions with the same concentration of a single chemical, providing three replicate measurements per concentration level.
 
 ---
 
-### **Stage 4 → 5: Feature Extraction**
+### **Stage 3 → 4: Feature Extraction**
 
 **Script:** `extract_features.m`
 
 **Input:**
-- Concentration rectangles from `3_concentration_rectangles/` (used as paper/white reference)
-- Elliptical patches from `4_elliptical_regions/`
+- Concentration rectangles from `2_micropads/` (used as paper/white reference)
+- Elliptical patches from `3_elliptical_regions/`
 
-**Output:** Excel feature tables in `5_extract_features/`
+**Output:** Excel feature tables in `4_extract_features/`
 
 ![White Reference Strategy](demo_images/white_referenced_pixels_on_rectangle.png)
 
@@ -244,25 +236,21 @@ Run these commands **in order** from the project folder:
 ### Full Pipeline (from raw images)
 
 ```bash
-# Stage 1: Crop microPAD papers
-matlab -batch "addpath('matlab_scripts'); crop_micropad_papers;"
+# Stage 1→2: Cut microPAD concentration regions (with AI detection)
+matlab -batch "addpath('matlab_scripts'); cut_micropads;"
 
-# Stage 2: Cut concentration rectangles (7 regions per strip)
-matlab -batch "addpath('matlab_scripts'); cut_concentration_rectangles;"
-
-# Stage 3: Extract elliptical regions
+# Stage 2→3: Extract elliptical regions
 matlab -batch "addpath('matlab_scripts'); cut_elliptical_regions;"
 
-# Stage 4: Extract features (reads both 3_ and 4_; change 'lactate' to your chemical name)
+# Stage 3→4: Extract features (change 'lactate' to your chemical name)
 matlab -batch "addpath('matlab_scripts'); extract_features('preset','robust','chemical','lactate');"
 ```
 
 ### Typical Workflow (starting from Stage 2)
 
-If you already have cropped papers in `2_micropad_papers/`:
+If you already have concentration rectangles in `2_micropads/`:
 
 ```bash
-matlab -batch "addpath('matlab_scripts'); cut_concentration_rectangles;"
 matlab -batch "addpath('matlab_scripts'); cut_elliptical_regions;"
 matlab -batch "addpath('matlab_scripts'); extract_features('preset','robust','chemical','lactate');"
 ```
@@ -273,7 +261,7 @@ matlab -batch "addpath('matlab_scripts'); extract_features('preset','robust','ch
 
 **Script:** `augment_dataset.m` (optional, recommended for AI training)
 
-Generates synthetic training data by transforming Stage 2 outputs (papers and polygons) and composing them onto procedural backgrounds. Essential for training robust polygon detection models for the Android smartphone application.
+Generates synthetic training data by transforming real microPAD images and concentration polygons and composing them onto procedural backgrounds. Essential for training robust polygon detection models for the Android smartphone application.
 
 ![Augmented Dataset](demo_images/augmented_dataset_1.jpg)
 *Synthetic scene with transformed microPAD under simulated lighting*
@@ -302,8 +290,8 @@ Augmentation **multiplies the training dataset** by 5-10x without requiring addi
 
 ### **Transformation Pipeline**
 
-**Geometric Transformations (per paper)**
-1. **3D perspective projection** - Simulates camera viewing angles (+/-60 deg pitch/yaw) and back-projects Stage 2 strip coordinates into Stage 1 image space before augmentation
+**Geometric Transformations (per region)**
+1. **3D perspective projection** - Simulates camera viewing angles (+/-60 deg pitch/yaw)
 2. **Rotation** - Random orientation (0-360 deg)
 3. **Spatial placement** - Random non-overlapping positions via grid acceleration
 4. **Optional per-region rotation** - Independent orientation for each concentration zone
@@ -395,13 +383,13 @@ augment_dataset('numAugmentations', 5, 'exportCornerLabels', true)
 ### **Input/Output Structure**
 
 **Inputs:**
-- `2_micropad_papers/{phone}/` - Cropped paper strip images
-- `3_concentration_rectangles/{phone}/coordinates.txt` - Polygon vertices (required)
-- `4_elliptical_regions/{phone}/coordinates.txt` - Ellipse parameters (optional)
+- `1_dataset/{phone}/` - Original smartphone images
+- `2_micropads/{phone}/coordinates.txt` - Polygon vertices (required)
+- `3_elliptical_regions/{phone}/coordinates.txt` - Ellipse parameters (optional)
 
 **Outputs:**
 - `augmented_1_dataset/{phone}/` - Full synthetic scenes (for polygon detector training)
-- `augmented_2_concentration_rectangles/{phone}/con_{N}/` - Transformed concentration regions + coordinates.txt
+- `augmented_2_micropads/{phone}/con_{N}/` - Transformed concentration regions + coordinates.txt
 - `augmented_3_elliptical_regions/{phone}/con_{N}/` - Transformed elliptical patches + coordinates.txt (if input ellipses exist)
 
 **Naming convention:**
@@ -422,7 +410,7 @@ augment_dataset('numAugmentations', 5, 'exportCornerLabels', true)
 ```matlab
 % Extract features from augmented data
 extract_features('preset','robust','chemical','lactate')
-% Output: 5_extract_features/ with (N+1) × original sample count
+% Output: 4_extract_features/ with (N+1) × original sample count
 ```
 
 **For Android Deployment**
@@ -436,8 +424,8 @@ extract_features('preset','robust','chemical','lactate')
 ### **Important Notes**
 
 **Ellipse coordinate propagation:**
-- If `4_elliptical_regions/coordinates.txt` is missing, augmentation still runs but only produces stages 1-2
-- To generate augmented ellipses without pre-existing coordinates, run `cut_elliptical_regions.m` on `augmented_2_concentration_rectangles/` after augmentation
+- If `3_elliptical_regions/coordinates.txt` is missing, augmentation still runs but only produces stages 1-2
+- To generate augmented ellipses without pre-existing coordinates, run `cut_elliptical_regions.m` on `augmented_2_micropads/` after augmentation
 
 **Coordinate preservation:**
 - All transformations (perspective, rotation, translation) are recorded in output coordinates.txt files
@@ -508,23 +496,21 @@ preview_augmented_overlays();
 ```
 microPAD-colorimetric-analysis/
 ├── matlab_scripts/          # Main processing scripts
-│   ├── crop_micropad_papers.m
-│   ├── cut_concentration_rectangles.m
-│   ├── cut_elliptical_regions.m
-│   ├── extract_features.m
-│   ├── augment_dataset.m
+│   ├── cut_micropads.m      # Stage 1→2 (AI detection + cropping)
+│   ├── cut_elliptical_regions.m  # Stage 2→3
+│   ├── extract_features.m   # Stage 3→4
+│   ├── augment_dataset.m    # Data augmentation (optional)
 │   └── helper_scripts/      # Utility functions
 ├── 1_dataset/               # Raw smartphone photos
 │   ├── iphone_11/
 │   ├── iphone_15/
 │   ├── realme_c55/
 │   └── samsung_a75/
-├── 2_micropad_papers/       # Cropped paper strips
-├── 3_concentration_rectangles/  # Concentration regions + coordinates.txt
-├── 4_elliptical_regions/    # Elliptical patches + coordinates.txt
-├── 5_extract_features/      # Feature tables (.xlsx)
+├── 2_micropads/             # Concentration regions + coordinates.txt
+├── 3_elliptical_regions/    # Elliptical patches + coordinates.txt
+├── 4_extract_features/      # Feature tables (.xlsx)
 ├── augmented_1_dataset/     # (Optional) Synthetic scenes
-├── augmented_2_concentration_rectangles/
+├── augmented_2_micropads/
 ├── augmented_3_elliptical_regions/
 └── demo_images/             # Visual examples for documentation
 ```
@@ -538,9 +524,8 @@ microPAD-colorimetric-analysis/
 ### Coordinate Files
 
 Each stage saves a `coordinates.txt` file with position and shape information:
-- **Stage 2:** Paper location and rotation
-- **Stage 3:** Corner points of each test zone
-- **Stage 4:** Ellipse center, size, and rotation
+- **Stage 2 (2_micropads):** Corner points (4 vertices) + rotation for each test zone
+- **Stage 3 (3_elliptical_regions):** Ellipse center, semi-major/minor axes, and rotation angle
 
 **If corrupted:** Delete the file and re-run the stage to create a new one.
 
@@ -566,7 +551,7 @@ Before processing all images, test with 2-3 sample images to make sure everythin
 
 ## Output Example
 
-Sample rows from `5_extract_features/robust_lactate_t0_features.xlsx` (showing subset of 80+ feature columns):
+Sample rows from `4_extract_features/robust_lactate_features.xlsx` (showing subset of 80+ feature columns):
 
 | PhoneType  | ImageName                   | RG_ratio | RB_ratio | GB_ratio | L       | a       | b      | delta_E_from_paper | R_paper_ratio | Label |
 |------------|-----------------------------|----------|----------|----------|---------|---------|--------|--------------------|---------------|-------|
@@ -600,11 +585,11 @@ This MATLAB pipeline serves as the **data preparation and training infrastructur
 ```
 MATLAB Pipeline (this repository)
     ↓
-augmented_1_dataset/ → Train polygon detector (YOLO/Faster R-CNN)
+augmented_1_dataset/ → Train polygon detector (YOLOv11 segmentation)
     ↓
-5_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
+4_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
     ↓
-Export to TensorFlow Lite (.tflite)
+Export models (PyTorch for MATLAB, TFLite for Android)
     ↓
 Android Application (separate repository, coming soon)
 ```

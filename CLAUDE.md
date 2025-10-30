@@ -43,36 +43,34 @@ This is a MATLAB-based colorimetric analysis pipeline for microPAD (microfluidic
 
 ## Pipeline Architecture
 
-The codebase implements a **5-stage sequential colorimetric analysis pipeline** where each stage consumes the output of the previous stage:
+The codebase implements a **4-stage sequential colorimetric analysis pipeline** where each stage consumes the output of the previous stage:
 
 ### Stage Flow
 ```
 1_dataset (raw images)
-    -> crop_micropad_papers.m
-2_micropad_papers (cropped paper strips)
-    -> cut_concentration_rectangles.m
-3_concentration_rectangles (polygonal concentration regions)
+    -> cut_micropads.m
+2_micropads (polygonal concentration regions + rotation)
     -> cut_elliptical_regions.m
-4_elliptical_regions (elliptical patches + coordinates)
+3_elliptical_regions (elliptical patches + coordinates)
     -> extract_features.m
-5_extract_features (feature tables)
+4_extract_features (feature tables)
 ```
 
-Additionally, `augment_dataset.m` creates synthetic training data from stage 2 outputs:
+Additionally, `augment_dataset.m` creates synthetic training data:
 ```
-
-2_micropad_papers
+1_dataset (original images) + 2_micropads (coordinates)
     -> augment_dataset.m
 augmented_1_dataset (synthetic scenes)
-augmented_2_concentration_rectangles (transformed polygons)
+augmented_2_micropads (transformed polygons)
 augmented_3_elliptical_regions (transformed ellipses)
 ```
 ### Key Design Principles
 
 1. **Stage Independence**: Each script reads from `N_*` and writes to `(N+1)_*`
 2. **Phone-based Organization**: Data is organized by phone model subdirectories (e.g., `iphone_11/`, `samsung_a75/`)
-3. **Concentration Folders**: Stages 3-4 use `con_0/`, `con_1/`, etc. subfolders
+3. **Concentration Folders**: Stages 2-3 use `con_0/`, `con_1/`, etc. subfolders
 4. **Consolidated Coordinates**: Coordinate files are stored at phone-level (not per-image) to avoid duplication
+5. **AI-Powered Detection**: Stage 1→2 uses YOLOv11 segmentation for auto-detection of test zones
 
 ## Running the Pipeline
 
@@ -80,20 +78,17 @@ augmented_3_elliptical_regions (transformed ellipses)
 All scripts use dynamic project root resolution (searches up to 5 directory levels):
 
 ```matlab
-% Stage 1: Crop microPAD paper strips from raw images
+% Stage 1→2: Cut microPAD concentration regions with AI detection
 cd matlab_scripts
-crop_micropad_papers()
+cut_micropads('numSquares', 7)  % 7 regions per strip, YOLOv11 auto-detection
 
-% Stage 2: Cut concentration regions from paper strips
-cut_concentration_rectangles('numSquares', 7)  % 7 regions per strip
-
-% Stage 3: Extract elliptical patches from concentration regions
+% Stage 2→3: Extract elliptical patches from concentration regions
 cut_elliptical_regions()
 
-% Stage 4: Extract features from elliptical patches
+% Stage 3→4: Extract features from elliptical patches
 extract_features('preset', 'robust', 'chemical', 'lactate')
 
-% Data Augmentation (run between stages 2-3 for synthetic data)
+% Data Augmentation (generates synthetic training data)
 augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 ```
 
@@ -106,16 +101,14 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 ## File Naming Conventions
 
 ### Coordinate Files
-- **Stage 2**: `coordinates.txt` format: `image x y width height rotation`
-- **Stage 3**: `coordinates.txt` format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4` (4 polygon vertices)
-- **Stage 4**: `coordinates.txt` format: `image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle`
+- **Stage 2 (2_micropads)**: `coordinates.txt` format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation` (4 polygon vertices + rotation in degrees)
+- **Stage 3 (3_elliptical_regions)**: `coordinates.txt` format: `image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle`
 
 ### Output Files
-- Stage 2 crops: `{original_name}.{ext}`
-- Stage 3 crops: `{base}_con_{N}.{ext}` in `con_{N}/` folders
-- Stage 4 patches: `{base}_con{N}_rep{M}.{ext}` in `con_{N}/` folders
+- Stage 2 crops: `{base}_con_{N}.{ext}` in `con_{N}/` folders
+- Stage 3 patches: `{base}_con{N}_rep{M}.{ext}` in `con_{N}/` folders
   - Note: `rep{M}` represents replicate measurements (M = 0, 1, 2). In the final microPAD design, these correspond to three different chemicals (urea, creatinine, lactate). During training, all 3 replicates contain the same chemical at the same concentration.
-- Stage 5 features: `{chemical}_features.xlsx`
+- Stage 4 features: `{chemical}_features.xlsx`
 
 ### Corner Label Files (Augmentation Output)
 When `augment_dataset.m` is run with `exportCornerLabels=true`, it generates training labels for AI polygon detection:
@@ -193,18 +186,19 @@ All scripts use `imread_raw()` helper function that:
 - Prevents double-rotation when user manually rotates images
 
 ### Geometry and Projection
-- **Stage 2**: Simple rotation + rectangular crop
-- **Stage 3**: 3D perspective projection model with fixed reference rectangle
-  - Uses homography transformations for realistic camera viewpoints
-  - Supports x/y/z slider controls for camera position
-- **Stage 4**: Ellipse geometry with axis-aligned bounding box calculation
+- **Stage 2 (cut_micropads.m)**:
+  - YOLOv11 segmentation for polygon detection
+  - Interactive rotation control with cumulative rotation memory
+  - Saves rotation as 10th column in coordinates.txt
+  - AI detection automatically re-runs after rotation changes
+- **Stage 3 (cut_elliptical_regions.m)**: Ellipse geometry with axis-aligned bounding box calculation
   - Rotation angle in degrees (-180 to 180), clockwise from horizontal
   - Constraint: `semiMajorAxis >= semiMinorAxis` (enforced for extract_features.m compatibility)
 
 ### Augmentation Strategy
 `augment_dataset.m` generates synthetic training data for polygon detection training by:
-1. Back-projecting Stage 2 strip coordinates into Stage 1 image space using recorded crop metadata
-2. Applying shared perspective and rotation per paper (+/-60 deg pitch/yaw, 0-360 deg roll)
+1. Reading polygon coordinates from `2_micropads/coordinates.txt` (10-column format with rotation)
+2. Applying shared perspective and rotation per region (+/-60 deg pitch/yaw, 0-360 deg roll)
 3. Optional independent rotation per region
 4. Placing regions via grid-accelerated random sampling (guaranteed non-overlapping)
 5. Compositing onto procedural backgrounds drawn from uniform, speckled, laminate, and skin surface pools (cached variants with jitter)
@@ -236,6 +230,7 @@ All interactive scripts maintain **persistent memory** across images in the same
 - First image establishes baseline; subsequent images use saved settings
 
 ### Batch Processing (extract_features.m)
+- Reads polygon images from `augmented_2_micropads/` and ellipse coordinates from `augmented_3_elliptical_regions/`
 - Adaptive batch sizing based on dataset size and available memory
 - Small datasets (<10 files): process all at once
 - Medium datasets (10-50): 3-batch split
@@ -265,13 +260,13 @@ All interactive scripts maintain **persistent memory** across images in the same
 ### Debugging Tips
 - Check `coordinates.txt` for malformed entries (causes silent failures)
 - Verify polygon vertex order (clockwise from top-left)
+- Verify rotation column (10th field) in `2_micropads/coordinates.txt`
 - Confirm ellipse axes constraint: major >= minor
 - Script complexity (approximate line counts):
-  - augment_dataset.m: ~2730 lines (label export, crop transforms, texture pooling)
-  - crop_micropad_papers.m: ~1889 lines
-  - cut_concentration_rectangles.m: ~1726 lines
+  - cut_micropads.m: ~2500 lines (AI detection, rotation control, interactive GUI)
   - cut_elliptical_regions.m: ~1457 lines
   - extract_features.m: ~4440 lines (largest, most complex)
+  - augment_dataset.m: ~2730 lines (label export, transforms, texture pooling)
 
 ## Common Issues
 
