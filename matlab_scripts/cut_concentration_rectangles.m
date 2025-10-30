@@ -5,15 +5,16 @@ function cut_concentration_rectangles(varargin)
     %
     % Inputs (Name-Value pairs):
     % - 'numSquares': number of regions to capture per strip (default: 7)
-    % - 'aspectRatio': width/height of the reference strip
+    % - 'aspectRatio': width/height of the reference strip (default: 7.6)
     % - 'coverage': fraction of image width to fill (default: 0.995)
-    % - 'gapPercent': gap as percent of region width (0..1 or 0..100)
+    % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.2)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'preserveFormat' | 'jpegQuality' | 'saveCoordinates': output behavior
-    % - 'useAIDetection': use YOLO for initial polygon placement (default: false)
+    % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
     % - 'detectionModel': path to YOLOv11 model (default: 'models/yolo11n_micropad_seg.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
-    % - 'pythonPath': path to Python executable (default: auto-detected)
+    % - 'inferenceSize': YOLO inference image size in pixels (default: 640)
+    % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
     % - Writes polygon crops to 3_concentration_rectangles/[phone]/con_*/
@@ -59,6 +60,7 @@ function cut_concentration_rectangles(varargin)
     DEFAULT_DETECTION_MODEL = 'models/yolo11n_micropad_seg.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
+    DEFAULT_INFERENCE_SIZE = 640;
 
     % === NAMING / FILE CONSTANTS ===
     COORDINATE_FILENAME = 'coordinates.txt';
@@ -106,7 +108,7 @@ function cut_concentration_rectangles(varargin)
     %% Build configuration
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, PRESERVE_FORMAT, JPEG_QUALITY, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
-                              DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, ...
+                              DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
                               COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, UI_CONST, varargin{:});
 
     try
@@ -123,7 +125,7 @@ end
 
 function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jpegQuality, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
-                                   defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, ...
+                                   defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
                                    coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, UI_CONST, varargin)
     parser = inputParser;
     parser.addParameter('numSquares', defaultNumSquares, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',1,'<=',20}));
@@ -142,7 +144,8 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     parser.addParameter('useAIDetection', defaultUseAI, @islogical);
     parser.addParameter('detectionModel', defaultDetectionModel, @(x) validateattributes(x, {'char', 'string'}, {'nonempty', 'scalartext'}));
     parser.addParameter('minConfidence', defaultMinConfidence, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    parser.addParameter('pythonPath', defaultPythonPath, @(x) validateattributes(x, {'char', 'string'}, {'nonempty', 'scalartext'}));
+    parser.addParameter('pythonPath', defaultPythonPath, @(x) ischar(x) || isstring(x));
+    parser.addParameter('inferenceSize', defaultInferenceSize, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>', 0}));
 
     parser.parse(varargin{:});
 
@@ -157,6 +160,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     cfg.detectionModelRelative = parser.Results.detectionModel;
     cfg.minConfidence = parser.Results.minConfidence;
     cfg.pythonPath = parser.Results.pythonPath;
+    cfg.inferenceSize = parser.Results.inferenceSize;
 
     cfg = addPathConfiguration(cfg, parser.Results.inputFolder, parser.Results.outputFolder);
 
@@ -173,6 +177,9 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     cfg.geometry = struct();
     cfg.geometry.aspectRatio = parser.Results.aspectRatio;
     gp = parser.Results.gapPercent;
+    if gp > 100
+        error('concentration:invalid_gap', 'gapPercent cannot exceed 100 (got %.2f)', gp);
+    end
     if gp > 1
         gp = gp / 100;
     end
@@ -196,6 +203,13 @@ function cfg = addPathConfiguration(cfg, inputFolder, outputFolder)
 
     % Resolve model path to absolute path
     cfg.detectionModel = fullfile(projectRoot, cfg.detectionModelRelative);
+
+    % Validate model file if AI detection enabled
+    if cfg.useAIDetection && ~isfile(cfg.detectionModel)
+        warning('concentration:model_missing', ...
+            'AI detection enabled but model not found: %s\nDisabling AI detection.', cfg.detectionModel);
+        cfg.useAIDetection = false;
+    end
 
     validatePaths(cfg);
 end
@@ -340,7 +354,7 @@ function initialPolygons = getInitialPolygons(img, cfg)
     % Get initial polygon positions using AI detection (if enabled) or default geometry
     if cfg.useAIDetection
         try
-            [detectedQuads, confidences] = detectQuadsYOLO(img, cfg.minConfidence);
+            [detectedQuads, confidences] = detectQuadsYOLO(img, cfg.minConfidence, cfg.inferenceSize);
 
             if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
                 fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
@@ -681,20 +695,31 @@ function polygons = createPolygons(initialPolygons, cfg)
                                  'MarkerSize', 8, ...
                                  'Selected', false);
 
+        % Store initial valid position
+        setappdata(polygons{i}, 'LastValidPosition', pos);
+
         % Add listener for quadrilateral enforcement
         addlistener(polygons{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(polygons{i}));
     end
 end
 
 function enforceQuadrilateral(polygon)
-    % Ensure polygon remains a quadrilateral
+    % Ensure polygon remains a quadrilateral by reverting invalid changes
     if ~isvalid(polygon)
         return;
     end
 
     pos = polygon.Position;
     if size(pos, 1) ~= 4
-        warning('concentration:invalid_polygon', 'Polygon must have exactly 4 vertices');
+        % Revert to last valid state
+        lastValid = getappdata(polygon, 'LastValidPosition');
+        if ~isempty(lastValid)
+            polygon.Position = lastValid;
+        end
+        warning('concentration:invalid_polygon', 'Polygon must have exactly 4 vertices. Reverting change.');
+    else
+        % Store valid state
+        setappdata(polygon, 'LastValidPosition', pos);
     end
 end
 
@@ -937,7 +962,7 @@ function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polyg
     atomicWriteCoordinates(coordPath, header, filteredNames, filteredNums, writeFmt, phoneOutputDir);
 end
 
-function [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount)
+function [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, ~)
     existingNames = {};
     existingNums = [];
 
@@ -965,10 +990,8 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
     end
 
     existingNames = rowData{1};
-    existingNums = zeros(numel(existingNames), numericCount);
-    for i = 1:numericCount
-        existingNums(:, i) = rowData{i+1};
-    end
+    % Vectorize numeric data extraction
+    existingNums = cell2mat(rowData(2:end)');
 end
 
 function [filteredNames, filteredNums] = filterConflictingEntries(existingNames, existingNums, newName, concentration)
@@ -1091,23 +1114,19 @@ function folders = getSubFolders(dirPath)
 end
 
 function files = getImageFiles(dirPath, extensions)
-    % Preallocate cell array to avoid growing in loop
-    maxFilesPerExt = 1000;  % Reasonable upper bound
-    allFiles = cell(numel(extensions) * maxFilesPerExt, 1);
-    fileCount = 0;
-
+    % Collect files for each extension efficiently
+    fileList = cell(numel(extensions), 1);
     for i = 1:numel(extensions)
         foundFiles = dir(fullfile(dirPath, extensions{i}));
         if ~isempty(foundFiles)
-            numFound = numel(foundFiles);
-            allFiles(fileCount+1:fileCount+numFound) = {foundFiles.name}';
-            fileCount = fileCount + numFound;
+            fileList{i} = {foundFiles.name}';
+        else
+            fileList{i} = {};
         end
     end
 
-    % Trim to actual size and get unique files
-    allFiles = allFiles(1:fileCount);
-    files = unique(allFiles);
+    % Concatenate and get unique files
+    files = unique(vertcat(fileList{:}));
 end
 
 function executeInFolder(folder, func)
@@ -1127,21 +1146,26 @@ function ensurePythonSetup(pythonPath)
         return;
     end
 
-    % Check environment variable first
-    envPath = getenv('MICROPAD_PYTHON');
-    if ~isempty(envPath)
-        pythonPath = envPath;
-    end
+    try
+        % Check environment variable first
+        envPath = getenv('MICROPAD_PYTHON');
+        if ~isempty(envPath)
+            pythonPath = envPath;
+        end
 
-    if ~isfile(pythonPath)
-        error('concentration:python_missing', ...
-            ['Python executable not found at: %s\n', ...
-             'Resolution options:\n', ...
-             '1. Install miniconda and create microPAD-python-env environment\n', ...
-             '2. Set MICROPAD_PYTHON environment variable to your Python executable\n', ...
-             '3. Pass pythonPath parameter: cut_concentration_rectangles(''pythonPath'', ''path/to/python'')'], ...
-            pythonPath);
-    end
+        % Validate Python path is provided
+        if isempty(pythonPath) || strlength(string(pythonPath)) == 0
+            error('concentration:python_not_configured', ...
+                ['Python executable not configured.\n', ...
+                 'Resolution options:\n', ...
+                 '1. Set MICROPAD_PYTHON environment variable to your Python executable\n', ...
+                 '2. Pass pythonPath parameter: cut_concentration_rectangles(''pythonPath'', ''path/to/python'')']);
+        end
+
+        if ~isfile(pythonPath)
+            error('concentration:python_missing', ...
+                'Python executable not found at: %s', pythonPath);
+        end
 
     currentPython = pyenv;
     if strcmp(currentPython.Version, '')
@@ -1161,15 +1185,19 @@ function ensurePythonSetup(pythonPath)
             'Ultralytics package not found in Python environment.\nRun: pip install ultralytics');
     end
 
-    try
-        py.importlib.import_module('cv2');
-    catch
-        error('concentration:opencv_missing', ...
-            'OpenCV package not found in Python environment.\nRun: pip install opencv-python');
-    end
+        try
+            py.importlib.import_module('cv2');
+        catch
+            error('concentration:opencv_missing', ...
+                'OpenCV package not found in Python environment.\nRun: pip install opencv-python');
+        end
 
-    fprintf('[OK] Setup complete - ready for auto-detection\n\n');
-    setupComplete = true;
+        fprintf('[OK] Setup complete - ready for auto-detection\n\n');
+        setupComplete = true;
+    catch ME
+        setupComplete = [];  % Clear on error
+        rethrow(ME);
+    end
 end
 
 function validateModelFile(modelPath)
@@ -1221,17 +1249,13 @@ function [model, modelPath] = modelCache(newModel, newPath)
     end
 end
 
-function [quads, confidences] = detectQuadsYOLO(img, confThreshold)
-    INFERENCE_SIZE = int32(640);
-
-    [imgH, imgW, ~] = size(img);
-
+function [quads, confidences] = detectQuadsYOLO(img, confThreshold, inferenceSize)
     pyImg = py.numpy.array(img);
 
     model = getYOLOModel();
 
     results = model.predict(pyImg, ...
-        pyargs('imgsz', INFERENCE_SIZE, ...
+        pyargs('imgsz', int32(inferenceSize), ...
                'conf', confThreshold, ...
                'verbose', false));
 
@@ -1248,18 +1272,11 @@ function [quads, confidences] = detectQuadsYOLO(img, confThreshold)
     quads = zeros(double(numDetections), 4, 2);
     confidences = zeros(double(numDetections), 1);
 
+    % Use YOLO's pre-scaled contours (already in original image coordinates)
     for i = 1:double(numDetections)
         pyIdx = int32(i - 1);
 
-        maskTensor = py.operator.getitem(result.masks.data, pyIdx);
-        maskCPU = maskTensor.cpu();
-        if isa(maskCPU, 'py.numpy.ndarray')
-            maskNumpy = maskCPU;
-        else
-            maskNumpy = maskCPU.numpy();
-        end
-        maskLogical = logical(maskNumpy);
-
+        % Get confidence
         confTensor = py.operator.getitem(result.boxes.conf, pyIdx);
         confCPU = confTensor.cpu();
         if isa(confCPU, 'py.numpy.ndarray') || isa(confCPU, 'py.float') || isa(confCPU, 'py.int')
@@ -1268,20 +1285,28 @@ function [quads, confidences] = detectQuadsYOLO(img, confThreshold)
             conf = double(confCPU.item());
         end
 
-        [quad, maskQuality] = convertMaskToQuad(maskLogical);
+        % Get pre-scaled contour from YOLO (masks.xy provides coordinates in original image space)
+        contourPy = py.operator.getitem(result.masks.xy, pyIdx);
+        if isa(contourPy, 'py.numpy.ndarray')
+            contourNumpy = contourPy;
+        else
+            contourNumpy = contourPy.numpy();
+        end
+        contour = double(contourNumpy);
 
-        if isempty(quad)
+        % Fit quadrilateral from contour points
+        quad = fitQuadFromContourPoints(contour);
+
+        % Validate quad has exactly 4 vertices
+        if isempty(quad) || size(quad, 1) ~= 4
             continue;
         end
 
-        scaleX = double(imgW) / double(maskNumpy.shape{2});
-        scaleY = double(imgH) / double(maskNumpy.shape{1});
-
-        quad(:, 1) = quad(:, 1) * scaleX;
-        quad(:, 2) = quad(:, 2) * scaleY;
+        % Convert from 0-indexed to 1-indexed MATLAB coordinates
+        quad = quad + 1;
 
         quads(i, :, :) = quad;
-        confidences(i) = conf * maskQuality;
+        confidences(i) = conf;
     end
 
     validMask = confidences > 0;
@@ -1289,78 +1314,176 @@ function [quads, confidences] = detectQuadsYOLO(img, confThreshold)
     confidences = confidences(validMask);
 end
 
-function [quad, maskQuality] = convertMaskToQuad(mask)
-    cv2 = py.importlib.import_module('cv2');
+function quad = fitQuadFromContourPoints(contour)
+    % Fit quadrilateral from YOLO contour points (already in original image coordinates)
+    % Input: contour is N×2 array of (x,y) points
+    % Output: quad is 4×2 array of corner points in clockwise order from top-left
 
-    maskUint8 = py.numpy.array(uint8(mask) * uint8(255));
-
-    contours = cv2.findContours(maskUint8, ...
-        int32(cv2.RETR_EXTERNAL), ...
-        int32(cv2.CHAIN_APPROX_SIMPLE));
-
-    if isa(contours, 'py.tuple') && length(contours) >= 2
-        contours = contours{1};
-    end
-
-    if isempty(contours)
+    if size(contour, 1) < 4
         quad = [];
-        maskQuality = 0;
         return;
     end
 
-    areas = zeros(1, length(contours));
-    for i = 1:length(contours)
-        areas(i) = double(cv2.contourArea(contours{i}));
+    % Use Douglas-Peucker simplification to get 4 corners
+    % Start with aggressive epsilon
+    perimeter = 0;
+    for i = 1:size(contour, 1)-1
+        perimeter = perimeter + norm(contour(i+1,:) - contour(i,:));
     end
 
-    [~, maxIdx] = max(areas);
-    largestContour = contours{maxIdx};
+    % Try different epsilon values to get exactly 4 points
+    epsilonFactors = [0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1];
 
-    quad = fitMinAreaRect(largestContour);
+    for k = 1:length(epsilonFactors)
+        epsilon = epsilonFactors(k) * perimeter;
+        approx = douglasPeucker(contour, epsilon);
 
-    maskArea = double(sum(mask(:)));
-    maskQuality = computeQuadConfidence(quad, mask, maskArea);
+        if size(approx, 1) == 4
+            quad = orderQuadVertices(approx);
+            return;
+        elseif size(approx, 1) >= 4 && size(approx, 1) <= 6
+            % Close enough, select best 4 corners
+            quad = selectBest4Corners(approx);
+            if ~isempty(quad)
+                quad = orderQuadVertices(quad);
+                return;
+            end
+        end
+    end
+
+    % Fallback: select 4 extreme points
+    quad = selectBest4Corners(contour);
+    if ~isempty(quad)
+        quad = orderQuadVertices(quad);
+    end
 end
 
-function quad = fitMinAreaRect(contour)
-    cv2 = py.importlib.import_module('cv2');
+function simplified = douglasPeucker(points, epsilon)
+    % Simple Douglas-Peucker algorithm for polygon simplification
+    if size(points, 1) < 3
+        simplified = points;
+        return;
+    end
 
-    rotatedRect = cv2.minAreaRect(contour);
-    boxPoints = cv2.boxPoints(rotatedRect);
+    % Find point with maximum distance from line between first and last
+    dmax = 0;
+    index = 0;
+    endIdx = size(points, 1);
 
-    quad = double(boxPoints);
+    for i = 2:(endIdx-1)
+        d = pointLineDistance(points(i,:), points(1,:), points(endIdx,:));
+        if d > dmax
+            index = i;
+            dmax = d;
+        end
+    end
 
-    quad = orderQuadVertices(quad);
+    % If max distance is greater than epsilon, recursively simplify
+    if dmax > epsilon
+        % Recursive call
+        rec1 = douglasPeucker(points(1:index,:), epsilon);
+        rec2 = douglasPeucker(points(index:endIdx,:), epsilon);
+
+        % Build result
+        simplified = [rec1(1:end-1,:); rec2];
+    else
+        simplified = [points(1,:); points(endIdx,:)];
+    end
+end
+
+function dist = pointLineDistance(point, lineStart, lineEnd)
+    % Calculate perpendicular distance from point to line segment
+    if isequal(lineStart, lineEnd)
+        dist = norm(point - lineStart);
+        return;
+    end
+
+    num = abs((lineEnd(1)-lineStart(1))*(lineStart(2)-point(2)) - ...
+              (lineStart(1)-point(1))*(lineEnd(2)-lineStart(2)));
+    den = norm(lineEnd - lineStart);
+    dist = num / den;
+end
+
+function quad = selectBest4Corners(vertices)
+    % Select 4 best corner points from N vertices (N > 4)
+    % Strategy: find extreme points in 4 directions from centroid
+
+    if size(vertices, 1) < 4
+        quad = [];
+        return;
+    end
+
+    if size(vertices, 1) == 4
+        quad = vertices;
+        return;
+    end
+
+    % Compute centroid
+    centroid = mean(vertices, 1);
+
+    % Compute angles from centroid
+    angles = atan2(vertices(:, 2) - centroid(2), vertices(:, 1) - centroid(1));
+
+    % Divide into 4 quadrants and pick furthest point in each
+    quadrants = {[], [], [], []};
+
+    for i = 1:size(vertices, 1)
+        angle = angles(i);
+
+        % Assign to quadrant (4 ranges covering -pi to pi)
+        if angle >= -pi && angle < -pi/2
+            quadIdx = 1;  % Bottom-left
+        elseif angle >= -pi/2 && angle < 0
+            quadIdx = 2;  % Bottom-right
+        elseif angle >= 0 && angle < pi/2
+            quadIdx = 3;  % Top-right
+        else
+            quadIdx = 4;  % Top-left
+        end
+
+        % Compute distance from centroid
+        dist = norm(vertices(i, :) - centroid);
+
+        % Store [vertex_index, distance]
+        quadrants{quadIdx} = [quadrants{quadIdx}; i, dist];
+    end
+
+    % Select furthest point from each quadrant
+    quad = zeros(4, 2);
+    quadCount = 0;
+
+    for q = 1:4
+        if ~isempty(quadrants{q})
+            [~, maxIdx] = max(quadrants{q}(:, 2));
+            vertexIdx = quadrants{q}(maxIdx, 1);
+            quadCount = quadCount + 1;
+            quad(quadCount, :) = vertices(vertexIdx, :);
+        end
+    end
+
+    % If we didn't get 4 points, return empty
+    if quadCount < 4
+        quad = [];
+    else
+        quad = quad(1:4, :);
+    end
 end
 
 function quadOrdered = orderQuadVertices(quad)
+    % Order vertices clockwise from top-left: TL, TR, BR, BL
+    % Matches training label format from augment_dataset.m
+
     centroid = mean(quad, 1);
 
+    % Sort by angle from centroid (counterclockwise from right horizontal)
     angles = atan2(quad(:, 2) - centroid(2), quad(:, 1) - centroid(1));
-
     [~, order] = sort(angles);
     quadOrdered = quad(order, :);
-end
 
-function conf = computeQuadConfidence(quad, mask, maskArea)
-    [maskH, maskW] = size(mask);
-
-    polyMask = poly2mask(quad(:, 1) + 1, quad(:, 2) + 1, maskH, maskW);
-
-    intersection = sum(polyMask(:) & mask(:));
-    union = sum(polyMask(:) | mask(:));
-
-    if union == 0
-        conf = 0;
-        return;
-    end
-
-    iou = double(intersection) / double(union);
-
-    quadArea = polyarea(quad(:, 1), quad(:, 2));
-    areaRatio = min(quadArea / maskArea, maskArea / quadArea);
-
-    conf = iou * areaRatio;
+    % Rotate array so top-left corner is first
+    % Top-left has minimum distance from origin (0,0)
+    [~, topLeftIdx] = min(sum(quadOrdered.^2, 2));
+    quadOrdered = circshift(quadOrdered, -topLeftIdx + 1, 1);
 end
 
 %% -------------------------------------------------------------------------
