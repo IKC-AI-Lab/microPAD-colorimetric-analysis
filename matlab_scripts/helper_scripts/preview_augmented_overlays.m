@@ -7,6 +7,14 @@ function preview_augmented_overlays(varargin)
 %   This viewer aggregates all polygons and ellipses per base scene image,
 %   matching the workflow of preview_overlays.m but for augmented data.
 %
+%   COORDINATE FORMATS:
+%   - Stage 2 (augmented_2_micropads): 10 columns without rotation
+%     Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4
+%     Note: Differs from regular pipeline coordinates.txt which includes
+%           rotation as 11th column. Augmented data omits rotation.
+%   - Stage 3 (augmented_3_elliptical_regions): 8 columns
+%     Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
+%
 %   Example usage:
 %       addpath('matlab_scripts/helper_scripts');
 %       preview_augmented_overlays('maxSamples', 12);
@@ -21,6 +29,10 @@ MISSING_IMAGE_WIDTH = 640;
 ELLIPSE_RENDER_POINTS = 72;
 OVERLAY_COLOR_RGB = [0.48, 0.99, 0.00];  % Fluorescent green
 SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
+
+% Coordinate column name constants
+STAGE2_COORD_COLUMNS = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4'};
+STAGE3_COORD_COLUMNS = {'image','concentration','replicate','x','y','semiMajorAxis','semiMinorAxis','rotationAngle'};
 
 parser = inputParser;
 parser.FunctionName = mfilename;
@@ -65,7 +77,7 @@ fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 2: %s\n  St
 
 % Build preview plan aggregating all overlays per base scene
 plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, ...
-    opts.maxSamples, SUPPORTED_IMAGE_EXTENSIONS);
+    opts.maxSamples, SUPPORTED_IMAGE_EXTENSIONS, STAGE2_COORD_COLUMNS, STAGE3_COORD_COLUMNS);
 
 if isempty(plan)
     error('preview_augmented_overlays:noPlan', ...
@@ -166,6 +178,13 @@ draw_current();
 
     function on_close(fig)
         if ishghandle(fig)
+            % Clean up plan data structure from guidata
+            st = guidata(fig);
+            if isfield(st, 'plan')
+                st.plan = [];
+            end
+            guidata(fig, st);
+
             delete(fig);
         end
     end
@@ -173,7 +192,7 @@ end
 
 %% Helper functions
 
-function plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, maxSamples, supportedExts)
+function plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, maxSamples, supportedExts, stage2Cols, stage3Cols)
 % Build preview plan aggregating all polygons and ellipses per base scene
 
 plan = struct('phoneName', {}, 'imageName', {}, 'imagePath', {}, ...
@@ -198,7 +217,7 @@ for pIdx = 1:numel(phoneDirs)
         continue;
     end
 
-    s2Table = read_polygon_table(s2CoordPath);
+    s2Table = read_polygon_table(s2CoordPath, stage2Cols);
     if isempty(s2Table)
         continue;
     end
@@ -206,7 +225,7 @@ for pIdx = 1:numel(phoneDirs)
     % Read stage-3 ellipse coordinates
     s3CoordPath = fullfile(stage3Root, phoneStr, 'coordinates.txt');
     if isfile(s3CoordPath)
-        s3Table = read_ellipse_table(s3CoordPath);
+        s3Table = read_ellipse_table(s3CoordPath, stage3Cols);
     else
         s3Table = table();
     end
@@ -221,9 +240,11 @@ for pIdx = 1:numel(phoneDirs)
         concentration = s2Table.concentration(rowIdx);
         imageChar = char(imageName);
 
-        % Extract base scene name (strip _con_X suffix AND handle extension mismatch)
-        % Stage-2: IMG_0957_aug_001_con_0.jpeg
-        % Stage-1: IMG_0957_aug_001.jpg
+        % Extract base scene name (strip _con_X suffix)
+        % Stage-2 crops have _con_X suffix: IMG_0957_aug_001_con_0.jpeg
+        % Stage-1 originals have no suffix: IMG_0957_aug_001.jpg
+        % Note: augment_dataset.m may write different extensions for stage 1 vs 2
+        % (e.g., .jpg -> .jpeg), so we must search for stage-1 file by basename only
         [~, baseName, ~] = fileparts(imageChar);  % Remove extension first
         conIdx = strfind(baseName, '_con_');
         if ~isempty(conIdx)
@@ -388,7 +409,7 @@ end
 
 startDir = pwd;
 searchDir = startDir;
-for depth = 1:6
+for depth = 1:5
     candidate = fullfile(searchDir, targetFolder);
     if isfolder(candidate)
         rootPath = candidate;
@@ -412,7 +433,7 @@ isPhone = [entries.isdir] & ~ismember({entries.name}, {'.', '..'});
 names = string({entries(isPhone).name});
 end
 
-function tbl = read_polygon_table(coordPath)
+function tbl = read_polygon_table(coordPath, expectedColumns)
 % Read concentration polygon coordinate table (robust to missing header)
 if ~isfile(coordPath)
     tbl = table();
@@ -425,13 +446,17 @@ if fid == -1
     tbl = table();
     return;
 end
-firstLine = '';
+
+% Initialize firstLine to default header in case file is empty
+firstLine = strjoin(expectedColumns, ' ');
 while true
-    firstLine = fgetl(fid);
-    if ~ischar(firstLine)
+    line = fgetl(fid);
+    if ~ischar(line)
+        % EOF reached - firstLine retains default header
         break;
     end
-    if ~isempty(strtrim(firstLine))
+    if ~isempty(strtrim(line))
+        firstLine = line;
         break;
     end
 end
@@ -445,14 +470,12 @@ tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
 
 % Assign standard variable names when header is missing
 if ~hasHeader
-    expected = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4'};
-    % Some MATLAB versions auto-create Var1..VarN; cap at existing width
-    n = min(numel(expected), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expected(1:n);
+    n = min(numel(expectedColumns), width(tbl));
+    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
 end
 end
 
-function tbl = read_ellipse_table(coordPath)
+function tbl = read_ellipse_table(coordPath, expectedColumns)
 % Read ellipse metadata table (robust to missing header)
 if ~isfile(coordPath)
     tbl = table();
@@ -464,13 +487,17 @@ if fid == -1
     tbl = table();
     return;
 end
-firstLine = '';
+
+% Initialize firstLine to default header in case file is empty
+firstLine = strjoin(expectedColumns, ' ');
 while true
-    firstLine = fgetl(fid);
-    if ~ischar(firstLine)
+    line = fgetl(fid);
+    if ~ischar(line)
+        % EOF reached - firstLine retains default header
         break;
     end
-    if ~isempty(strtrim(firstLine))
+    if ~isempty(strtrim(line))
+        firstLine = line;
         break;
     end
 end
@@ -483,9 +510,8 @@ tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
     'TextType', 'string', 'ReadVariableNames', hasHeader);
 
 if ~hasHeader
-    expected = {'image','concentration','replicate','x','y','semiMajorAxis','semiMinorAxis','rotationAngle'};
-    n = min(numel(expected), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expected(1:n);
+    n = min(numel(expectedColumns), width(tbl));
+    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
 end
 end
 

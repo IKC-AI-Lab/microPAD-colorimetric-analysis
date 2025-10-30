@@ -45,12 +45,13 @@ Notes: Run from repo root or `matlab_scripts/`. Octave is not supported due to G
 
 ## Agent Execution Guidelines
 - **Ask questions if stuck**: Do not add fallback algorithms instead; clarify requirements first
+- **Never create new MATLAB scripts**: Only create new scripts when explicitly requested by the user
 - No workarounds or fallbacks: implement direct solutions aligned with project constraints; do not add compatibility shims, alternative code paths, or temporary hacks
 - Avoid overengineering and verbosity: keep changes minimal, focused, and idiomatic; do not add redundant layers, unused abstractions, or repetitive code
 - Best practices first: follow all Coding Style & Naming Conventions above (snake_case, one public function per file, 4-space indent, name-value pairs, and validate with `inputParser`/`arguments`)
 - Preserve stage independence and paths: read from `N_*`, write to `(N+1)_*`, and never hardcode absolute paths or alter the folder structure
 - Do not add speculative features: no Octave fallbacks, GUI substitutes, optional modes, or extra outputs beyond the defined pipeline stages
-- Minimize dependencies: do not introduce new toolboxes or third-party code unless explicitly requested; prefer MATLAB built-ins and existing `helper_scripts/`
+- Minimize dependencies: do not introduce new toolboxes or third-party code unless explicitly requested; prefer MATLAB built-ins
 - Fail fast over silent hacks: when inputs, data, or preconditions are missing, stop and request guidance instead of implementing workaround logic
 - Keep interfaces stable: maintain filenames, data formats, and atomic writes (e.g., `coordinates.txt`) without unrequested changes
 - Tests are minimal and targeted: if adding tests, place them under `matlab_scripts/tests/` using `matlab.unittest`; avoid placeholder or boilerplate tests

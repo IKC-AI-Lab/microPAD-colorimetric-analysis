@@ -4,18 +4,18 @@ function extract_images_from_coordinates(varargin)
     %% Creation: 2025-08
     %
     % Reconstructs pipeline stage outputs from coordinate files and original
-    % images. Processes rectangular crops, polygon regions, and elliptical patches
-    % based on saved coordinate data.
+    % images. Processes polygon regions and elliptical patches based on saved
+    % coordinate data.
     %
     % Stages handled (in-order, with dependency checks):
-% - Step 1: 1_dataset -> 2_micropads
-%   - Reads polygon coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4 [rotation]
+    % - Step 1: 1_dataset -> 2_micropads
+    %   - Reads polygon coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
     %   - Crops polygon regions from originals into concentration subfolders (con_0 ...).
-    %   - Rotation column (10th field) is optional for backward compatibility.
+    %   - Rotation column (10th field) is required in new pipeline format.
     %
-% - Step 2: 2_micropads -> 3_elliptical_regions
+    % - Step 2: 2_micropads -> 3_elliptical_regions
     %   - Reads elliptical coordinates: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-    %   - Extracts elliptical patches relative to the concentration polygons.
+    %   - Extracts elliptical patches from the concentration polygon images.
     %
     % Parameters (name-value):
     % - inputFolder    : folder for originals (default '1_dataset')
@@ -46,8 +46,8 @@ function extract_images_from_coordinates(varargin)
     % Notes
     % - This script does not write coordinates.txt. It reads them to reconstruct images.
     % - For Step 1 (polygon extraction), coordinates format:
-    %     'image concentration x1 y1 x2 y2 x3 y3 x4 y4 [rotation]'
-    %   Rotation column (10th field) is optional for backward compatibility.
+    %     'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation'
+    %   Rotation column (10th field) is required in the new 4-stage pipeline.
     % - If a required prior stage has neither coordinates nor images, the process errors for that folder.
     %
     % Usage examples (from repo root):
@@ -79,8 +79,7 @@ function extract_images_from_coordinates(varargin)
     validate_folder_exists(cfg.paths.input, 'extract:missing_input', 'Original images folder not found: %s', cfg.paths.input);
 
     % Ensure base output folders exist (we create only when needed)
-    ensure_folder(cfg.paths.rect);
-    ensure_folder(cfg.paths.poly);
+    ensure_folder(cfg.paths.polygon);
     ensure_folder(cfg.paths.patch);
 
     phones = list_immediate_subdirs(cfg.paths.input);
@@ -94,41 +93,14 @@ function extract_images_from_coordinates(varargin)
         fprintf('\n=== Processing %s ===\n', phoneName);
 
         originalsDir = fullfile(cfg.paths.input, phoneName);
-        rectPhoneDir = fullfile(cfg.paths.rect, phoneName);
-        polyBaseDir = fullfile(cfg.paths.poly, phoneName);
+        polyBaseDir = fullfile(cfg.paths.polygon, phoneName);
         patchBaseDir = fullfile(cfg.paths.patch, phoneName);
 
-        rectCoordPath = fullfile(rectPhoneDir, cfg.coordinateFileName);
-
-        needRectForLater = phone_needs_rect_stage(cfg, phoneName);
-        haveRectImages = folder_has_any_images(rectPhoneDir);
-        haveRectCoords = isfile(rectCoordPath);
-
-        if haveRectCoords
-            fprintf('Step 1: Reconstruct rectangular crops from %s\n', relpath(rectCoordPath, cfg.projectRoot));
-            ensure_folder(rectPhoneDir);
-            extract_rectangular_crops(rectCoordPath, originalsDir, rectPhoneDir, cfg);
-        else
-            if haveRectImages
-                fprintf('Step 1: No coordinates; rectangular images already present. Skipping.\n');
-            else
-                if needRectForLater
-                    error('extract:missing_rect_stage', ['Missing rectangular crops for %s and no coordinates found. ' ...
-                           'Cannot proceed to polygon/elliptical reconstruction.'], phoneName);
-                else
-                    fprintf('Step 1: No coordinates and not needed by later steps. Skipping.\n');
-                end
-            end
-        end
-
-        % Step 2: Polygon crops from coordinates (OPTIMIZED: combined check)
+        % Step 1: Polygon crops from coordinates (OPTIMIZED: combined check)
         [conDirs, hasAnyPolyCoords] = find_concentration_dirs_with_coords(polyBaseDir, cfg.concFolderPrefix, cfg.coordinateFileName);
 
         if hasAnyPolyCoords
-            fprintf('Step 2: Reconstruct polygon crops from concentration folders\n');
-            if ~folder_has_any_images(rectPhoneDir)
-                error('extract:rect_required_for_polygon', 'Rectangular images missing for %s.', phoneName);
-            end
+            fprintf('Step 1: Reconstruct polygon crops from concentration folders\n');
             for cd = 1:numel(conDirs)
                 if ~conDirs{cd}.hasCoords
                     continue;
@@ -136,27 +108,24 @@ function extract_images_from_coordinates(varargin)
                 coordPath = fullfile(conDirs{cd}.path, cfg.coordinateFileName);
                 ensure_folder(conDirs{cd}.path);
                 fprintf('  - Using %s\n', relpath(coordPath, cfg.projectRoot));
-                extract_polygon_crops_single(coordPath, rectPhoneDir, conDirs{cd}.path, cfg);
+                extract_polygon_crops_single(coordPath, originalsDir, conDirs{cd}.path, cfg);
             end
         else
             phonePolyCoord = fullfile(polyBaseDir, cfg.coordinateFileName);
             if isfile(phonePolyCoord)
-                fprintf('Step 2: Reconstruct polygon crops from phone-level coordinates\n');
-                if ~folder_has_any_images(rectPhoneDir)
-                    error('extract:rect_required_for_polygon', 'Rectangular images missing for %s.', phoneName);
-                end
+                fprintf('Step 1: Reconstruct polygon crops from phone-level coordinates\n');
                 ensure_folder(polyBaseDir);
-                extract_polygon_crops_all(phonePolyCoord, rectPhoneDir, polyBaseDir, cfg);
+                extract_polygon_crops_all(phonePolyCoord, originalsDir, polyBaseDir, cfg);
             else
-                fprintf('Step 2: No polygon coordinates found. Skipping.\n');
+                fprintf('Step 1: No polygon coordinates found. Skipping.\n');
             end
         end
 
-        % Step 3: Elliptical patches from coordinates (OPTIMIZED: combined check)
+        % Step 2: Elliptical patches from coordinates (OPTIMIZED: combined check)
         [patchConDirs, hasAnyEllipseCoords] = find_concentration_dirs_with_coords(patchBaseDir, cfg.concFolderPrefix, cfg.coordinateFileName);
 
         if hasAnyEllipseCoords
-            fprintf('Step 3: Reconstruct elliptical patches from concentration folders\n');
+            fprintf('Step 2: Reconstruct elliptical patches from concentration folders\n');
             polyConDirs = find_concentration_dirs(polyBaseDir, cfg.concFolderPrefix);
             if isempty(polyConDirs)
                 error('extract:polygon_required_for_ellipses', 'Polygon crops missing for %s.', phoneName);
@@ -178,15 +147,15 @@ function extract_images_from_coordinates(varargin)
         else
             phoneEllipseCoord = fullfile(patchBaseDir, cfg.coordinateFileName);
             if isfile(phoneEllipseCoord)
-                fprintf('Step 3: Reconstruct elliptical patches from phone-level coordinates\n');
+                fprintf('Step 2: Reconstruct elliptical patches from phone-level coordinates\n');
                 if ~folder_has_any_images(polyBaseDir, true)
                     error('extract:polygon_required_for_ellipses', ['Polygon crops missing for %s. Expected con_* folders ' ...
-                           'with polygon images generated by cut_concentration_rectangles.'], phoneName);
+                           'with polygon images generated by cut_micropads.'], phoneName);
                 end
                 ensure_folder(patchBaseDir);
                 extract_elliptical_patches(phoneEllipseCoord, polyBaseDir, patchBaseDir, cfg);
             else
-                fprintf('Step 3: No elliptical coordinates found. Skipping.\n');
+                fprintf('Step 2: No elliptical coordinates found. Skipping.\n');
             end
         end
     end
@@ -215,7 +184,7 @@ function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, pres
     % Create configuration structure
     cfg = struct();
     cfg.projectRoot = repoRoot;
-    cfg.paths = struct('input', inputRoot, 'poly', polyRoot, 'patch', patchRoot);
+    cfg.paths = struct('input', inputRoot, 'polygon', polyRoot, 'patch', patchRoot);
     cfg.output = struct('preserveFormat', preserveFormat, ...
                         'jpegQuality', jpegQuality, ...
                         'supportedFormats', {{'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}});
@@ -243,157 +212,9 @@ function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, pres
 end
 
 % ----------------------
-% Step 1: Rectangular crops
+% Step 1: Polygon crops (directly from originals)
 % ----------------------
-function extract_rectangular_crops(coordPath, originalsDir, rectGroupDir, cfg)
-    entries = read_rectangular_coordinates(coordPath);
-    if isempty(entries)
-        warning('extract:rect_empty', 'No valid rectangular entries parsed from %s. Check file format.', coordPath);
-        return;
-    end
-    for i = 1:numel(entries)
-        entry = entries(i);
-        srcPath = find_image_file_cached(originalsDir, entry.imageBase, cfg);
-        if isempty(srcPath)
-            warning('extract:missing_original', 'Original image not found for %s in %s', entry.imageBase, originalsDir);
-            continue;
-        end
-        img = imread_raw(srcPath);
-        rotation = entry.rotation;
-        if isempty(rotation) || ~isfinite(rotation)
-            rotation = 0;
-        end
-        if rotation ~= 0
-            img = imrotate(img, rotation, 'bilinear', 'loose');
-        end
-        if ~isempty(entry.polygon)
-            % Rectangle specified as polygon corners
-            cropped = crop_with_polygon(img, entry.polygon);
-        else
-            rect = [entry.x, entry.y, entry.w, entry.h];
-            cropped = crop_with_rect(img, rect);
-        end
-        [~, ~, extOrig] = fileparts(srcPath);
-        outExt = determine_output_extension(lower(extOrig), cfg.output.supportedFormats, cfg.output.preserveFormat);
-        outPath = fullfile(rectGroupDir, [entry.imageBase outExt]);
-        ensure_folder(rectGroupDir);
-        save_image_with_format(cropped, outPath, outExt, cfg);
-    end
-end
-
-function entries = read_rectangular_coordinates(coordPath)
-    % OPTIMIZED: Auto-detect rectangular coordinates file format with vectorized parsing.
-    % Returns struct array with fields: imageBase, x,y,w,h, rotation (optional), polygon (Nx2 or [])
-    entries = struct('imageBase','', 'x',[], 'y',[], 'w',[], 'h',[], 'rotation',[], 'polygon',[]);
-    entries = entries([]);
-    if ~isfile(coordPath), return; end
-    fid = fopen(coordPath, 'rt');
-    if fid == -1, return; end
-    cleaner = onCleanup(@() fclose(fid));
-
-    % Read entire file at once using textscan for better performance
-    allText = textscan(fid, '%s', 'Delimiter', '\n', 'WhiteSpace', '');
-    lines = allText{1};
-
-    if isempty(lines), return; end
-
-    % Detect coordinate format from first line
-    [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(lines{1});
-
-    % Skip header if detected
-    startIdx = 1;
-    if hasHeader
-        startIdx = 2;
-    end
-
-    if startIdx > numel(lines)
-        return;
-    end
-
-    nLines = numel(lines) - startIdx + 1;
-    % Pre-allocate struct array for maximum possible entries
-    tmp(nLines) = struct('imageBase','', 'x',[], 'y',[], 'w',[], 'h',[], 'rotation',[], 'polygon',[]);
-    k = 0;
-
-    % OPTIMIZATION: For rect format, parse from lines array (already in memory)
-    if isRectWH
-        % Attempt vectorized parsing for rectangular format from lines array
-        for i = startIdx:numel(lines)
-            ln = strtrim(lines{i});
-            if isempty(ln), continue; end
-            parts = strsplit(ln);
-            if numel(parts) < 5, continue; end  % Need at least: image x y w h
-            nums = str2double(parts(2:end));
-            if numel(nums) < 4 || any(isnan(nums(1:4))), continue; end
-            k = k + 1;
-            tmp(k).imageBase = strip_ext(parts{1});
-            tmp(k).x = round(nums(1));
-            tmp(k).y = round(nums(2));
-            tmp(k).w = round(nums(3));
-            tmp(k).h = round(nums(4));
-            if numel(nums) >= 5 && ~isnan(nums(5))
-                tmp(k).rotation = nums(5);
-            else
-                tmp(k).rotation = 0;
-            end
-        end
-        if k > 0
-            entries = tmp(1:k);
-            return;
-        end
-    end
-
-    % Fallback: line-by-line parsing for polygon format or parse failures
-    for i = startIdx:numel(lines)
-        ln = strtrim(lines{i});
-        if isempty(ln), continue; end
-        parts = strsplit(ln);
-        if numel(parts) < 2, continue; end
-        e = struct('imageBase','', 'x',[], 'y',[], 'w',[], 'h',[], 'rotation',[], 'polygon',[]);
-        e.imageBase = strip_ext(parts{1});
-        nums = str2double(parts(2:end));
-        if isRectWH
-            % Accept: image x y width height [rotation]
-            if numel(nums) >= 4
-                e.x = round(nums(1)); e.y = round(nums(2)); e.w = round(nums(3)); e.h = round(nums(4));
-            end
-            if numel(nums) >= 5 && ~isnan(nums(5))
-                e.rotation = nums(5);
-            else
-                e.rotation = 0;
-            end
-        elseif isPoly4
-            % Accept: image x1 y1 x2 y2 x3 y3 x4 y4
-            if numel(nums) >= 8
-                P = [nums(1) nums(2); nums(3) nums(4); nums(5) nums(6); nums(7) nums(8)];
-                e.polygon = round(P);
-                % Also compute axis-aligned bbox as fallback
-                minx = min(e.polygon(:,1)); maxx = max(e.polygon(:,1));
-                miny = min(e.polygon(:,2)); maxy = max(e.polygon(:,2));
-                e.x = minx; e.y = miny; e.w = maxx - minx; e.h = maxy - miny;
-                e.rotation = 0;
-            end
-        else
-            % No header detected; assume x y width height format
-            if numel(nums) >= 4
-                e.x = round(nums(1)); e.y = round(nums(2)); e.w = round(nums(3)); e.h = round(nums(4));
-            end
-            if numel(nums) >= 5 && ~isnan(nums(5)), e.rotation = nums(5); else, e.rotation = 0; end
-        end
-        k = k + 1;
-        tmp(k) = e;
-    end
-    if k == 0
-        entries = entries([]);
-    else
-        entries = tmp(1:k);
-    end
-end
-
-% ----------------------
-% Step 2: Polygon crops
-% ----------------------
-function extract_polygon_crops_single(coordPath, rectGroupDir, concDir, cfg)
+function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
     rows = read_polygon_coordinates(coordPath);
     if isempty(rows)
         warning('extract:poly_empty', 'No valid polygon entries parsed from %s. Check file format.', coordPath);
@@ -402,12 +223,29 @@ function extract_polygon_crops_single(coordPath, rectGroupDir, concDir, cfg)
     ensure_folder(concDir);
     for i = 1:numel(rows)
         row = rows(i);
-        srcPath = find_image_file_cached(rectGroupDir, row.imageBase, cfg);
+
+        % Validate parsed row structure
+        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'polygon')
+            warning('extract:invalid_row_struct', 'Skipping malformed coordinate entry %d', i);
+            continue;
+        end
+
+        srcPath = find_image_file_cached(originalsDir, row.imageBase, cfg);
         if isempty(srcPath)
-            warning('extract:missing_rect', 'Rectangular image not found for %s in %s', row.imageBase, rectGroupDir);
+            warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
         img = imread_raw(srcPath);
+
+        % Apply rotation if present
+        rotation = 0;
+        if isfield(row, 'rotation') && ~isempty(row.rotation) && isfinite(row.rotation)
+            rotation = row.rotation;
+        end
+        if rotation ~= 0
+            img = imrotate(img, rotation, 'bilinear', 'loose');
+        end
+
         cropped = crop_with_polygon(img, row.polygon);
         [~, ~, extOrig] = fileparts(srcPath);
         outExt = determine_output_extension(lower(extOrig), cfg.output.supportedFormats, cfg.output.preserveFormat);
@@ -416,7 +254,7 @@ function extract_polygon_crops_single(coordPath, rectGroupDir, concDir, cfg)
     end
 end
 
-function extract_polygon_crops_all(coordPath, rectGroupDir, polyGroupDir, cfg)
+function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
     rows = read_polygon_coordinates(coordPath);
     if isempty(rows)
         warning('extract:poly_empty', 'No valid polygon entries parsed from %s. Check file format.', coordPath);
@@ -425,16 +263,33 @@ function extract_polygon_crops_all(coordPath, rectGroupDir, polyGroupDir, cfg)
     ensure_folder(polyGroupDir);
     for i = 1:numel(rows)
         row = rows(i);
-        srcPath = find_image_file_cached(rectGroupDir, row.imageBase, cfg);
+
+        % Validate parsed row structure
+        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'polygon')
+            warning('extract:invalid_row_struct', 'Skipping malformed coordinate entry %d', i);
+            continue;
+        end
+
+        srcPath = find_image_file_cached(originalsDir, row.imageBase, cfg);
         if isempty(srcPath)
-            warning('extract:missing_rect', 'Rectangular image not found for %s in %s', row.imageBase, rectGroupDir);
+            warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
         img = imread_raw(srcPath);
+
+        % Apply rotation if present
+        rotation = 0;
+        if isfield(row, 'rotation') && ~isempty(row.rotation) && isfinite(row.rotation)
+            rotation = row.rotation;
+        end
+        if rotation ~= 0
+            img = imrotate(img, rotation, 'bilinear', 'loose');
+        end
+
         cropped = crop_with_polygon(img, row.polygon);
         [~, ~, extOrig] = fileparts(srcPath);
         outExt = determine_output_extension(lower(extOrig), cfg.output.supportedFormats, cfg.output.preserveFormat);
-        % Mirror cut_concentration_rectangles layout: con_* folders containing base_con_<idx>.ext
+        % Mirror cut_micropads layout: con_* folders containing base_con_<idx>.ext
         concFolder = fullfile(polyGroupDir, sprintf('%s%d', cfg.concFolderPrefix, row.concentration));
         ensure_folder(concFolder);
         outName = sprintf('%s_%s%d%s', row.imageBase, cfg.concFolderPrefix, row.concentration, outExt);
@@ -444,9 +299,9 @@ function extract_polygon_crops_all(coordPath, rectGroupDir, polyGroupDir, cfg)
 end
 
 function rows = read_polygon_coordinates(coordPath)
-    % Reads polygon coordinates saved by cut_concentration_rectangles.m
-    % Header: 'image concentration x1 y1 ... xN yN'
-    rows = struct('imageBase','', 'concentration',0, 'polygon',[]);
+    % Reads polygon coordinates saved by cut_micropads.m
+    % Header: 'image concentration x1 y1 ... xN yN rotation'
+    rows = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
     rows = rows([]);
     if ~isfile(coordPath), return; end
     fid = fopen(coordPath, 'rt');
@@ -471,7 +326,7 @@ function rows = read_polygon_coordinates(coordPath)
 
     nApprox = numel(L) - startIdx + 1;
     % Pre-allocate struct array for parsed polygon entries
-    tmp(nApprox) = struct('imageBase','', 'concentration',0, 'polygon',[]);
+    tmp(nApprox) = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
     k = 0;
 
     for i = startIdx:numel(L)
@@ -482,12 +337,20 @@ function rows = read_polygon_coordinates(coordPath)
         imageBase = strip_ext(parts{1});
         concentration = str2double(parts{2});
         nums = str2double(parts(3:end));
-        if any(isnan(nums)) || mod(numel(nums),2) ~= 0
+        if numel(nums) < 8 || any(isnan(nums(1:8)))
+            warning('extract:invalid_polygon_entry', ...
+                    'Skipping malformed polygon entry on line %d: expected 8 polygon coordinates', i);
             continue;
         end
-        P = reshape(nums, 2, []).';
+        % Extract polygon (first 8 values) and rotation (9th value if present)
+        P = reshape(nums(1:8), 2, 4).';  % 4x2 polygon matrix
+        rotation = 0;
+        if numel(nums) >= 9 && ~isnan(nums(9))
+            rotation = nums(9);
+        end
         k = k + 1;
-        tmp(k) = struct('imageBase', imageBase, 'concentration', concentration, 'polygon', round(P));
+        tmp(k) = struct('imageBase', imageBase, 'concentration', concentration, ...
+                        'polygon', round(P), 'rotation', rotation);
     end
     if k == 0
         rows = rows([]);
@@ -674,27 +537,6 @@ function cropped = crop_with_polygon(img, polygon)
     end
 end
 
-function cropped = crop_with_rect(img, rect)
-    % Mimic crop_micropad_papers computePixelBounds logic for consistency
-    if numel(rect) < 4
-        error('extract:invalid_rect', 'Rectangle specification must have four elements.');
-    end
-    [imgHeight, imgWidth, ~] = size(img);
-    x = rect(1); y = rect(2);
-    w = rect(3); h = rect(4);
-    if ~isfinite(x), x = 1; end
-    if ~isfinite(y), y = 1; end
-    if ~isfinite(w) || w <= 0, w = 1; end
-    if ~isfinite(h) || h <= 0, h = 1; end
-    x1 = round(max(1, min(imgWidth, x)));
-    y1 = round(max(1, min(imgHeight, y)));
-    x2 = round(min(imgWidth, max(1, x + w - 1)));
-    y2 = round(min(imgHeight, max(1, y + h - 1)));
-    if x2 < x1, x2 = x1; end
-    if y2 < y1, y2 = y1; end
-    cropped = img(y1:y2, x1:x2, :);
-end
-
 function mask = get_elliptical_mask(h, w, cx, cy, a, b, theta, cfg)
     % OPTIMIZATION: Cache elliptical masks by dimensions, center, and ellipse parameters
     % Most patches have identical dimensions, so this saves significant computation
@@ -768,49 +610,6 @@ end
 % ----------------------
 % Helpers: path, folders, scanning
 % ----------------------
-function need = phone_needs_rect_stage(cfg, phoneName)
-    polyDir = fullfile(cfg.paths.poly, phoneName);
-    patchDir = fullfile(cfg.paths.patch, phoneName);
-    coordName = cfg.coordinateFileName;
-
-    polygonImagesPresent = folder_has_any_images(polyDir, true);
-
-    % Determine whether polygon coordinates exist (phone-level or per concentration)
-    polygonCoordExists = isfile(fullfile(polyDir, coordName));
-    if ~polygonCoordExists
-        polyCon = find_concentration_dirs(polyDir, cfg.concFolderPrefix);
-        polygonCoordExists = any(cellfun(@(d) isfile(fullfile(d, coordName)), polyCon));
-    end
-
-    if polygonCoordExists && ~polygonImagesPresent
-        need = true;
-        return;
-    end
-
-    % Determine whether elliptical coordinates exist (phone-level or per concentration)
-    ellipseCoordExists = isfile(fullfile(patchDir, coordName));
-    if ~ellipseCoordExists
-        patchCon = find_concentration_dirs(patchDir, cfg.concFolderPrefix);
-        ellipseCoordExists = any(cellfun(@(d) isfile(fullfile(d, coordName)), patchCon));
-    end
-
-    if ~ellipseCoordExists
-        need = false;
-        return;
-    end
-
-    if polygonImagesPresent
-        need = false;
-        return;
-    end
-
-    if polygonCoordExists
-        need = true;
-    else
-        need = false;
-    end
-end
-
 function tf = folder_has_any_images(dirPath, includeSubdirs)
     % OPTIMIZED: Single dir() call + vectorized extension checking
     if nargin < 2
@@ -1003,11 +802,11 @@ function imagePath = find_image_file(folder, baseName, cfg)
     end
 
     % Search in cached index
-    baseLower = lower(baseName);
+    baseLower = baseName;
     validExts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
 
     for i = 1:numel(dirIndex.basenames)
-        if strcmp(dirIndex.basenames{i}, baseLower) && any(strcmp(dirIndex.exts{i}, validExts))
+        if strcmpi(dirIndex.basenames{i}, baseLower) && any(strcmp(dirIndex.exts{i}, validExts))
             imagePath = fullfile(folder, dirIndex.names{i});
             return;
         end
@@ -1032,7 +831,8 @@ function srcPath = resolve_polygon_source(baseDir, row, cfg, polyConDirs)
 
     % Priority 2: Concentration-specific folder
     concFolderName = sprintf('%s%d', cfg.concFolderPrefix, row.concentration);
-    if length(baseDir) >= length(concFolderName) && strcmpi(baseDir(end-length(concFolderName)+1:end), concFolderName)
+    [~, leaf] = fileparts(baseDir);
+    if strcmpi(leaf, concFolderName)
         concFolder = baseDir;
     else
         concFolder = fullfile(baseDir, concFolderName);
@@ -1155,17 +955,3 @@ function r = relpath(pathStr, root)
     end
 end
 
-function [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(firstLine)
-    % Detect rectangular coordinate file format from header line
-    % Returns:
-    %   isRectWH - true if format is "image x y width height [rotation]"
-    %   isPoly4  - true if format is "image x1 y1 x2 y2 x3 y3 x4 y4"
-    %   hasHeader - true if first line is a header (not data)
-    lowerHead = lower(strtrim(firstLine));
-    isRectWH = contains(lowerHead, 'image') && ...
-               contains(lowerHead, 'width') && contains(lowerHead, 'height');
-    isPoly4  = contains(lowerHead, 'x1') && contains(lowerHead, 'y1') && ...
-               contains(lowerHead, 'x4') && contains(lowerHead, 'y4') && ...
-               ~contains(lowerHead, 'concentration');
-    hasHeader = isRectWH || isPoly4;
-end

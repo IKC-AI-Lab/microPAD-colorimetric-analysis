@@ -99,6 +99,7 @@ User: "Implement feature X that requires MATLAB and Python changes"
 - **NEVER use fallback patterns** - Implement proper solutions that handle edge cases correctly
 - **NEVER write overengineered code** - Keep implementations simple, direct, and maintainable
 - **NEVER add redundant or verbose code** - Every line must serve a clear purpose
+- **NEVER create new MATLAB scripts** - Only create new scripts when explicitly requested by the user
 - **ALWAYS use best practices** for MATLAB and this project's architecture
 - **ALWAYS consider side effects** of changes across the entire pipeline
 - **ALWAYS implement bulletproof solutions** that handle edge cases without defensive bloat
@@ -252,10 +253,11 @@ movefile(tmpPath, coordPath, 'f');
 **No duplicate rows per image**: Scripts automatically filter existing entries before appending new coordinates.
 
 ### Image Orientation Handling
-All scripts use `imread_raw()` helper function that:
+All scripts include `imread_raw()` as a local function that:
 - Inverts EXIF 90-degree rotations (tags 5/6/7/8) to preserve raw sensor layout
 - Ignores flips/180-degree rotations (tags 2/3/4)
 - Prevents double-rotation when user manually rotates images
+- Each script contains its own copy to maintain script independence
 
 ### Geometry and Projection
 - **Stage 2 (cut_micropads.m)**:

@@ -16,9 +16,9 @@ function cut_micropads(varargin)
     %
     % Inputs (Name-Value pairs):
     % - 'numSquares': number of regions to capture per strip (default: 7)
-    % - 'aspectRatio': width/height of the reference strip (default: 7.6)
-    % - 'coverage': fraction of image width to fill (default: 0.995)
-    % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.2)
+    % - 'aspectRatio': width/height ratio of each region (default: 0.90, slightly taller than wide)
+    % - 'coverage': fraction of image width to fill (default: 0.80)
+    % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.19)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'preserveFormat' | 'jpegQuality' | 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
@@ -62,9 +62,9 @@ function cut_micropads(varargin)
 
     % === DEFAULT GEOMETRY / SELECTION ===
     DEFAULT_NUM_SQUARES = 7;
-    DEFAULT_ASPECT_RATIO = 7.6;
-    DEFAULT_COVERAGE = 0.995;
-    DEFAULT_GAP_PERCENT = 0.2;
+    DEFAULT_ASPECT_RATIO = 0.90;  % width/height ratio: rectangles are slightly taller than wide
+    DEFAULT_COVERAGE = 0.80;       % rectangles span 80% of image width
+    DEFAULT_GAP_PERCENT = 0.19;    % 19% gap between rectangles
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = true;
@@ -84,47 +84,56 @@ function cut_micropads(varargin)
     UI_CONST.fontSize = struct(...
         'title', 16, ...
         'path', 12, ...
-        'button', 12, ...
+        'button', 13, ...
         'info', 10, ...
         'instruction', 10, ...
-        'preview', 14);
+        'preview', 14, ...
+        'label', 12, ...
+        'value', 13);
     UI_CONST.colors = struct(...
         'background', 'black', ...
         'foreground', 'white', ...
-        'panel', [0.1 0.1 0.1], ...
-        'stop', [0.8 0.2 0.2], ...
-        'accept', [0.2 0.7 0.2], ...
-        'retry', [0.8 0.8 0.2], ...
-        'skip', [0.7 0.2 0.2], ...
-        'polygon', 'red', ...
-        'info', 'yellow', ...
-        'path', [0.7 0.7 0.7], ...
-        'apply', [0.2 0.4 0.8]);
+        'panel', [0.15 0.15 0.15], ...
+        'stop', [0.85 0.2 0.2], ...
+        'accept', [0.2 0.75 0.3], ...
+        'retry', [0.9 0.75 0.2], ...
+        'skip', [0.75 0.25 0.25], ...
+        'polygon', [0.0 1.0 1.0], ...
+        'info', [1.0 1.0 0.3], ...
+        'path', [0.75 0.75 0.75], ...
+        'apply', [0.2 0.5 0.9]);
     UI_CONST.positions = struct(...
         'figure', [0 0 1 1], ...
-        'title', [0.1 0.93 0.8 0.04], ...
-        'pathDisplay', [0.1 0.89 0.8 0.03], ...
-        'image', [0.02 0.18 0.96 0.68], ...
-        'rotationPanel', [0.02 0.02 0.50 0.12], ...
-        'cutButtonPanel', [0.55 0.02 0.43 0.12], ...
-        'previewPanel', [0.25 0.02 0.50 0.12], ...
-        'stopButton', [0.02 0.93 0.06 0.05], ...
-        'instructions', [0.02 0.145 0.96 0.025], ...
-        'previewLeft', [0.02 0.18 0.47 0.65], ...
-        'previewRight', [0.51 0.18 0.47 0.65]);
+        'stopButton', [0.01 0.945 0.06 0.045], ...
+        'title', [0.08 0.945 0.84 0.045], ...
+        'pathDisplay', [0.08 0.90 0.84 0.035], ...
+        'instructions', [0.01 0.855 0.98 0.035], ...
+        'image', [0.01 0.16 0.98 0.68], ...
+        'rotationPanel', [0.01 0.01 0.24 0.14], ...
+        'zoomPanel', [0.26 0.01 0.26 0.14], ...
+        'cutButtonPanel', [0.53 0.01 0.46 0.14], ...
+        'previewPanel', [0.25 0.01 0.50 0.14], ...
+        'previewLeft', [0.01 0.16 0.48 0.73], ...
+        'previewRight', [0.50 0.16 0.49 0.73]);
     UI_CONST.polygon = struct(...
         'lineWidth', 3, ...
         'borderWidth', 2);
     UI_CONST.dimFactor = 0.3;
-    UI_CONST.layout = struct(...
-        'rotationLabel', [0.02 0.75 0.96 0.20], ...
-        'rotationSlider', [0.23 0.45 0.50 0.25], ...
-        'rotationValue', [0.75 0.45 0.23 0.25], ...
-        'quickRotationRow1', {[0.02 0.05 0.12 0.30], [0.16 0.05 0.12 0.30]}, ...
-        'quickRotationRow2', {[0.30 0.05 0.12 0.30], [0.44 0.05 0.12 0.30]});
+    UI_CONST.layout = struct();
+    UI_CONST.layout.rotationLabel = [0.05 0.78 0.90 0.18];
+    UI_CONST.layout.quickRotationRow1 = {[0.05 0.42 0.42 0.30], [0.53 0.42 0.42 0.30]};
+    UI_CONST.layout.quickRotationRow2 = {[0.05 0.08 0.42 0.30], [0.53 0.08 0.42 0.30]};
+    UI_CONST.layout.zoomLabel = [0.05 0.78 0.90 0.18];
+    UI_CONST.layout.zoomSlider = [0.05 0.42 0.72 0.28];
+    UI_CONST.layout.zoomValue = [0.79 0.42 0.16 0.28];
+    UI_CONST.layout.zoomResetButton = [0.05 0.08 0.44 0.28];
+    UI_CONST.layout.zoomAutoButton = [0.51 0.08 0.44 0.28];
     UI_CONST.rotation = struct(...
         'range', [-180, 180], ...
         'quickAngles', [-90, 0, 90, 180]);
+    UI_CONST.zoom = struct(...
+        'range', [0, 1], ...
+        'defaultValue', 0);
 
     %% Build configuration
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, PRESERVE_FORMAT, JPEG_QUALITY, SAVE_COORDINATES, ...
@@ -214,6 +223,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     cfg.ui.polygon = UI_CONST.polygon;
     cfg.ui.layout = UI_CONST.layout;
     cfg.ui.rotation = UI_CONST.rotation;
+    cfg.ui.zoom = UI_CONST.zoom;
     cfg.dimFactor = UI_CONST.dimFactor;
 end
 
@@ -223,6 +233,12 @@ function cfg = addPathConfiguration(cfg, inputFolder, outputFolder)
     cfg.projectRoot = projectRoot;
     cfg.inputPath = fullfile(projectRoot, inputFolder);
     cfg.outputPath = fullfile(projectRoot, outputFolder);
+
+    % Add helper_scripts to MATLAB path if not already present
+    helperScriptsPath = fullfile(projectRoot, 'matlab_scripts', 'helper_scripts');
+    if isfolder(helperScriptsPath) && ~contains(path, helperScriptsPath)
+        addpath(helperScriptsPath);
+    end
 
     % Resolve model path to absolute path
     cfg.detectionModel = fullfile(projectRoot, cfg.detectionModelRelative);
@@ -606,6 +622,13 @@ function polys = collectValidPolygons(guiData)
 
     validMask = cellfun(@isvalid, guiData.polygons);
     if any(validMask)
+        % Clear appdata before collecting for deletion
+        validPolys = guiData.polygons(validMask);
+        for i = 1:length(validPolys)
+            if isvalid(validPolys{i}) && isappdata(validPolys{i}, 'LastValidPosition')
+                rmappdata(validPolys{i}, 'LastValidPosition');
+            end
+        end
         polys = [guiData.polygons{validMask}]';
     end
 end
@@ -624,9 +647,13 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     % Initialize rotation data (from memory or default to 0)
     guiData.baseImg = img;
     guiData.currentImg = img;
-    guiData.baseRotation = initialRotation;
-    guiData.currentRelativeRotation = 0;
+    guiData.memoryRotation = initialRotation;
+    guiData.adjustmentRotation = 0;
     guiData.totalRotation = initialRotation;
+
+    % Initialize zoom state
+    guiData.zoomLevel = 0;  % 0 = full image, 1 = single micropad size
+    guiData.imageSize = size(img);
 
     % Title and path
     guiData.titleHandle = createTitle(fig, phoneName, imageName, cfg);
@@ -644,8 +671,11 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     % Create editable polygons
     guiData.polygons = createPolygons(initialPolygons, cfg);
 
-    % Rotation panel (initialize with rotation from memory)
-    [guiData.rotSlider, guiData.rotValue] = createRotationPanel(fig, 0, cfg);
+    % Rotation panel (preset buttons only)
+    guiData.rotationPanel = createRotationButtonPanel(fig, cfg);
+
+    % Zoom panel
+    [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
 
     % Buttons
     guiData.cutButtonPanel = createEditButtonPanel(fig, cfg);
@@ -653,7 +683,13 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.instructionText = createInstructions(fig, cfg);
 
     guiData.action = '';
+
+    % Store guiData before auto-zoom
     set(fig, 'UserData', guiData);
+
+    % Auto-zoom to polygons after all UI is created
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
 end
 
 function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams)
@@ -809,7 +845,7 @@ function cutButtonPanel = createEditButtonPanel(fig, cfg)
 end
 
 function instructionText = createInstructions(fig, cfg)
-    instructionString = 'Mouse = Drag Vertices | Slider/Buttons = Rotate | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
+    instructionString = 'Mouse = Drag Vertices | Buttons = Rotate | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
 
     instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionString, ...
              'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
@@ -897,41 +933,25 @@ function maskedImg = createMaskedPreview(img, polygonParams, cfg)
 end
 
 %% -------------------------------------------------------------------------
-%% Rotation Panel and Controls
+%% Rotation and Zoom Panel Controls
 %% -------------------------------------------------------------------------
 
-function [rotSlider, rotValue] = createRotationPanel(fig, initialRotation, cfg)
-    % Create rotation panel with slider and quick rotation buttons
+function rotationPanel = createRotationButtonPanel(fig, cfg)
+    % Create rotation panel with preset angle buttons only
     rotationPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
                            'Position', cfg.ui.positions.rotationPanel, ...
                            'BackgroundColor', cfg.ui.colors.panel, ...
-                           'BorderType', 'line', 'HighlightColor', cfg.ui.colors.foreground);
+                           'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
+                           'BorderWidth', 2);
 
     % Panel label
-    uicontrol('Parent', rotationPanel, 'Style', 'text', 'String', 'Rotation Panel', ...
+    uicontrol('Parent', rotationPanel, 'Style', 'text', 'String', 'Rotation', ...
              'Units', 'normalized', 'Position', cfg.ui.layout.rotationLabel, ...
              'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
              'ForegroundColor', cfg.ui.colors.foreground, ...
              'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
 
-    % Rotation slider
-    rotSlider = uicontrol('Parent', rotationPanel, 'Style', 'slider', ...
-                         'Min', cfg.ui.rotation.range(1), 'Max', cfg.ui.rotation.range(2), ...
-                         'Value', initialRotation, ...
-                         'Units', 'normalized', 'Position', cfg.ui.layout.rotationSlider, ...
-                         'BackgroundColor', cfg.ui.colors.panel, ...
-                         'Callback', @(src, ~) rotationSliderCallback(src, fig, cfg));
-
-    % Rotation value display
-    rotValue = uicontrol('Parent', rotationPanel, 'Style', 'text', ...
-                        'String', sprintf('%.0f%s', initialRotation, char(176)), ...
-                        'Units', 'normalized', 'Position', cfg.ui.layout.rotationValue, ...
-                        'FontSize', cfg.ui.fontSize.value, 'FontWeight', 'bold', ...
-                        'ForegroundColor', cfg.ui.colors.foreground, ...
-                        'BackgroundColor', cfg.ui.colors.panel, ...
-                        'HorizontalAlignment', 'center');
-
-    % Quick rotation buttons
+    % Rotation preset buttons
     angles = cfg.ui.rotation.quickAngles;
     positions = {cfg.ui.layout.quickRotationRow1{1}, cfg.ui.layout.quickRotationRow1{2}, ...
                  cfg.ui.layout.quickRotationRow2{1}, cfg.ui.layout.quickRotationRow2{2}};
@@ -941,27 +961,79 @@ function [rotSlider, rotValue] = createRotationPanel(fig, initialRotation, cfg)
                  'String', sprintf('%d%s', angles(i), char(176)), ...
                  'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
                  'Units', 'normalized', 'Position', positions{i}, ...
-                 'BackgroundColor', cfg.ui.colors.panel, ...
+                 'BackgroundColor', [0.25 0.25 0.25], ...
                  'ForegroundColor', cfg.ui.colors.foreground, ...
-                 'Callback', @(~,~) setQuickRotation(angles(i), fig, cfg));
+                 'Callback', @(~,~) applyRotation_UI(angles(i), fig, cfg));
     end
 end
 
-function rotationSliderCallback(slider, fig, cfg)
+function [zoomSlider, zoomValue] = createZoomPanel(fig, cfg)
+    % Create zoom panel with slider and control buttons
+    zoomPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
+                       'Position', cfg.ui.positions.zoomPanel, ...
+                       'BackgroundColor', cfg.ui.colors.panel, ...
+                       'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
+                       'BorderWidth', 2);
+
+    % Panel label
+    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Zoom', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.zoomLabel, ...
+             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
+
+    % Zoom slider
+    zoomSlider = uicontrol('Parent', zoomPanel, 'Style', 'slider', ...
+                          'Min', cfg.ui.zoom.range(1), 'Max', cfg.ui.zoom.range(2), ...
+                          'Value', cfg.ui.zoom.defaultValue, ...
+                          'Units', 'normalized', 'Position', cfg.ui.layout.zoomSlider, ...
+                          'BackgroundColor', cfg.ui.colors.panel, ...
+                          'Callback', @(src, ~) zoomSliderCallback(src, fig, cfg));
+
+    % Zoom value display
+    zoomValue = uicontrol('Parent', zoomPanel, 'Style', 'text', ...
+                         'String', '0%', ...
+                         'Units', 'normalized', 'Position', cfg.ui.layout.zoomValue, ...
+                         'FontSize', cfg.ui.fontSize.value, 'FontWeight', 'bold', ...
+                         'ForegroundColor', cfg.ui.colors.foreground, ...
+                         'BackgroundColor', cfg.ui.colors.panel, ...
+                         'HorizontalAlignment', 'center');
+
+    % Reset button (full image view)
+    uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
+             'String', 'Reset', ...
+             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.zoomResetButton, ...
+             'BackgroundColor', [0.25 0.25 0.25], ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'Callback', @(~,~) resetZoom(fig, cfg));
+
+    % Auto button (zoom to polygons)
+    uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
+             'String', 'Auto', ...
+             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.zoomAutoButton, ...
+             'BackgroundColor', [0.25 0.25 0.25], ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'Callback', @(~,~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
+end
+
+function applyRotation_UI(angle, fig, cfg)
+    % Apply preset rotation angle
     guiData = get(fig, 'UserData');
     if ~strcmp(guiData.mode, 'editing')
         return;
     end
 
-    newRotation = get(slider, 'Value');
-
     % Update rotation state
-    guiData.currentRelativeRotation = newRotation;
-    guiData.totalRotation = guiData.baseRotation + newRotation;
-    set(guiData.rotValue, 'String', sprintf('%.0f%s', newRotation, char(176)));
+    guiData.adjustmentRotation = angle;
+    guiData.totalRotation = guiData.memoryRotation + angle;
 
     % Apply rotation to image
-    guiData.currentImg = applyRotation(guiData.baseImg, newRotation);
+    guiData.currentImg = applyRotation(guiData.baseImg, angle);
+
+    % Save polygon positions BEFORE clearing axes
+    savedPositions = extractPolygonPositions(guiData);
 
     % Update image display
     axes(guiData.imgAxes);
@@ -971,40 +1043,213 @@ function rotationSliderCallback(slider, fig, cfg)
     axis(guiData.imgAxes, 'tight');
     hold(guiData.imgAxes, 'on');
 
-    % Re-run AI detection if enabled (Phase 1.4)
+    % Re-run AI detection if enabled and recreate polygons
     if cfg.useAIDetection
         try
-            [detectedQuads, confidences] = detectQuadsYOLO(guiData.currentImg, ...
+            [detectedQuads, ~] = detectQuadsYOLO(guiData.currentImg, ...
                 cfg.minConfidence, cfg.inferenceSize);
 
             if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
-                updatePolygonsFromDetection(guiData, detectedQuads);
+                % Recreate polygons with AI-detected positions
+                guiData.polygons = createPolygons(detectedQuads, cfg);
+                fprintf('  AI re-detected %d regions after rotation\n', size(detectedQuads, 1));
+            else
+                % Recreate polygons at their previous positions if AI detection failed
+                guiData.polygons = createPolygons(savedPositions, cfg);
             end
         catch ME
             fprintf('  AI detection after rotation failed: %s\n', ME.message);
+            % Recreate polygons at their previous positions
+            guiData.polygons = createPolygons(savedPositions, cfg);
         end
+    else
+        % No AI detection - recreate polygons at their previous positions
+        guiData.polygons = createPolygons(savedPositions, cfg);
     end
+
+    % Save guiData before auto-zoom
+    set(fig, 'UserData', guiData);
+
+    % Auto-zoom to polygons after rotation (will update guiData internally)
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
+end
+
+function zoomSliderCallback(slider, fig, cfg)
+    % Handle zoom slider changes
+    guiData = get(fig, 'UserData');
+    if ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    zoomLevel = get(slider, 'Value');
+    guiData.zoomLevel = zoomLevel;
+
+    % Update zoom value display
+    set(guiData.zoomValue, 'String', sprintf('%d%%', round(zoomLevel * 100)));
+
+    % Apply zoom to axes
+    applyZoomToAxes(guiData, cfg);
 
     set(fig, 'UserData', guiData);
 end
 
-function setQuickRotation(angle, fig, cfg)
+function resetZoom(fig, cfg)
+    % Reset zoom to full image view
     guiData = get(fig, 'UserData');
-    if strcmp(guiData.mode, 'editing')
-        set(guiData.rotSlider, 'Value', angle);
-        rotationSliderCallback(guiData.rotSlider, fig, cfg);
+    if ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    guiData.zoomLevel = 0;
+    set(guiData.zoomSlider, 'Value', 0);
+    set(guiData.zoomValue, 'String', '0%');
+
+    % Apply zoom to axes
+    applyZoomToAxes(guiData, cfg);
+
+    set(fig, 'UserData', guiData);
+end
+
+function applyAutoZoom(fig, guiData, cfg)
+    % Auto-zoom to fit all polygons
+    if ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    % Calculate bounding box of all polygons
+    [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+
+    if isempty(xmin)
+        return;  % No valid polygons
+    end
+
+    % Store auto-zoom bounds in guiData
+    guiData.autoZoomBounds = [xmin, xmax, ymin, ymax];
+
+    % Set zoom to auto (maximum zoom level = 1)
+    guiData.zoomLevel = 1;
+    set(guiData.zoomSlider, 'Value', 1);
+    set(guiData.zoomValue, 'String', '100%');
+
+    % Apply zoom to axes
+    applyZoomToAxes(guiData, cfg);
+
+    set(fig, 'UserData', guiData);
+end
+
+function applyZoomToAxes(guiData, cfg)
+    % Apply current zoom level to image axes
+    % zoomLevel: 0 = full image, 1 = auto-zoom to polygons
+
+    imgHeight = guiData.imageSize(1);
+    imgWidth = guiData.imageSize(2);
+
+    if guiData.zoomLevel == 0
+        % Full image view
+        xlim(guiData.imgAxes, [0.5, imgWidth + 0.5]);
+        ylim(guiData.imgAxes, [0.5, imgHeight + 0.5]);
+    else
+        % Calculate target bounds based on zoom level
+        if isfield(guiData, 'autoZoomBounds') && ~isempty(guiData.autoZoomBounds)
+            autoZoomBounds = guiData.autoZoomBounds;
+        else
+            % If no auto-zoom bounds calculated yet, use center single micropad estimate
+            [autoZoomBounds] = estimateSingleMicropadBounds(guiData, cfg);
+            guiData.autoZoomBounds = autoZoomBounds;
+        end
+
+        % Interpolate between full image and auto-zoom bounds
+        fullBounds = [0.5, imgWidth + 0.5, 0.5, imgHeight + 0.5];
+        targetBounds = autoZoomBounds;
+
+        % Linear interpolation
+        t = guiData.zoomLevel;
+        xmin = fullBounds(1) * (1-t) + targetBounds(1) * t;
+        xmax = fullBounds(2) * (1-t) + targetBounds(2) * t;
+        ymin = fullBounds(3) * (1-t) + targetBounds(3) * t;
+        ymax = fullBounds(4) * (1-t) + targetBounds(4) * t;
+
+        xlim(guiData.imgAxes, [xmin, xmax]);
+        ylim(guiData.imgAxes, [ymin, ymax]);
     end
 end
 
-function updatePolygonsFromDetection(guiData, detectedQuads)
-    % Update existing polygon positions from AI detection
-    numPolygons = min(numel(guiData.polygons), size(detectedQuads, 1));
+function [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData)
+    % Calculate bounding box containing all polygons
+    xmin = inf;
+    xmax = -inf;
+    ymin = inf;
+    ymax = -inf;
+
+    if ~isfield(guiData, 'polygons') || isempty(guiData.polygons)
+        xmin = [];
+        return;
+    end
+
+    for i = 1:numel(guiData.polygons)
+        if isvalid(guiData.polygons{i})
+            pos = guiData.polygons{i}.Position;
+            xmin = min(xmin, min(pos(:, 1)));
+            xmax = max(xmax, max(pos(:, 1)));
+            ymin = min(ymin, min(pos(:, 2)));
+            ymax = max(ymax, max(pos(:, 2)));
+        end
+    end
+
+    if isinf(xmin)
+        xmin = [];
+        return;
+    end
+
+    % Add margin (10% of bounds size)
+    xmargin = (xmax - xmin) * 0.1;
+    ymargin = (ymax - ymin) * 0.1;
+
+    xmin = max(0.5, xmin - xmargin);
+    xmax = min(guiData.imageSize(2) + 0.5, xmax + xmargin);
+    ymin = max(0.5, ymin - ymargin);
+    ymax = min(guiData.imageSize(1) + 0.5, ymax + ymargin);
+end
+
+function bounds = estimateSingleMicropadBounds(guiData, cfg)
+    % Estimate bounds for a single micropad size when no polygons available
+    imgHeight = guiData.imageSize(1);
+    imgWidth = guiData.imageSize(2);
+
+    % Use coverage parameter to estimate micropad strip width
+    stripWidth = imgWidth * cfg.coverage;
+    stripHeight = stripWidth / cfg.geometry.aspectRatio;
+
+    % Center on image
+    centerX = imgWidth / 2;
+    centerY = imgHeight / 2;
+
+    xmin = max(0.5, centerX - stripWidth / 2);
+    xmax = min(imgWidth + 0.5, centerX + stripWidth / 2);
+    ymin = max(0.5, centerY - stripHeight / 2);
+    ymax = min(imgHeight + 0.5, centerY + stripHeight / 2);
+
+    bounds = [xmin, xmax, ymin, ymax];
+end
+
+function positions = extractPolygonPositions(guiData)
+    % Extract current polygon positions from valid polygon objects
+    % Must be called BEFORE clearing axes to preserve positions
+
+    if ~isfield(guiData, 'polygons') || isempty(guiData.polygons)
+        positions = [];
+        return;
+    end
+
+    numPolygons = numel(guiData.polygons);
+    positions = zeros(numPolygons, 4, 2);
 
     for i = 1:numPolygons
         if isvalid(guiData.polygons{i})
-            newPos = squeeze(detectedQuads(i, :, :));
-            guiData.polygons{i}.Position = newPos;
-            setappdata(guiData.polygons{i}, 'LastValidPosition', newPos);
+            positions(i, :, :) = guiData.polygons{i}.Position;
+        else
+            warning('cut_micropads:invalid_polygon', 'Polygon %d is invalid before extraction', i);
         end
     end
 end
@@ -1196,6 +1441,20 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
     existingNames = rowData{1};
     % Vectorize numeric data extraction
     existingNums = cell2mat(rowData(2:end)');
+
+    % Validate and migrate coordinate format
+    if ~isempty(existingNums) && size(existingNums, 2) ~= 10
+        if size(existingNums, 2) == 9
+            % Migrate old 9-column format to 10-column by adding zero rotation
+            warning('cut_micropads:old_coord_format', ...
+                'Migrating old 9-column coordinate format to 10-column (adding rotation=0): %s', coordPath);
+            existingNums = [existingNums, zeros(size(existingNums, 1), 1)];
+        else
+            error('cut_micropads:invalid_coord_format', ...
+                'Coordinate file has %d columns, expected 10 (with rotation): %s\nDelete this file to regenerate.', ...
+                size(existingNums, 2), coordPath);
+        end
+    end
 end
 
 function [filteredNames, filteredNums] = filterConflictingEntries(existingNames, existingNums, newName, concentration)
@@ -1254,29 +1513,6 @@ function [img, isValid] = loadImage(imageName)
     end
 end
 
-function I = imread_raw(fname)
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation'), return; end
-        ori = double(info.Orientation);
-    catch
-        return;
-    end
-
-    % Invert 90-degree EXIF rotations to preserve raw sensor layout
-    switch ori
-        case 5, I = rot90(I, +1); I = fliplr(I);
-        case 6, I = rot90(I, -1);
-        case 7, I = rot90(I, -1); I = fliplr(I);
-        case 8, I = rot90(I, +1);
-    end
-end
 
 function saveImageWithFormat(img, outPath, outExt, cfg)
     if strcmpi(outExt, '.jpg') || strcmpi(outExt, '.jpeg')
@@ -1358,12 +1594,13 @@ function ensurePythonSetup(pythonPath)
         end
 
         % Validate Python path is provided
-        if isempty(pythonPath) || strlength(string(pythonPath)) == 0
+        pythonPath = char(pythonPath);
+        if isempty(pythonPath)
             error('cut_micropads:python_not_configured', ...
                 ['Python executable not configured.\n', ...
                  'Resolution options:\n', ...
-                 '1. Set MICROPAD_PYTHON environment variable to your Python executable\n', ...
-                 '2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''path/to/python'')']);
+                 '1. Set MICROPAD_PYTHON environment variable\n', ...
+                 '2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''C:\\path\\to\\python.exe'')']);
         end
 
         if ~isfile(pythonPath)
@@ -1433,6 +1670,60 @@ function model = getYOLOModel()
     if isempty(model)
         error('cut_micropads:model_not_loaded', ...
             'YOLO model not loaded. Call loadYOLOModel() first.');
+    end
+end
+
+function I = imread_raw(fname)
+    % Read image with EXIF orientation handling for microPAD pipeline
+    %
+    % This function reads images while preserving raw sensor layout by
+    % inverting EXIF 90-degree rotation tags. This ensures polygon coordinates
+    % remain valid across pipeline stages.
+    %
+    % Inputs:
+    %   fname - Path to image file (char or string)
+    %
+    % Outputs:
+    %   I - Image array with EXIF rotations inverted
+    %
+    % EXIF Orientation Handling:
+    %   - Tags 5/6/7/8 (90-degree rotations): INVERTED to preserve raw layout
+    %   - Tags 2/3/4 (flips/180): IGNORED (not inverted)
+    %   - Tag 1 or missing: No modification
+    %
+    % Example:
+    %   img = imread_raw('micropad_photo.jpg');
+
+    % Read image without automatic orientation
+    try
+        I = imread(fname, 'AutoOrient', false);
+    catch
+        I = imread(fname);
+    end
+
+    % Get EXIF orientation tag
+    try
+        info = imfinfo(fname);
+        if ~isfield(info, 'Orientation')
+            return;
+        end
+        ori = double(info.Orientation);
+    catch
+        return;
+    end
+
+    % Invert 90-degree EXIF rotations to preserve raw sensor layout
+    switch ori
+        case 5
+            I = rot90(I, +1);
+            I = fliplr(I);
+        case 6
+            I = rot90(I, -1);
+        case 7
+            I = rot90(I, -1);
+            I = fliplr(I);
+        case 8
+            I = rot90(I, +1);
     end
 end
 
@@ -1685,8 +1976,8 @@ function quadOrdered = orderQuadVertices(quad)
     quadOrdered = quad(order, :);
 
     % Rotate array so top-left corner is first
-    % Top-left has minimum distance from origin (0,0)
-    [~, topLeftIdx] = min(sum(quadOrdered.^2, 2));
+    % Top-left corner has minimum (x + y) value
+    [~, topLeftIdx] = min(sum(quadOrdered, 2));
     quadOrdered = circshift(quadOrdered, -topLeftIdx + 1, 1);
 end
 
