@@ -109,7 +109,10 @@ python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weig
 **Custom training parameters:**
 ```bash
 # Custom epochs, batch size, single GPU
-python train_yolo.py --stage 1 --epochs 200 --batch 96 --device 0
+python train_yolo.py --stage 1 --epochs 200 --batch 16 --device 0
+
+# Try different resolution (640, 800, or 960)
+python train_yolo.py --stage 1 --imgsz 800 --batch 28
 
 # Export with INT8 quantization for Android
 python train_yolo.py --export --weights best.pt --formats tflite --int8
@@ -125,8 +128,8 @@ yolo segment train \
     model=yolo11n-seg.pt \
     data=python_scripts/configs/micropad_synth.yaml \
     epochs=150 \
-    imgsz=640 \
-    batch=128 \
+    imgsz=960 \
+    batch=24 \
     device=0,1 \
     project=micropad_detection \
     name=yolo11n_synth \
@@ -136,13 +139,14 @@ yolo segment train \
 **Training parameters explained:**
 - `model=yolo11n-seg.pt`: YOLOv11-nano segmentation (smallest, fastest)
 - `epochs=150`: Maximum training epochs (Stage 1), 80 (Stage 2)
-- `imgsz=640`: Input image size
-- `batch=128`: Batch size for Stage 1 (96 for Stage 2)
+- `imgsz=960`: Input image size (960x960 for better detail)
+- `batch=24`: Batch size optimized for 960 resolution on dual A6000 GPUs
 - `device=0,1`: Use both A6000 GPUs
 - `patience=20`: Early stopping patience (15 for Stage 2)
 
 **Expected training time:**
-- ~1-2 hours on dual A6000 (48GB each)
+- ~2-3 hours on dual A6000 (48GB each) at 960 resolution
+- ~1-2 hours at 640 resolution (if using lower resolution)
 
 **Target metrics:**
 - Mask mAP@50 > 0.85
@@ -182,21 +186,21 @@ python train_yolo.py --export --weights best.pt --formats tflite --int8
 yolo export \
     model=micropad_detection/yolo11n_synth/weights/best.pt \
     format=onnx \
-    imgsz=640 \
+    imgsz=960 \
     simplify=True
 
 # 2. TFLite for Android (FP16)
 yolo export \
     model=micropad_detection/yolo11n_synth/weights/best.pt \
     format=tflite \
-    imgsz=640 \
+    imgsz=960 \
     half=True
 
 # 3. INT8 quantization (if FP16 inference > 50ms)
 yolo export \
     model=micropad_detection/yolo11n_synth/weights/best.pt \
     format=tflite \
-    imgsz=640 \
+    imgsz=960 \
     int8=True
 ```
 
@@ -247,9 +251,13 @@ After successful training:
 ## Troubleshooting
 
 ### Out of Memory (OOM) Error
-Reduce batch size:
+Reduce batch size or image resolution:
 ```bash
-batch=64  # or batch=32
+# Reduce batch size
+python train_yolo.py --stage 1 --batch 16
+
+# Or reduce image resolution
+python train_yolo.py --stage 1 --imgsz 640 --batch 32
 ```
 
 ### Slow Training

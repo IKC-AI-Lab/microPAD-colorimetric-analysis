@@ -8,7 +8,8 @@ QUICK START (VS Code Terminal):
 
 This will start Stage 1 training with optimized defaults:
 - Devices: GPUs 0,1 (dual A6000 with NVLink)
-- Batch size: 32 (optimized for 126-image training set)
+- Image size: 960x960 (better detail than 640, faster than 1280)
+- Batch size: 24 (optimized for 960 resolution)
 - Epochs: 150 with early stopping (patience=20)
 - Results: training_runs/yolo11n_synth/
 
@@ -80,8 +81,8 @@ class YOLOTrainer:
         model: str = 'yolo11n-seg.pt',
         data: str = 'micropad_synth.yaml',
         epochs: int = 150,
-        imgsz: int = 640,
-        batch: int = 32,
+        imgsz: int = 960,
+        batch: int = 24,
         device: str = '0,1',
         patience: int = 20,
         name: str = 'yolo11n_synth',
@@ -93,8 +94,8 @@ class YOLOTrainer:
             model: YOLOv11 pretrained model (yolo11n-seg.pt recommended)
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
-            imgsz: Input image size (640 recommended)
-            batch: Batch size (32 optimized for dataset size)
+            imgsz: Input image size (960 recommended for better detail)
+            batch: Batch size (24 optimized for 960 resolution on dual A6000 GPUs)
             device: GPU device(s) - '0,1' for dual A6000 GPUs, '0' for single
             patience: Early stopping patience
             name: Experiment name
@@ -178,8 +179,8 @@ class YOLOTrainer:
         weights: str,
         data: str = 'micropad_mixed.yaml',
         epochs: int = 80,
-        imgsz: int = 640,
-        batch: int = 96,
+        imgsz: int = 960,
+        batch: int = 24,
         device: str = '0,1',
         patience: int = 15,
         lr0: float = 0.01,
@@ -271,8 +272,8 @@ class YOLOTrainer:
         self,
         weights: str,
         data: Optional[str] = None,
-        imgsz: int = 640,
-        batch: int = 32,
+        imgsz: int = 960,
+        batch: int = 24,
         device: str = '0',
         **kwargs
     ) -> Dict[str, Any]:
@@ -358,7 +359,7 @@ class YOLOTrainer:
         self,
         weights: str,
         formats: list = ['tflite'],
-        imgsz: int = 640,
+        imgsz: int = 960,
         half: bool = True,
         int8: bool = False,
         **kwargs
@@ -474,14 +475,14 @@ Examples:
                        help='Path to model weights (required for stage 2, validate, export)')
     parser.add_argument('--device', type=str, default='0,1',
                        help='GPU device(s) (default: 0,1 for NVLink A6000 GPUs)')
-    parser.add_argument('--imgsz', type=int, default=640,
-                       help='Input image size (default: 640)')
+    parser.add_argument('--imgsz', type=int, default=960,
+                       help='Input image size (default: 960)')
 
     # Training arguments
     parser.add_argument('--epochs', type=int,
                        help='Training epochs (default: 150 for stage 1, 80 for stage 2)')
     parser.add_argument('--batch', type=int,
-                       help='Batch size (default: 32 for stage 1 optimized for dataset size, 96 for stage 2)')
+                       help='Batch size (default: 24 for both stages, optimized for 960 resolution on dual A6000 GPUs)')
     parser.add_argument('--patience', type=int,
                        help='Early stopping patience (default: 20 for stage 1, 15 for stage 2)')
     parser.add_argument('--lr0', type=float,
