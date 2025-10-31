@@ -7,7 +7,7 @@ QUICK START (VS Code Terminal):
     python train_yolo.py
 
 This will start Stage 1 training (default mode) with optimized defaults:
-- Devices: GPUs 0,1 (dual A6000 with NVLink)
+- Devices: GPUs 0,2 (both A6000s - matches nvidia-smi order)
 - Image size: 960x960 (better detail than 640, faster than 1280)
 - Batch size: 24 (optimized for 960 resolution)
 - Epochs: 150 with early stopping (patience=20)
@@ -20,7 +20,7 @@ TRAINING PIPELINE:
 Also provides validation capabilities. Export to TFLite is done on-demand for Android deployment.
 
 HARDWARE REQUIREMENTS:
-- GPUs: Dual RTX A6000 (48GB each, NVLink connected on CUDA devices 0,1)
+- GPUs: Dual RTX A6000 (48GB each, CUDA devices 0,2 - matches nvidia-smi)
 - RAM: 256GB
 - CPUs: 64 cores / 128 threads
 - Storage: 20TB NVMe
@@ -474,8 +474,8 @@ Examples:
     # Common arguments
     parser.add_argument('--weights', type=str,
                        help='Path to model weights (required for stage 2, validate, export)')
-    parser.add_argument('--device', type=str, default='0,1',
-                       help='GPU device(s) (default: 0,1 for NVLink A6000 GPUs)')
+    parser.add_argument('--device', type=str, default='0,2',
+                       help='GPU device(s) (default: 0,2 for both A6000 GPUs - matches nvidia-smi order)')
     parser.add_argument('--imgsz', type=int, default=960,
                        help='Input image size (default: 960)')
 
