@@ -1,6 +1,14 @@
 """
 Prepare YOLO dataset configuration and train/val splits for microPAD auto-detection.
 
+This script collects images from augmented_1_dataset/[phone]/ directories
+and creates train.txt and val.txt files with absolute paths for YOLO training.
+YOLO handles image scaling at runtime via the imgsz parameter.
+
+Configuration:
+    - Train phones: iphone_11, iphone_15, realme_c55
+    - Val phone: samsung_a75
+
 Usage:
     python prepare_yolo_dataset.py
 """
@@ -33,7 +41,7 @@ def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List
     Returns:
         Sorted list of image paths (absolute by default)
     """
-    phone_path = AUGMENTED_DATASET / phone_dir / "images"
+    phone_path = AUGMENTED_DATASET / phone_dir
     images = []
 
     for ext in ["*.jpg", "*.jpeg", "*.png"]:
@@ -44,7 +52,7 @@ def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List
         images = [str(img.absolute()) for img in images]
     else:
         # Return paths relative to augmented_1_dataset
-        images = [f"{phone_dir}/images/{img.name}" for img in images]
+        images = [f"{phone_dir}/{img.name}" for img in images]
 
     return sorted(images)
 
@@ -117,15 +125,19 @@ def print_summary(train_count: int, val_count: int) -> None:
     print("\nNext steps:")
     print("1. Activate environment: conda activate microPAD-python-env")
     print("2. Train model:")
-    print("   yolo segment train model=yolo11n-seg.pt \\")
-    print("       data=python_scripts/configs/micropad_synth.yaml \\")
-    print("       epochs=150 imgsz=640 batch=128 device=0,1 \\")
-    print("       project=micropad_detection name=yolo11n_synth")
+    print("   python python_scripts/train_yolo.py --stage 1")
+    print("   (YOLO scales images to 960x960 at runtime)")
+    print("   Or customize resolution:")
+    print("   python python_scripts/train_yolo.py --stage 1 --imgsz 960 --batch 24")
     print("="*60)
 
 
 def verify_labels() -> bool:
-    """Verify that label files exist for all images."""
+    """Verify that label files exist for all images.
+
+    Returns:
+        True if all labels exist, False otherwise
+    """
     missing_labels = []
 
     for phone in PHONE_DIRS:
