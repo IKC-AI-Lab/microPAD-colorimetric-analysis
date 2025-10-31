@@ -214,7 +214,7 @@ class_id x1 y1 x2 y2 x3 y3 x4 y4
 - `x1 y1 ... x4 y4`: Normalized polygon vertices [0, 1] (divide by image width/height)
 - Vertex order: Clockwise from top-left (TL, TR, BR, BL)
 
-**Example label file (`augmented_1_dataset/labels/synthetic_001.txt`):**
+**Example label file (`augmented_1_dataset/phoneName/labels/synthetic_001.txt`):**
 ```
 0 0.234567 0.156789 0.345678 0.167890 0.356789 0.278901 0.245678 0.267890
 0 0.456789 0.389012 0.567890 0.400123 0.578901 0.511234 0.467890 0.500123
@@ -226,7 +226,7 @@ from ultralytics import YOLO
 
 # Train YOLOv11 segmentation model
 model = YOLO('yolo11n-seg.pt')
-model.train(data='micropad_synth.yaml', epochs=150, imgsz=640)
+model.train(data='micropad_synth.yaml', epochs=150, imgsz=960)
 ```
 
 **Dataset YAML configuration:**

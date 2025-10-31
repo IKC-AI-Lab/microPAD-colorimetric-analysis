@@ -68,17 +68,11 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 
 ---
 
-### 1.2 Multi-Scale Scene Generation
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 158-160, 687-709)
-- [✅] **Task:** Generate each augmentation at multiple scales
-- [✅] **Parameters:**
-  ```matlab
-  addParameter(parser, 'multiScale', true, @islogical);
-  addParameter(parser, 'scales', [640, 800, 1024], ...
-      @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
-  ```
-- [✅] **Output:** `synthetic_XXX_scale640.jpg`, `synthetic_XXX_scale800.jpg`, `synthetic_XXX_scale1024.jpg`
-- [✅] **Test:** Verify polygon coordinates scale correctly
+### 1.2 Multi-Scale Scene Generation [DEPRECATED]
+- [❌] **Status:** REMOVED - Multi-scale pre-generation removed in favor of runtime YOLO scaling
+- [✅] **Rationale:** YOLO handles image scaling efficiently at training time via `imgsz` parameter
+- [✅] **Benefits:** 67% disk space savings, instant resolution experimentation, simpler codebase
+- [✅] **Replacement:** Single-resolution generation at high quality, YOLO scales as needed during training
 
 ---
 
@@ -309,9 +303,9 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
   python train_yolo.py --stage 1
   ```
 - **Hyperparameters:**
-  - Epochs: 150 max (early stopping at 61, best model at epoch 55)
-  - Batch size: 32
-  - Image size: 640x640
+  - Epochs: 150 max (early stopping patience 20)
+  - Batch size: 24 (optimized for 960 resolution)
+  - Image size: 960x960 (better detail than 640, faster than 1280)
   - Optimizer: AdamW with cosine learning rate schedule
   - Hardware: Dual A6000 GPUs (48GB each, NVLink)
   - Data augmentation: YOLOv11 default augmentations
@@ -475,7 +469,7 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
       }
 
       fun detectQuads(bitmap: Bitmap): List<Quad> {
-          val input = preprocessImage(bitmap)  // Resize to 640×640, normalize
+          val input = preprocessImage(bitmap)  // Resize to 960×960, normalize
           val output = runInference(input)
           val masks = parseMasks(output)
           return masks.map { maskToQuad(it) }.filter { it.confidence > 0.6 }
@@ -578,20 +572,22 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 
 ## Implementation Notes
 
-### Dataset Structure (After Phase 2)
+### Dataset Structure (After Phase 2) [UPDATED]
 ```
 augmented_1_dataset/
-├── images/
-│   ├── synthetic_001_scale640.jpg
-│   ├── synthetic_001_scale800.jpg
-│   ├── synthetic_001_scale1024.jpg
-│   └── ...
-└── labels/
-    ├── synthetic_001_scale640.txt
-    ├── synthetic_001_scale800.txt
-    ├── synthetic_001_scale1024.txt
-    └── ...
+├── [phone_name]/
+│   ├── IMG_0957_aug_000.jpg      ← Real passthrough images (aug_000)
+│   ├── IMG_0957_aug_001.jpg      ← Synthetic augmented images (aug_001+)
+│   ├── IMG_0957_aug_002.jpg
+│   └── labels/                   ← YOLO labels (standard structure)
+│       ├── IMG_0957_aug_000.txt
+│       ├── IMG_0957_aug_001.txt
+│       └── IMG_0957_aug_002.txt
+├── train.txt                     ← Absolute paths to training images
+└── val.txt                       ← Absolute paths to validation images
 ```
+
+**Note:** Multi-scale subdirectories (`scales/scale640/`, etc.) have been removed. YOLO handles image scaling at runtime via the `imgsz` parameter (e.g., `imgsz=960`), eliminating the need for pre-scaled images and saving ~67% disk space.
 
 ### YOLO Label Format
 ```
