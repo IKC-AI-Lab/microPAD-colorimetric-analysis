@@ -31,8 +31,7 @@ function augment_dataset(varargin)
     %   e) Composite onto procedural background
     %
     % OUTPUT STRUCTURE:
-    %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
-    %   augmented_1_dataset/[phone]/scales/    - Optional multi-scale synthetic scenes
+    %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes (images directly in phone folder)
     %   augmented_2_micropads/  - Polygon crops + coordinates.txt
     %
     % Parameters (Name-Value):
@@ -148,8 +147,6 @@ function augment_dataset(varargin)
     addParameter(parser, 'motionBlurProbability', 0.15, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', true, @islogical);
-    addParameter(parser, 'multiScale', true, @islogical);
-    addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     addParameter(parser, 'exportYOLOLabels', true, @islogical);
     addParameter(parser, 'enableDistractorPolygons', true, @islogical);
@@ -204,8 +201,6 @@ function augment_dataset(varargin)
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
-    cfg.multiScale = opts.multiScale;
-    cfg.scales = opts.scales;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
     cfg.exportYOLOLabels = opts.exportYOLOLabels;
     cfg.distractors = DISTRACTOR_POLYGONS;
@@ -266,8 +261,6 @@ function augment_dataset(varargin)
     fprintf('\n=== Augmentation Configuration ===\n');
     fprintf('Camera perspective: %.0f° max angle, X=[%.1f,%.1f], Y=[%.1f,%.1f], Z=[%.1f,%.1f]\n', ...
         cfg.camera.maxAngleDeg, cfg.camera.xRange, cfg.camera.yRange, cfg.camera.zRange);
-    fprintf('Multi-scale: %s (scales: %s)\n', ...
-        string(cfg.multiScale), strjoin(string(cfg.scales), ', '));
     fprintf('Artifacts: %d-%d per image\n', ...
         cfg.artifacts.countRange(1), cfg.artifacts.countRange(2));
     fprintf('Extreme cases: %.0f%% probability\n', cfg.extremeCasesProbability*100);
@@ -422,10 +415,8 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     sceneName = sprintf('%s_aug_%03d', baseSceneId, 0);
     sceneFileName = sprintf('%s%s', sceneName, imgExt);
 
-    % Ensure YOLO-compatible structure: images/ and labels/ subdirectories
-    imagesDir = fullfile(stage1PhoneOut, 'images');
-    ensure_folder(imagesDir);
-    sceneOutPath = fullfile(imagesDir, sceneFileName);
+    % Save to phone directory (YOLO-compatible: images in phone folder, labels in labels/ subfolder)
+    sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
 
     % Copy original capture. If copy fails, re-encode image.
     [copied, msg, msgid] = copyfile(imgPath, sceneOutPath, 'f');
@@ -911,46 +902,12 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
     % Save synthetic scene (stage 1 output) - YOLO-compatible structure
     sceneFileName = sprintf('%s%s', sceneName, '.jpg');
-    imagesDir = fullfile(stage1PhoneOut, 'images');
-    ensure_folder(imagesDir);
-    sceneOutPath = fullfile(imagesDir, sceneFileName);
+    sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
     % Export YOLO segmentation labels
     if cfg.exportYOLOLabels
         export_yolo_segmentation_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
-    end
-
-    % Multi-scale scene generation (Phase 1.3)
-    if cfg.multiScale && numel(cfg.scales) > 0
-        [origH, origW, ~] = size(background);
-        for scaleIdx = 1:numel(cfg.scales)
-            targetSize = cfg.scales(scaleIdx);
-
-            % Resize scene to target scale
-            scaleFactor = targetSize / max(origH, origW);
-            scaledScene = imresize(background, scaleFactor);
-
-            % Scale polygon coordinates proportionally
-            scaledPolygons = cell(size(scenePolygons));
-            for i = 1:numel(scenePolygons)
-                scaledPolygons{i} = scenePolygons{i} * scaleFactor;
-            end
-
-            % Save with scale suffix - YOLO-compatible structure
-            scaleSceneName = sprintf('%s_scale%d', sceneName, targetSize);
-            scaleFileName = sprintf('%s%s', scaleSceneName, '.jpg');
-            scaleStageDir = fullfile(stage1PhoneOut, 'scales', sprintf('scale%d', targetSize));
-            scaleImagesDir = fullfile(scaleStageDir, 'images');
-            ensure_folder(scaleImagesDir);
-            scaleOutPath = fullfile(scaleImagesDir, scaleFileName);
-            imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
-
-            % Export labels for this scale
-            if cfg.exportYOLOLabels
-                export_yolo_segmentation_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
-            end
-        end
     end
 
     % Trim coordinate arrays to actual size
