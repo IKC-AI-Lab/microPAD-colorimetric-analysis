@@ -4,9 +4,9 @@ YOLOv11 Training Script for microPAD Quadrilateral Auto-Detection
 
 QUICK START (VS Code Terminal):
     conda activate microPAD-python-env
-    python train_yolo.py --stage 1
+    python train_yolo.py
 
-This will start Stage 1 training with optimized defaults:
+This will start Stage 1 training (default mode) with optimized defaults:
 - Devices: GPUs 0,1 (dual A6000 with NVLink)
 - Image size: 960x960 (better detail than 640, faster than 1280)
 - Batch size: 24 (optimized for 960 resolution)
@@ -441,8 +441,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Train Stage 1 (synthetic data pretraining)
-  python train_yolo.py --stage 1
+  # Train Stage 1 (synthetic data pretraining) - default mode
+  python train_yolo.py
+  python train_yolo.py --stage 1  # Explicit stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
   python train_yolo.py --stage 2 --weights models/yolo11n_micropad_seg.pt
@@ -461,10 +462,10 @@ Examples:
         """
     )
 
-    # Mode selection
-    mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument('--stage', type=int, choices=[1, 2],
-                           help='Training stage (1: synthetic, 2: mixed)')
+    # Mode selection (defaults to Stage 1 training)
+    mode_group = parser.add_mutually_exclusive_group(required=False)
+    mode_group.add_argument('--stage', type=int, choices=[1, 2], default=1,
+                           help='Training stage (default: 1 - synthetic pretraining, 2: mixed fine-tuning)')
     mode_group.add_argument('--validate', action='store_true',
                            help='Validate trained model')
     mode_group.add_argument('--export', action='store_true',

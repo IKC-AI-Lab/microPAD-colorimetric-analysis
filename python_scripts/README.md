@@ -93,8 +93,8 @@ The `train_yolo.py` script provides a comprehensive CLI interface for training, 
 conda activate microPAD-python-env
 cd python_scripts
 
-# Stage 1: Train on synthetic data (automatic pretraining)
-python train_yolo.py --stage 1
+# Stage 1: Train on synthetic data (default mode)
+python train_yolo.py
 
 # Stage 2: Fine-tune with manual labels (when available)
 python train_yolo.py --stage 2 --weights ../micropad_detection/yolo11n_synth/weights/best.pt
@@ -109,10 +109,10 @@ python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weig
 **Custom training parameters:**
 ```bash
 # Custom epochs, batch size, single GPU
-python train_yolo.py --stage 1 --epochs 200 --batch 16 --device 0
+python train_yolo.py --epochs 200 --batch 16 --device 0
 
 # Try different resolution (640, 800, or 960)
-python train_yolo.py --stage 1 --imgsz 800 --batch 28
+python train_yolo.py --imgsz 800 --batch 28
 
 # Export with INT8 quantization for Android
 python train_yolo.py --export --weights best.pt --formats tflite --int8
@@ -254,10 +254,10 @@ After successful training:
 Reduce batch size or image resolution:
 ```bash
 # Reduce batch size
-python train_yolo.py --stage 1 --batch 16
+python train_yolo.py --batch 16
 
 # Or reduce image resolution
-python train_yolo.py --stage 1 --imgsz 640 --batch 32
+python train_yolo.py --imgsz 640 --batch 32
 ```
 
 ### Slow Training

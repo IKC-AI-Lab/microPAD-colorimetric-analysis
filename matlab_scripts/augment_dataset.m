@@ -136,7 +136,7 @@ function augment_dataset(varargin)
     parser = inputParser();
     parser.FunctionName = mfilename;
 
-    addParameter(parser, 'numAugmentations', 5, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
+    addParameter(parser, 'numAugmentations', 10, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
     addParameter(parser, 'rngSeed', [], @(n) isempty(n) || isnumeric(n));
     addParameter(parser, 'phones', {}, @(c) iscellstr(c) || isstring(c));
     addParameter(parser, 'backgroundWidth', 4000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>',0}));
