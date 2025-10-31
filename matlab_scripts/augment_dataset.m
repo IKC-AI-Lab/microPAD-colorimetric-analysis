@@ -55,7 +55,7 @@ function augment_dataset(varargin)
     %% CONFIGURATION CONSTANTS
     %% =====================================================================
     DEFAULT_INPUT_STAGE1 = '1_dataset';
-    DEFAULT_INPUT_STAGE2_COORDS = '2_micropads';
+    DEFAULT_INPUT_STAGE2 = '2_micropads';
     DEFAULT_INPUT_STAGE3_COORDS = '3_elliptical_regions';
     DEFAULT_OUTPUT_STAGE1 = 'augmented_1_dataset';
     DEFAULT_OUTPUT_STAGE2 = 'augmented_2_micropads';
@@ -225,9 +225,9 @@ function augment_dataset(varargin)
     cfg.projectRoot = projectRoot;
     cfg.paths = struct( ...
         'stage1Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE1), ...
-        'stage2Rect', fullfile(projectRoot, DEFAULT_INPUT_STAGE2), ...
+        'stage2Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE2), ...
         'stage3Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE3_COORDS), ...
-        'stage4Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE4_COORDS), ...
+        'ellipseCoords', fullfile(projectRoot, DEFAULT_INPUT_STAGE3_COORDS), ...
         'stage1Output', DEFAULT_OUTPUT_STAGE1, ...
         'stage2Output', DEFAULT_OUTPUT_STAGE2, ...
         'stage3Output', DEFAULT_OUTPUT_STAGE3);
@@ -238,13 +238,13 @@ function augment_dataset(varargin)
             'Stage 1 input not found: %s. Passthrough copies will be skipped.', ...
             cfg.paths.stage1Input);
     end
-    if ~isfolder(cfg.paths.stage3Coords)
-        error('augmentDataset:missingCoords', 'Stage 3 coordinates folder not found: %s', cfg.paths.stage3Coords);
+    if ~isfolder(cfg.paths.stage2Coords)
+        error('augmentDataset:missingCoords', 'Stage 2 coordinates folder not found: %s', cfg.paths.stage2Coords);
     end
-    if ~isfolder(cfg.paths.stage4Coords)
-        warning('augmentDataset:missingStage4', ...
-                'Stage 4 coordinates folder not found: %s\nEllipse processing will be skipped.', ...
-                cfg.paths.stage4Coords);
+    if ~isfolder(cfg.paths.ellipseCoords)
+        warning('augmentDataset:missingEllipse', ...
+                'Ellipse coordinates folder not found: %s\nEllipse processing will be skipped.', ...
+                cfg.paths.ellipseCoords);
     end
 
     % Get phone list
@@ -314,9 +314,8 @@ function augment_phone(phoneName, cfg)
 
     % Define phone-specific paths
     stage1PhoneDir = fullfile(cfg.paths.stage1Input, phoneName);
-    stage2PhoneCoords = fullfile(cfg.paths.stage2Rect, phoneName, cfg.files.coordinates);
-    stage3PhoneCoords = fullfile(cfg.paths.stage3Coords, phoneName, cfg.files.coordinates);
-    stage4PhoneCoords = fullfile(cfg.paths.stage4Coords, phoneName, cfg.files.coordinates);
+    stage2PhoneCoords = fullfile(cfg.paths.stage2Coords, phoneName, cfg.files.coordinates);
+    ellipsePhoneCoords = fullfile(cfg.paths.ellipseCoords, phoneName, cfg.files.coordinates);
 
     % Validate stage 1 images exist
     if ~isfolder(stage1PhoneDir)
@@ -324,38 +323,24 @@ function augment_phone(phoneName, cfg)
         return;
     end
 
-    % Load stage 2 rectangular crop coordinates (needed for transformation)
-    cropEntries = [];
-    if isfile(stage2PhoneCoords)
-        cropEntries = read_rectangular_crop_coordinates(stage2PhoneCoords);
-    else
-        warning('augmentDataset:missingStage2Coords', ...
-            'No stage 2 coordinates for %s. Assuming polygons are already in 1_dataset space.', phoneName);
-    end
-
-    % Load polygon coordinates (required)
-    if ~isfile(stage3PhoneCoords)
+    % Load polygon coordinates from stage 2 (required)
+    if ~isfile(stage2PhoneCoords)
         warning('augmentDataset:noPolygonCoords', 'No polygon coordinates for %s. Skipping.', phoneName);
         return;
     end
 
-    polygonEntries = read_polygon_coordinates(stage3PhoneCoords);
+    polygonEntries = read_polygon_coordinates(stage2PhoneCoords);
     if isempty(polygonEntries)
         warning('augmentDataset:emptyPolygons', 'No valid polygon entries for %s', phoneName);
         return;
     end
 
-    % Transform polygon coordinates from strip-space to original-image-space
-    if ~isempty(cropEntries)
-        polygonEntries = apply_crop_transforms(polygonEntries, cropEntries);
-    end
-
-    % Load ellipse coordinates (optional)
+    % Load ellipse coordinates from stage 3 (optional)
     ellipseEntries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
                             'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
     hasEllipses = false;
-    if isfile(stage4PhoneCoords)
-        ellipseEntries = read_ellipse_coordinates(stage4PhoneCoords);
+    if isfile(ellipsePhoneCoords)
+        ellipseEntries = read_ellipse_coordinates(ellipsePhoneCoords);
         hasEllipses = ~isempty(ellipseEntries);
     else
         fprintf('  [INFO] No ellipse coordinates. Will process polygons only.\n');
@@ -499,7 +484,8 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         stage2Coords{s2Count} = struct( ...
             'image', polygonFileName, ...
             'concentration', poly.concentration, ...
-            'vertices', origVertices);
+            'vertices', origVertices, ...
+            'rotation', poly.rotation);
 
         ellipseKey = sprintf('%s#%d', paperBase, poly.concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
@@ -769,7 +755,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         stage2Coords{s2Count} = struct( ...
             'image', polygonFileName, ...
             'concentration', concentration, ...
-            'vertices', sceneVertices);
+            'vertices', sceneVertices, ...
+            'rotation', 0);
 
         % Track polygon in scene space for optional occlusions
         scenePolygons{end+1} = sceneVertices; %#ok<AGROW>
@@ -2446,7 +2433,7 @@ end
 
 function write_stage2_coordinates(coords, outputDir, filename)
     % Atomically write stage 2 coordinates (deduplicated by image+concentration)
-    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4
+    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
 
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
@@ -2473,7 +2460,7 @@ function write_stage2_coordinates(coords, outputDir, filename)
     end
 
     % Write atomically to a temp file then move over
-    header = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4';
+    header = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
     tmpPath = tempname(coordFolder);
     fid = fopen(tmpPath, 'wt');
     if fid == -1
@@ -2485,10 +2472,17 @@ function write_stage2_coordinates(coords, outputDir, filename)
     for i = 1:numel(keysArr)
         e = map(keysArr{i});
         verts = round(e.vertices);
-        fprintf(fid, '%s %d %d %d %d %d %d %d %d %d\n', ...
+        % Get rotation field, default to 0 if missing
+        if isfield(e, 'rotation')
+            rotation = e.rotation;
+        else
+            rotation = 0;
+        end
+        fprintf(fid, '%s %d %d %d %d %d %d %d %d %d %.2f\n', ...
                 e.image, e.concentration, ...
                 verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
-                verts(3,1), verts(3,2), verts(4,1), verts(4,2));
+                verts(3,1), verts(3,2), verts(4,1), verts(4,2), ...
+                rotation);
     end
     fclose(fid);
 
@@ -2611,12 +2605,13 @@ function lines = read_coordinate_file_lines(coordPath)
 end
 
 function entries = read_polygon_coordinates(coordPath)
-    % Read polygon coordinates from stage 3
+    % Read polygon coordinates from stage 2 (2_micropads)
+    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
     lines = read_coordinate_file_lines(coordPath);
 
     % Pre-allocate with generous estimate
     maxEntries = max(10000, numel(lines));
-    entries = struct('image', {}, 'concentration', {}, 'vertices', {});
+    entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
     entries(maxEntries).image = '';
     count = 0;
 
@@ -2630,6 +2625,16 @@ function entries = read_polygon_coordinates(coordPath)
         concentration = str2double(parts{2});
         coords = str2double(parts(3:10));
 
+        % Read rotation if available (11th field), default to 0 if missing
+        if numel(parts) >= 11
+            rotation = str2double(parts{11});
+            if isnan(rotation)
+                rotation = 0;
+            end
+        else
+            rotation = 0;
+        end
+
         if any(isnan([concentration, coords]))
             continue;
         end
@@ -2639,7 +2644,8 @@ function entries = read_polygon_coordinates(coordPath)
         count = count + 1;
         entries(count) = struct('image', imgName, ...
                                 'concentration', concentration, ...
-                                'vertices', vertices);
+                                'vertices', vertices, ...
+                                'rotation', rotation);
     end
 
     entries = entries(1:count);
@@ -3197,234 +3203,4 @@ function quad_ordered = order_corners_clockwise(quad)
     % Ensure top-left corner is first (minimum distance from origin)
     [~, topLeftIdx] = min(sum(quad_ordered.^2, 2));
     quad_ordered = circshift(quad_ordered, -topLeftIdx + 1, 1);
-end
-
-%% -------------------------------------------------------------------------
-%% Coordinate Transformation Helpers
-%% -------------------------------------------------------------------------
-
-function entries = read_rectangular_crop_coordinates(coordPath)
-    % Read stage 2 rectangular crop coordinates with auto-format detection
-    % Returns struct array with fields: imageBase, x, y, w, h, rotation, polygon
-    entries = struct('imageBase', '', 'x', [], 'y', [], 'w', [], 'h', [], 'rotation', [], 'polygon', []);
-    entries = entries([]);
-
-    if ~isfile(coordPath)
-        return;
-    end
-
-    fid = fopen(coordPath, 'rt');
-    if fid == -1
-        return;
-    end
-    cleaner = onCleanup(@() fclose(fid));
-
-    % Read entire file
-    allText = textscan(fid, '%s', 'Delimiter', '\n', 'WhiteSpace', '');
-    lines = allText{1};
-
-    if isempty(lines)
-        return;
-    end
-
-    % Detect coordinate format from first line
-    [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(lines{1});
-
-    % Skip header if detected
-    startIdx = 1;
-    if hasHeader
-        startIdx = 2;
-    end
-
-    if startIdx > numel(lines)
-        return;
-    end
-
-    nLines = numel(lines) - startIdx + 1;
-    tmp(nLines) = struct('imageBase', '', 'x', [], 'y', [], 'w', [], 'h', [], 'rotation', [], 'polygon', []);
-    k = 0;
-
-    % Parse rectangular format (image x y width height [rotation])
-    if isRectWH
-        for i = startIdx:numel(lines)
-            ln = strtrim(lines{i});
-            if isempty(ln)
-                continue;
-            end
-            parts = strsplit(ln);
-            if numel(parts) < 5
-                continue;
-            end
-            nums = str2double(parts(2:end));
-            if numel(nums) < 4 || any(isnan(nums(1:4)))
-                continue;
-            end
-            k = k + 1;
-            tmp(k).imageBase = strip_extension(parts{1});
-            tmp(k).x = round(nums(1));
-            tmp(k).y = round(nums(2));
-            tmp(k).w = round(nums(3));
-            tmp(k).h = round(nums(4));
-            if numel(nums) >= 5 && ~isnan(nums(5))
-                tmp(k).rotation = nums(5);
-            else
-                tmp(k).rotation = 0;
-            end
-        end
-        if k > 0
-            entries = tmp(1:k);
-            return;
-        end
-    end
-
-    % Parse polygon format (image x1 y1 x2 y2 x3 y3 x4 y4)
-    if isPoly4
-        for i = startIdx:numel(lines)
-            ln = strtrim(lines{i});
-            if isempty(ln)
-                continue;
-            end
-            parts = strsplit(ln);
-            if numel(parts) < 9
-                continue;
-            end
-            nums = str2double(parts(2:end));
-            if numel(nums) < 8
-                continue;
-            end
-            k = k + 1;
-            tmp(k).imageBase = strip_extension(parts{1});
-            P = [nums(1) nums(2); nums(3) nums(4); nums(5) nums(6); nums(7) nums(8)];
-            tmp(k).polygon = round(P);
-            % Compute axis-aligned bounding box
-            minx = min(tmp(k).polygon(:, 1));
-            maxx = max(tmp(k).polygon(:, 1));
-            miny = min(tmp(k).polygon(:, 2));
-            maxy = max(tmp(k).polygon(:, 2));
-            tmp(k).x = minx;
-            tmp(k).y = miny;
-            tmp(k).w = maxx - minx;
-            tmp(k).h = maxy - miny;
-            tmp(k).rotation = 0;
-        end
-        if k > 0
-            entries = tmp(1:k);
-            return;
-        end
-    end
-
-    % Parse bounding box format (image x y width height [rotation])
-    for i = startIdx:numel(lines)
-        ln = strtrim(lines{i});
-        if isempty(ln)
-            continue;
-        end
-        parts = strsplit(ln);
-        if numel(parts) < 5
-            continue;
-        end
-        nums = str2double(parts(2:end));
-        if numel(nums) < 4 || any(isnan(nums(1:4)))
-            continue;
-        end
-        k = k + 1;
-        tmp(k).imageBase = strip_extension(parts{1});
-        tmp(k).x = round(nums(1));
-        tmp(k).y = round(nums(2));
-        tmp(k).w = round(nums(3));
-        tmp(k).h = round(nums(4));
-        if numel(nums) >= 5 && ~isnan(nums(5))
-            tmp(k).rotation = nums(5);
-        else
-            tmp(k).rotation = 0;
-        end
-    end
-
-    if k == 0
-        entries = entries([]);
-    else
-        entries = tmp(1:k);
-    end
-end
-
-function [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(firstLine)
-    % Detect rectangular coordinate file format from header line
-    % Returns:
-    %   isRectWH - true if format is "image x y width height [rotation]"
-    %   isPoly4  - true if format is "image x1 y1 x2 y2 x3 y3 x4 y4"
-    %   hasHeader - true if first line is a header (not data)
-    lowerHead = lower(strtrim(firstLine));
-    isRectWH = contains(lowerHead, 'image') && ...
-               contains(lowerHead, 'width') && contains(lowerHead, 'height');
-    isPoly4  = contains(lowerHead, 'x1') && contains(lowerHead, 'y1') && ...
-               contains(lowerHead, 'x4') && contains(lowerHead, 'y4') && ...
-               ~contains(lowerHead, 'concentration');
-    hasHeader = isRectWH || isPoly4;
-end
-
-function s = strip_extension(nameOrPath)
-    % Remove file extension from filename or path
-    [~, s, ~] = fileparts(nameOrPath);
-end
-
-function transformedEntries = apply_crop_transforms(polygonEntries, cropEntries)
-    % Transform polygon coordinates from strip-space to original-image-space
-    % Uses stage 2 crop coordinates to reverse the crop transformation
-
-    % Build lookup map: imageBase -> cropEntry
-    cropMap = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    for i = 1:numel(cropEntries)
-        cropMap(cropEntries(i).imageBase) = cropEntries(i);
-    end
-
-    % Transform each polygon entry
-    transformedEntries = polygonEntries;
-    for i = 1:numel(polygonEntries)
-        imgBase = strip_extension(polygonEntries(i).image);
-
-        % Find matching crop entry
-        if ~cropMap.isKey(imgBase)
-            warning('augmentDataset:noCropMatch', ...
-                'No stage 2 crop found for %s. Using original coordinates.', polygonEntries(i).image);
-            continue;
-        end
-
-        cropEntry = cropMap(imgBase);
-
-        % Transform polygon vertices
-        transformedVertices = transform_polygon_to_original_space(polygonEntries(i).vertices, cropEntry);
-        transformedEntries(i).vertices = transformedVertices;
-    end
-end
-
-function transformedVertices = transform_polygon_to_original_space(vertices, cropEntry)
-    % Transform polygon vertices from strip-space to original-image-space
-    % Applies:
-    %   1. Translation by crop offset (x, y)
-    %   2. Inverse rotation if crop was rotated
-
-    % Translate by crop offset
-    transformed = vertices + repmat([cropEntry.x, cropEntry.y], size(vertices, 1), 1);
-
-    % Apply inverse rotation if present
-    if isfield(cropEntry, 'rotation') && ~isempty(cropEntry.rotation) && cropEntry.rotation ~= 0
-        % Rotation center is the crop origin
-        centerX = cropEntry.x + cropEntry.w / 2;
-        centerY = cropEntry.y + cropEntry.h / 2;
-
-        % Convert rotation angle to radians (inverse rotation)
-        angleRad = -deg2rad(cropEntry.rotation);
-
-        % Build rotation matrix
-        cosTheta = cos(angleRad);
-        sinTheta = sin(angleRad);
-        rotMat = [cosTheta, -sinTheta; sinTheta, cosTheta];
-
-        % Translate to origin, rotate, translate back
-        centered = transformed - repmat([centerX, centerY], size(transformed, 1), 1);
-        rotated = (rotMat * centered')';
-        transformed = rotated + repmat([centerX, centerY], size(transformed, 1), 1);
-    end
-
-    transformedVertices = round(transformed);
 end
