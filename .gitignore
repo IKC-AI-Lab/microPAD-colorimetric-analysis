@@ -16,6 +16,10 @@ augmented_*/
 # Training runs (large model artifacts and checkpoints)
 training_runs/
 
+# YOLO pretrained base models (downloadable from Ultralytics)
+yolo11n.pt
+yolo11n-seg.pt
+
 # Claude Code settings
 .claude/settings.local.json
 
