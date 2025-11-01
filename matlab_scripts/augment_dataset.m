@@ -36,6 +36,9 @@ function augment_dataset(varargin)
     %   augmented_2_micropads/[phone]/con_*/   - Polygon crops + coordinates.txt
     %   augmented_3_elliptical_regions/[phone]/con_*/ - Elliptical patches + coordinates.txt
     %
+    % IMPORTANT: If you change backgroundWidth/backgroundHeight parameters mid-session,
+    % run 'clear functions' to reset the internal texture cache.
+    %
     % Parameters (Name-Value):
     % - 'numAugmentations' (positive integer, default 10): synthetic versions per paper
     %   Note: Real captures are always copied; synthetic scenes are labelled *_aug_XXX
@@ -442,7 +445,6 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         end
     end
 
-    polygonCells = cell(numel(polygons), 1);
     stage2Coords = cell(numel(polygons), 1);
     stage3Coords = cell(max(1, numel(polygons) * 3), 1);
     polyCount = 0;
@@ -475,7 +477,6 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         imwrite(polygonImg, polygonOutPath);
 
         polyCount = polyCount + 1;
-        polygonCells{polyCount} = origVertices;
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
@@ -535,7 +536,6 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         return;
     end
 
-    polygonCells = polygonCells(1:polyCount);
     stage2Coords = stage2Coords(1:s2Count);
     stage3Coords = stage3Coords(1:s3Count);
 
@@ -703,8 +703,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         baseSceneId = paperBase;
     end
     sceneName = sprintf('%s_aug_%03d', baseSceneId, augIdx);
-    scenePolygons = {};
+    scenePolygons = cell(validCount, 1);
     occupiedBboxes = zeros(validCount, 4);
+    polygonIdx = 0;
 
     for i = 1:validCount
         region = transformedRegions{i};
@@ -752,7 +753,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             'rotation', 0);
 
         % Track polygon in scene space for optional occlusions
-        scenePolygons{end+1} = sceneVertices; %#ok<AGROW>
+        polygonIdx = polygonIdx + 1;
+        scenePolygons{polygonIdx} = sceneVertices;
 
         % Process ellipses for this concentration (stage 3)
         ellipseKey = sprintf('%s#%d', paperBase, concentration);
@@ -870,6 +872,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             end
         end
     end
+
+    % Trim scenePolygons to actual size
+    scenePolygons = scenePolygons(1:polygonIdx);
 
     additionalDistractors = 0;
     if cfg.distractors.enabled && cfg.distractors.multiplier > 0
@@ -1081,10 +1086,14 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
     end
 
     numSource = numel(regions);
-    if isempty(occupiedBboxes)
-        allBboxes = zeros(0, 4);
-    else
-        allBboxes = double(occupiedBboxes);
+    numPolygons = size(occupiedBboxes, 1);
+    maxBboxes = targetCount + numPolygons;
+    allBboxes = zeros(maxBboxes, 4);
+    bboxCount = 0;
+
+    if ~isempty(occupiedBboxes)
+        bboxCount = numPolygons;
+        allBboxes(1:bboxCount, :) = double(occupiedBboxes);
     end
 
     placedCount = 0;
@@ -1133,7 +1142,7 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
 
             % Check collision with all placed bboxes (O(n) iteration acceptable for small distractor counts)
             hasConflict = false;
-            for j = 1:size(allBboxes, 1)
+            for j = 1:bboxCount
                 if bboxes_overlap(candidateBbox, allBboxes(j, :), cfg.placement.minSpacing)
                     hasConflict = true;
                     break;
@@ -1146,7 +1155,8 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
             sceneVerts = localVerts + [xCandidate, yCandidate];
 
             bg = composite_to_background(bg, patch, sceneVerts);
-            allBboxes(end+1, :) = candidateBbox; %#ok<AGROW>
+            bboxCount = bboxCount + 1;
+            allBboxes(bboxCount, :) = candidateBbox;
             placedCount = placedCount + 1;
             break;
         end
@@ -2545,7 +2555,8 @@ function lines = read_coordinate_file_lines(coordPath)
     end
 
     % Read all non-empty lines
-    lines = {};
+    lines = cell(1000, 1);
+    lineCount = 0;
     while true
         line = fgetl(fid);
         if ~ischar(line)
@@ -2553,9 +2564,14 @@ function lines = read_coordinate_file_lines(coordPath)
         end
         trimmed = strtrim(line);
         if ~isempty(trimmed)
-            lines{end+1} = trimmed; %#ok<AGROW>
+            lineCount = lineCount + 1;
+            if lineCount > length(lines)
+                lines{end*2} = [];
+            end
+            lines{lineCount} = trimmed;
         end
     end
+    lines = lines(1:lineCount);
 end
 
 function entries = read_polygon_coordinates(coordPath)
@@ -2797,14 +2813,24 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
         minCellY = max(1, floor(y / cellSize));
         maxCellY = min(gridHeight, ceil((y + bboxStruct.height) / cellSize));
 
-        neighborIndices = [];
+        cellCount = 0;
+        maxCells = (maxCellY - minCellY + 1) * (maxCellX - minCellX + 1);
+        tempCells = cell(maxCells, 1);
+
         for cy = minCellY:maxCellY
             for cx = minCellX:maxCellX
-                neighborIndices = [neighborIndices, grid{cy, cx}]; %#ok<AGROW>
+                if ~isempty(grid{cy, cx})
+                    cellCount = cellCount + 1;
+                    tempCells{cellCount} = grid{cy, cx};
+                end
             end
         end
-        if ~isempty(neighborIndices)
+
+        if cellCount > 0
+            neighborIndices = [tempCells{1:cellCount}];
             neighborIndices = unique(neighborIndices);
+        else
+            neighborIndices = [];
         end
 
         clearance = maxClearance;

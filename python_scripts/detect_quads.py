@@ -149,14 +149,22 @@ def detect_quads(image_path, model_path, conf_threshold=0.6, imgsz=640):
 
     # Process each detection
     for i, (mask_xy, conf) in enumerate(zip(result.masks.xy, result.boxes.conf)):
-        contour = mask_xy.cpu().numpy()
+        # Handle both tensor and numpy array inputs
+        if hasattr(mask_xy, 'cpu'):
+            contour = mask_xy.cpu().numpy()
+        else:
+            contour = np.array(mask_xy) if not isinstance(mask_xy, np.ndarray) else mask_xy
 
         # Fit quadrilateral from contour
         quad = fit_quad_from_contour(contour)
 
         if quad is not None:
             quads.append(quad)
-            confidences.append(float(conf.cpu().numpy()))
+            # Handle both tensor and scalar confidence values
+            if hasattr(conf, 'cpu'):
+                confidences.append(float(conf.cpu().item()))
+            else:
+                confidences.append(float(conf))
 
     return quads, confidences
 

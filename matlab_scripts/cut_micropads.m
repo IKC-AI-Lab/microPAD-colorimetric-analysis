@@ -16,15 +16,15 @@ function cut_micropads(varargin)
     %
     % Inputs (Name-Value pairs):
     % - 'numSquares': number of regions to capture per strip (default: 7)
-    % - 'aspectRatio': width/height ratio of each region (default: 0.90, slightly taller than wide)
+    % - 'aspectRatio': width/height ratio of each region (default: 1.0, perfect squares)
     % - 'coverage': fraction of image width to fill (default: 0.80)
     % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.19)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'preserveFormat' | 'jpegQuality' | 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
-    % - 'detectionModel': path to YOLOv11 model (default: 'models/yolo11n_micropad_seg.pt')
+    % - 'detectionModel': path to YOLOv11 model (default: 'models/yolo11m_micropad_seg.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
-    % - 'inferenceSize': YOLO inference image size in pixels (default: 640)
+    % - 'inferenceSize': YOLO inference image size in pixels (default: 1280)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
@@ -62,13 +62,13 @@ function cut_micropads(varargin)
 
     % === DEFAULT GEOMETRY / SELECTION ===
     DEFAULT_NUM_SQUARES = 7;
-    DEFAULT_ASPECT_RATIO = 0.90;  % width/height ratio: rectangles are slightly taller than wide
-    DEFAULT_COVERAGE = 0.80;       % rectangles span 80% of image width
-    DEFAULT_GAP_PERCENT = 0.19;    % 19% gap between rectangles
+    DEFAULT_ASPECT_RATIO = 1.0;  % width/height ratio: 1.0 = perfect squares
+    DEFAULT_COVERAGE = 0.80;     % regions span 80% of image width
+    DEFAULT_GAP_PERCENT = 0.19;  % 19% gap between regions
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = true;
-    DEFAULT_DETECTION_MODEL = 'models/yolo11n_micropad_seg.pt';
+    DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_seg.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
     % IMPORTANT: Edit this path to match your Python installation!
@@ -78,7 +78,7 @@ function cut_micropads(varargin)
     %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
 
-    DEFAULT_INFERENCE_SIZE = 640;
+    DEFAULT_INFERENCE_SIZE = 1280;
 
     % === ROTATION CONSTANTS ===
     ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations
@@ -421,14 +421,44 @@ function initialPolygons = getInitialPolygons(img, cfg)
         try
             [detectedQuads, confidences] = detectQuadsYOLO(img, cfg);
 
-            if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
-                fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
-                    size(detectedQuads, 1), mean(confidences));
-                initialPolygons = detectedQuads;
-                return;
-            elseif ~isempty(detectedQuads)
-                fprintf('  AI detected %d regions but expected %d, using default geometry\n', ...
-                    size(detectedQuads, 1), cfg.numSquares);
+            if ~isempty(detectedQuads)
+                numDetected = size(detectedQuads, 1);
+
+                if numDetected == cfg.numSquares
+                    % Perfect match - use all detections
+                    fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
+                        numDetected, mean(confidences));
+                    initialPolygons = detectedQuads;
+                    return;
+
+                elseif numDetected > cfg.numSquares
+                    % Too many detections - keep top N by confidence
+                    fprintf('  AI detected %d regions but expected %d\n', numDetected, cfg.numSquares);
+                    fprintf('  Filtering to top %d by confidence...\n', cfg.numSquares);
+
+                    % Sort by confidence (descending) and keep top N
+                    [~, sortIdx] = sort(confidences, 'descend');
+                    topIdx = sortIdx(1:cfg.numSquares);
+
+                    detectedQuads = detectedQuads(topIdx, :, :);
+                    confidences = confidences(topIdx);
+
+                    % Sort spatially (left to right) for consistent ordering
+                    centroids = squeeze(mean(detectedQuads, 2));  % (N, 2) - [x, y] centroids
+                    [~, spatialIdx] = sort(centroids(:, 1));  % Sort by x-coordinate
+                    detectedQuads = detectedQuads(spatialIdx, :, :);
+                    confidences = confidences(spatialIdx);
+
+                    fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
+                        cfg.numSquares, mean(confidences));
+                    initialPolygons = detectedQuads;
+                    return;
+
+                else
+                    % Too few detections - fall back to default geometry
+                    fprintf('  AI detected only %d regions but expected %d, using default geometry\n', ...
+                        numDetected, cfg.numSquares);
+                end
             else
                 fprintf('  No AI detections, using default geometry\n');
             end
@@ -450,9 +480,8 @@ function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
     aspect = cfg.geometry.aspectRatio;
     aspect = max(aspect, eps);
     totalGridWidth = 1.0;
-    rectHeightWorld = 1.0 / aspect;
 
-    % Compute gap size
+    % Compute gap size and individual rectangle width
     gp = cfg.geometry.gapPercentWidth;
     denom = n + max(n-1, 0) * gp;
     if denom <= 0
@@ -460,6 +489,9 @@ function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
     end
     w = totalGridWidth / denom;
     gapSizeWorld = gp * w;
+
+    % Calculate height based on individual rectangle width (not total grid width)
+    rectHeightWorld = w / aspect;
 
     % Build world corners
     worldCorners = zeros(n, 4, 2);
@@ -1072,14 +1104,44 @@ function applyRotation_UI(angle, fig, cfg)
     % Re-run AI detection if enabled and recreate polygons
     if cfg.useAIDetection
         try
-            [detectedQuads, ~] = detectQuadsYOLO(guiData.currentImg, cfg);
+            [detectedQuads, confidences] = detectQuadsYOLO(guiData.currentImg, cfg);
 
-            if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
-                % Recreate polygons with AI-detected positions
-                guiData.polygons = createPolygons(detectedQuads, cfg);
-                fprintf('  AI re-detected %d regions after rotation\n', size(detectedQuads, 1));
+            if ~isempty(detectedQuads)
+                numDetected = size(detectedQuads, 1);
+
+                if numDetected == cfg.numSquares
+                    % Perfect match - use all detections
+                    guiData.polygons = createPolygons(detectedQuads, cfg);
+                    fprintf('  AI re-detected %d regions after rotation (avg confidence: %.2f)\n', ...
+                        numDetected, mean(confidences));
+
+                elseif numDetected > cfg.numSquares
+                    % Too many detections - keep top N by confidence
+                    fprintf('  AI detected %d regions after rotation, filtering to top %d...\n', ...
+                        numDetected, cfg.numSquares);
+
+                    % Sort by confidence (descending) and keep top N
+                    [~, sortIdx] = sort(confidences, 'descend');
+                    topIdx = sortIdx(1:cfg.numSquares);
+                    detectedQuads = detectedQuads(topIdx, :, :);
+                    confidences = confidences(topIdx);
+
+                    % Sort spatially (left to right)
+                    centroids = squeeze(mean(detectedQuads, 2));
+                    [~, spatialIdx] = sort(centroids(:, 1));
+                    detectedQuads = detectedQuads(spatialIdx, :, :);
+
+                    guiData.polygons = createPolygons(detectedQuads, cfg);
+                    fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
+                        cfg.numSquares, mean(confidences));
+
+                else
+                    % Too few detections - use saved positions
+                    fprintf('  AI detected only %d regions after rotation, using previous positions\n', numDetected);
+                    guiData.polygons = createPolygons(savedPositions, cfg);
+                end
             else
-                % Recreate polygons at their previous positions if AI detection failed
+                % No detections - use saved positions
                 guiData.polygons = createPolygons(savedPositions, cfg);
             end
         catch ME
