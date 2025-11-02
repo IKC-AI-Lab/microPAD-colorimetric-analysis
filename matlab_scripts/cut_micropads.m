@@ -402,10 +402,19 @@ function [success, fig, memory] = processOneImage(imageName, outputDir, cfg, fig
 
     % Get initial polygon positions (AI detection, memory, or default geometry)
     [imageHeight, imageWidth, ~] = size(img);
-    initialPolygons = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
+    [initialPolygons, initialSource] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
+    useMemoryRotation = strcmp(initialSource, 'memory');
+
+    if useMemoryRotation && memory.hasSettings
+        rotationAngle = memory.rotation;
+        if isMultipleOfNinety(rotationAngle, cfg.rotation.angleTolerance)
+            [initialPolygons, ~] = rotatePolygonsDiscrete(initialPolygons, [imageHeight, imageWidth], rotationAngle);
+        end
+    end
+    initialPolygons = sortPolygonArrayByX(initialPolygons);
 
     % Interactive region selection with persistent window
-    [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory);
+    [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory, useMemoryRotation);
 
     if ~isempty(polygonParams)
         saveCroppedRegions(img, imageName, polygonParams, outputDir, cfg, rotation);
@@ -415,61 +424,56 @@ function [success, fig, memory] = processOneImage(imageName, outputDir, cfg, fig
     end
 end
 
-function initialPolygons = getInitialPolygons(img, cfg)
-    % Get initial polygon positions using AI detection (if enabled) or default geometry
-    if cfg.useAIDetection
-        try
-            [detectedQuads, confidences] = detectQuadsYOLO(img, cfg);
+function [polygons, detectionSucceeded] = getInitialPolygons(img, cfg)
+    % Attempt AI detection for initial polygons
+    polygons = [];
+    detectionSucceeded = false;
 
-            if ~isempty(detectedQuads)
-                numDetected = size(detectedQuads, 1);
-
-                if numDetected == cfg.numSquares
-                    % Perfect match - use all detections
-                    fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
-                        numDetected, mean(confidences));
-                    initialPolygons = detectedQuads;
-                    return;
-
-                elseif numDetected > cfg.numSquares
-                    % Too many detections - keep top N by confidence
-                    fprintf('  AI detected %d regions but expected %d\n', numDetected, cfg.numSquares);
-                    fprintf('  Filtering to top %d by confidence...\n', cfg.numSquares);
-
-                    % Sort by confidence (descending) and keep top N
-                    [~, sortIdx] = sort(confidences, 'descend');
-                    topIdx = sortIdx(1:cfg.numSquares);
-
-                    detectedQuads = detectedQuads(topIdx, :, :);
-                    confidences = confidences(topIdx);
-
-                    % Sort spatially (left to right) for consistent ordering
-                    centroids = squeeze(mean(detectedQuads, 2));  % (N, 2) - [x, y] centroids
-                    [~, spatialIdx] = sort(centroids(:, 1));  % Sort by x-coordinate
-                    detectedQuads = detectedQuads(spatialIdx, :, :);
-                    confidences = confidences(spatialIdx);
-
-                    fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
-                        cfg.numSquares, mean(confidences));
-                    initialPolygons = detectedQuads;
-                    return;
-
-                else
-                    % Too few detections - fall back to default geometry
-                    fprintf('  AI detected only %d regions but expected %d, using default geometry\n', ...
-                        numDetected, cfg.numSquares);
-                end
-            else
-                fprintf('  No AI detections, using default geometry\n');
-            end
-        catch ME
-            fprintf('  AI detection failed (%s), using default geometry\n', ME.message);
-        end
+    if ~cfg.useAIDetection
+        return;
     end
 
-    % Fallback to default geometry
-    [imageHeight, imageWidth, ~] = size(img);
-    initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+    try
+        [detectedQuads, confidences] = detectQuadsYOLO(img, cfg);
+
+        if isempty(detectedQuads)
+            fprintf('  No AI detections\n');
+            return;
+        end
+
+        numDetected = size(detectedQuads, 1);
+
+        if numDetected == cfg.numSquares
+            fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
+                numDetected, mean(confidences));
+            polygons = detectedQuads;
+            detectionSucceeded = true;
+            return;
+        elseif numDetected > cfg.numSquares
+            fprintf('  AI detected %d regions, filtering to top %d by confidence...\n', ...
+                numDetected, cfg.numSquares);
+
+            [~, sortIdx] = sort(confidences, 'descend');
+            topIdx = sortIdx(1:cfg.numSquares);
+            detectedQuads = detectedQuads(topIdx, :, :);
+            confidences = confidences(topIdx);
+
+            centroids = squeeze(mean(detectedQuads, 2));
+            [~, spatialIdx] = sort(centroids(:, 1));
+            detectedQuads = detectedQuads(spatialIdx, :, :);
+            confidences = confidences(spatialIdx);
+
+            fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
+                cfg.numSquares, mean(confidences));
+            polygons = detectedQuads;
+            detectionSucceeded = true;
+            return;
+        else
+            fprintf('  AI detected only %d/%d regions\n', numDetected, cfg.numSquares);
+        end
+    catch ME
+        fprintf('  AI detection failed (%s)\n', ME.message);
+    end
 end
 
 function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
@@ -545,10 +549,14 @@ end
 %% Interactive UI
 %% -------------------------------------------------------------------------
 
-function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory)
+function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory, useMemoryRotation)
     % Show interactive GUI with editing and preview modes
     polygonParams = [];
     rotation = 0;
+
+    if nargin < 8
+        useMemoryRotation = false;
+    end
 
     % Create figure if needed
     if isempty(fig) || ~isvalid(fig)
@@ -557,7 +565,7 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
 
     % Initialize rotation from memory if available
     initialRotation = 0;
-    if nargin >= 7 && memory.hasSettings
+    if useMemoryRotation && memory.hasSettings
         initialRotation = memory.rotation;
     end
 
@@ -574,23 +582,28 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
                 close(fig);
                 error('User stopped execution');
             case 'accept'
+                guiDataEditing = get(fig, 'UserData');
+                basePolygons = convertDisplayPolygonsToBase(guiDataEditing, userPolygons, cfg);
                 % Store rotation before preview mode
                 savedRotation = userRotation;
+                savedDisplayPolygons = userPolygons;
+                savedBasePolygons = basePolygons;
 
                 % Preview mode
-                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, userPolygons);
+                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons);
 
                 % Store rotation in guiData for preview mode
                 guiData = get(fig, 'UserData');
                 guiData.savedRotation = savedRotation;
+                guiData.savedPolygonParams = savedBasePolygons;
                 set(fig, 'UserData', guiData);
 
                 [prevAction, ~, ~] = waitForUserAction(fig);
 
                 switch prevAction
                     case 'accept'
-                        polygonParams = userPolygons;
-                        rotation = userRotation;
+                        polygonParams = savedBasePolygons;
+                        rotation = savedRotation;
                         return;
                     case {'skip', 'stop'}
                         if strcmp(prevAction, 'stop')
@@ -600,7 +613,8 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
                         return;
                     case 'retry'
                         % Use edited polygons as new initial positions
-                        initialPolygons = userPolygons;
+                        initialPolygons = savedDisplayPolygons;
+                        initialRotation = savedRotation;
                         continue;
                 end
         end
@@ -703,6 +717,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Initialize rotation data (from memory or default to 0)
     guiData.baseImg = img;
+    guiData.baseImageSize = [size(img, 1), size(img, 2)];
     guiData.currentImg = img;
     guiData.memoryRotation = initialRotation;
     guiData.adjustmentRotation = 0;
@@ -710,7 +725,6 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Initialize zoom state
     guiData.zoomLevel = 0;  % 0 = full image, 1 = single micropad size
-    guiData.imageSize = size(img);
 
     % Title and path
     guiData.titleHandle = createTitle(fig, phoneName, imageName, cfg);
@@ -722,11 +736,14 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
         guiData.currentImg = displayImg;
     else
         displayImg = img;
+        guiData.currentImg = displayImg;
     end
+    guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
     guiData.imgAxes = createImageAxes(fig, displayImg, cfg);
 
     % Create editable polygons
     guiData.polygons = createPolygons(initialPolygons, cfg);
+    guiData.polygons = assignPolygonLabels(guiData.polygons);
 
     % Rotation panel (preset buttons only)
     guiData.rotationPanel = createRotationButtonPanel(fig, cfg);
@@ -1082,16 +1099,29 @@ function applyRotation_UI(angle, fig, cfg)
         return;
     end
 
-    % Update rotation state
-    guiData.adjustmentRotation = angle;
-    guiData.totalRotation = guiData.memoryRotation + angle;
-
-    % Apply rotation to image
-    guiData.currentImg = applyRotation(guiData.baseImg, angle, cfg);
-    guiData.imageSize = size(guiData.currentImg);
+    % Capture state before rotation changes
+    oldRotation = guiData.totalRotation;
+    oldImageSize = guiData.imageSize;
+    if numel(oldImageSize) > 2
+        oldImageSize = oldImageSize(1:2);
+    end
+    if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
+        baseImageSize = guiData.baseImageSize;
+    else
+        baseImageSize = [size(guiData.baseImg, 1), size(guiData.baseImg, 2)];
+    end
 
     % Save polygon positions BEFORE clearing axes
     savedPositions = extractPolygonPositions(guiData);
+
+    % Update rotation state (quick buttons are absolute presets)
+    guiData.adjustmentRotation = angle;
+    guiData.memoryRotation = angle;
+    guiData.totalRotation = angle;
+
+    % Apply rotation to image
+    guiData.currentImg = applyRotation(guiData.baseImg, guiData.totalRotation, cfg);
+    guiData.imageSize = [size(guiData.currentImg, 1), size(guiData.currentImg, 2)];
 
     % Update image display
     axes(guiData.imgAxes);
@@ -1100,6 +1130,11 @@ function applyRotation_UI(angle, fig, cfg)
     axis(guiData.imgAxes, 'image');
     axis(guiData.imgAxes, 'tight');
     hold(guiData.imgAxes, 'on');
+
+    % Prepare fallback polygons in case AI is disabled or fails
+    fallbackPolygons = remapPolygonsForRotation(savedPositions, oldImageSize, baseImageSize, ...
+        oldRotation, guiData.totalRotation, cfg.rotation.angleTolerance);
+    fallbackPolygons = sortPolygonArrayByX(fallbackPolygons);
 
     % Re-run AI detection if enabled and recreate polygons
     if cfg.useAIDetection
@@ -1112,6 +1147,7 @@ function applyRotation_UI(angle, fig, cfg)
                 if numDetected == cfg.numSquares
                     % Perfect match - use all detections
                     guiData.polygons = createPolygons(detectedQuads, cfg);
+                    guiData.polygons = assignPolygonLabels(guiData.polygons);
                     fprintf('  AI re-detected %d regions after rotation (avg confidence: %.2f)\n', ...
                         numDetected, mean(confidences));
 
@@ -1132,26 +1168,31 @@ function applyRotation_UI(angle, fig, cfg)
                     detectedQuads = detectedQuads(spatialIdx, :, :);
 
                     guiData.polygons = createPolygons(detectedQuads, cfg);
+                    guiData.polygons = assignPolygonLabels(guiData.polygons);
                     fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
                         cfg.numSquares, mean(confidences));
 
                 else
                     % Too few detections - use saved positions
                     fprintf('  AI detected only %d regions after rotation, using previous positions\n', numDetected);
-                    guiData.polygons = createPolygons(savedPositions, cfg);
+                    guiData.polygons = createPolygons(fallbackPolygons, cfg);
+                    guiData.polygons = assignPolygonLabels(guiData.polygons);
                 end
             else
                 % No detections - use saved positions
-                guiData.polygons = createPolygons(savedPositions, cfg);
+                guiData.polygons = createPolygons(fallbackPolygons, cfg);
+                guiData.polygons = assignPolygonLabels(guiData.polygons);
             end
         catch ME
             fprintf('  AI detection after rotation failed: %s\n', ME.message);
             % Recreate polygons at their previous positions
-            guiData.polygons = createPolygons(savedPositions, cfg);
+            guiData.polygons = createPolygons(fallbackPolygons, cfg);
+            guiData.polygons = assignPolygonLabels(guiData.polygons);
         end
     else
         % No AI detection - recreate polygons at their previous positions
-        guiData.polygons = createPolygons(savedPositions, cfg);
+        guiData.polygons = createPolygons(fallbackPolygons, cfg);
+        guiData.polygons = assignPolygonLabels(guiData.polygons);
     end
 
     % Save guiData before auto-zoom
@@ -1341,6 +1382,44 @@ function positions = extractPolygonPositions(guiData)
     end
 end
 
+function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, cfg)
+    % Convert polygons from rotated display coordinates back to original image coordinates
+    basePolygons = displayPolygons;
+
+    if isempty(displayPolygons)
+        return;
+    end
+
+    if ~isfield(guiData, 'totalRotation')
+        return;
+    end
+
+    rotation = guiData.totalRotation;
+    if ~isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        return;
+    end
+
+    imageSize = guiData.imageSize;
+    if isempty(imageSize)
+        if isfield(guiData, 'currentImg') && ~isempty(guiData.currentImg)
+            imageSize = [size(guiData.currentImg, 1), size(guiData.currentImg, 2)];
+        else
+            return;
+        end
+    else
+        imageSize = imageSize(1:2);
+    end
+
+    [basePolygons, newSize] = rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
+
+    if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
+        targetSize = guiData.baseImageSize(1:2);
+        if any(newSize ~= targetSize)
+            basePolygons = scalePolygonsForImageSize(basePolygons, newSize, targetSize);
+        end
+    end
+end
+
 function rotatedImg = applyRotation(img, rotation, cfg)
     % Apply rotation to image (lossless rot90 for 90-deg multiples, bilinear with loose mode otherwise)
     if rotation == 0
@@ -1359,6 +1438,164 @@ function rotatedImg = applyRotation(img, rotation, cfg)
     else
         rotatedImg = imrotate(img, rotation, 'bilinear', 'loose');
     end
+end
+
+function remappedPolygons = remapPolygonsForRotation(polygons, oldImageSize, baseImageSize, oldRotation, newRotation, tolerance)
+    % Remap polygon coordinates when the displayed image rotation changes
+    if isempty(polygons)
+        remappedPolygons = polygons;
+        return;
+    end
+
+    if nargin < 6 || isempty(tolerance)
+        tolerance = 1e-6;
+    end
+
+    if isempty(oldImageSize)
+        remappedPolygons = polygons;
+        return;
+    end
+
+    oldImageSize = oldImageSize(1:2);
+    baseImageSize = baseImageSize(1:2);
+
+    if ~isMultipleOfNinety(oldRotation, tolerance) || ~isMultipleOfNinety(newRotation, tolerance)
+        remappedPolygons = polygons;
+        return;
+    end
+
+    [basePolygons, ~] = rotatePolygonsDiscrete(polygons, oldImageSize, -oldRotation);
+    [remappedPolygons, ~] = rotatePolygonsDiscrete(basePolygons, baseImageSize, newRotation);
+    remappedPolygons = sortPolygonArrayByX(remappedPolygons);
+end
+
+function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize, rotation)
+    % Rotate polygons by multiples of 90 degrees using the same conventions as rot90
+    imageSize = imageSize(1:2);
+    [numPolygons, numVertices, ~] = size(polygons);
+    rotatedPolygons = polygons;
+    newSize = imageSize;
+
+    if isempty(polygons)
+        return;
+    end
+
+    k = mod(round(rotation / 90), 4);
+    if k == 0
+        return;
+    end
+
+    H = imageSize(1);
+    W = imageSize(2);
+    rotatedPolygons = zeros(size(polygons));
+
+    switch k
+        case 1  % 90 degrees clockwise
+            newSize = [W, H];
+            for i = 1:numPolygons
+                poly = squeeze(polygons(i, :, :));
+                transformed = zeros(numVertices, 2);
+                transformed(:, 1) = H - poly(:, 2) + 1;
+                transformed(:, 2) = poly(:, 1);
+                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+            end
+        case 2  % 180 degrees
+            newSize = [H, W];
+            for i = 1:numPolygons
+                poly = squeeze(polygons(i, :, :));
+                transformed = zeros(numVertices, 2);
+                transformed(:, 1) = W - poly(:, 1) + 1;
+                transformed(:, 2) = H - poly(:, 2) + 1;
+                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+            end
+        case 3  % 270 degrees clockwise (or 90 counter-clockwise)
+            newSize = [W, H];
+            for i = 1:numPolygons
+                poly = squeeze(polygons(i, :, :));
+                transformed = zeros(numVertices, 2);
+                transformed(:, 1) = poly(:, 2);
+                transformed(:, 2) = W - poly(:, 1) + 1;
+                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+            end
+    end
+end
+
+function tf = isMultipleOfNinety(angle, tolerance)
+    % Determine if an angle is effectively a multiple of 90 degrees
+    if isnan(angle) || isinf(angle)
+        tf = false;
+        return;
+    end
+    tf = abs(angle / 90 - round(angle / 90)) <= tolerance;
+end
+
+function clamped = clampPolygonToImage(poly, imageSize)
+    % Clamp polygon coordinates to lie within image extents
+    if isempty(poly)
+        clamped = poly;
+        return;
+    end
+    width = imageSize(2);
+    height = imageSize(1);
+    clamped = poly;
+    clamped(:, 1) = max(1, min(width, clamped(:, 1)));
+    clamped(:, 2) = max(1, min(height, clamped(:, 2)));
+end
+
+function polygons = assignPolygonLabels(polygons)
+    % Reorder drawpolygon handles so con0..conN map left-to-right (ties by top-to-bottom)
+    if isempty(polygons) || ~iscell(polygons)
+        return;
+    end
+
+    numPolygons = numel(polygons);
+    centroids = zeros(numPolygons, 2);
+    validMask = false(numPolygons, 1);
+
+    for i = 1:numPolygons
+        if isvalid(polygons{i})
+            pos = polygons{i}.Position;
+            centroids(i, 1) = mean(pos(:, 1));
+            centroids(i, 2) = mean(pos(:, 2));
+            validMask(i) = true;
+        else
+            centroids(i, :) = inf;
+        end
+    end
+
+    if ~any(validMask)
+        return;
+    end
+
+    [~, order] = sortrows(centroids, [1 2]);
+    polygons = polygons(order);
+end
+
+function sortedPolygons = sortPolygonArrayByX(polygons)
+    % Sort numeric polygon array by centroid (X primary, Y secondary)
+    sortedPolygons = polygons;
+    if isempty(polygons)
+        return;
+    end
+    if ndims(polygons) ~= 3
+        return;
+    end
+
+    numPolygons = size(polygons, 1);
+    centroids = zeros(numPolygons, 2);
+
+    for i = 1:numPolygons
+        poly = squeeze(polygons(i, :, :));
+        if isempty(poly)
+            centroids(i, :) = inf;
+        else
+            centroids(i, 1) = mean(poly(:, 1));
+            centroids(i, 2) = mean(poly(:, 2));
+        end
+    end
+
+    [~, order] = sortrows(centroids, [1 2]);
+    sortedPolygons = polygons(order, :, :);
 end
 
 %% -------------------------------------------------------------------------
@@ -1479,28 +1716,56 @@ function croppedImg = cropImageWithPolygon(img, polygonVertices)
 end
 
 function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, cfg, rotation)
-    coordPath = fullfile(phoneOutputDir, cfg.coordinateFileName);
+    % Append polygon vertex coordinates to phone-level coordinates file with atomic write
+    % Overwrites existing entry for same image/concentration combination
 
-    % Updated to 10-column format with rotation
-    scanFmt = '%s %d %f %f %f %f %f %f %f %f %f';
-    writeFmt = '%s %d %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n';
-    numericCount = 10;
+    coordFolder = phoneOutputDir;
+    coordPath = fullfile(coordFolder, cfg.coordinateFileName);
+
+    if ~isnumeric(polygon) || size(polygon, 2) ~= 2
+        warning('cut_micropads:coord_polygon', 'Polygon must be an Nx2 numeric array. Skipping write for %s.', baseName);
+        return;
+    end
+
+    nVerts = size(polygon, 1);
+    if nVerts ~= 4
+        warning('cut_micropads:coord_vertices', ...
+            'Expected 4-vertex polygon; got %d. Proceeding may break downstream tools.', nVerts);
+    end
+
+    numericCount = 1 + 2 * nVerts + 1; % concentration, vertices, rotation
+
+    headerParts = cell(1, 2 + 2 * nVerts + 1);
+    headerParts{1} = 'image';
+    headerParts{2} = 'concentration';
+    for v = 1:nVerts
+        headerParts{2*v+1} = sprintf('x%d', v);
+        headerParts{2*v+2} = sprintf('y%d', v);
+    end
+    headerParts{end} = 'rotation';
+    header = strjoin(headerParts, ' ');
+
+    scanFmt = ['%s' repmat(' %f', 1, numericCount)];
+
+    writeSpecs = repmat({'%.6f'}, 1, numericCount);
+    writeSpecs{1} = '%.0f';   % concentration index
+    writeFmt = ['%s ' strjoin(writeSpecs, ' ') '\n'];
+
+    coords = reshape(polygon.', 1, []);
+    newNums = [concentration, coords, rotation];
 
     [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount);
+    [existingNames, existingNums] = filterConflictingEntries(existingNames, existingNums, baseName, concentration);
 
-    [filteredNames, filteredNums] = filterConflictingEntries(existingNames, existingNums, baseName, concentration);
+    allNames = [existingNames; {baseName}];
+    allNums = [existingNums; newNums];
 
-    newRow = [concentration, polygon(1,:), polygon(2,:), polygon(3,:), polygon(4,:), rotation];
-    filteredNames{end+1} = baseName;
-    filteredNums = [filteredNums; newRow];
-
-    header = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
-    atomicWriteCoordinates(coordPath, header, filteredNames, filteredNums, writeFmt, phoneOutputDir);
+    atomicWriteCoordinates(coordPath, header, allNames, allNums, writeFmt, coordFolder);
 end
 
-function [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, ~)
+function [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount)
     existingNames = {};
-    existingNums = [];
+    existingNums = zeros(0, numericCount);
 
     if ~isfile(coordPath)
         return;
@@ -1508,53 +1773,85 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
 
     fid = fopen(coordPath, 'rt');
     if fid == -1
-        warning('cut_micropads:coord_read', 'Could not open coordinates file: %s', coordPath);
+        warning('cut_micropads:coord_read', 'Cannot open coordinates file for reading: %s', coordPath);
         return;
     end
 
-    headerLine = fgetl(fid);
-    if headerLine == -1
-        fclose(fid);
-        return;
+    firstLine = fgetl(fid);
+    if ischar(firstLine)
+        trimmed = strtrim(firstLine);
+        expectedPrefix = 'image concentration';
+        if ~strncmpi(trimmed, expectedPrefix, numel(expectedPrefix))
+            fseek(fid, 0, 'bof');
+        end
+    else
+        fseek(fid, 0, 'bof');
     end
 
-    rowData = textscan(fid, scanFmt, 'Delimiter', ' ', 'MultipleDelimsAsOne', true);
+    data = textscan(fid, scanFmt, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, 'CollectOutput', true);
     fclose(fid);
 
-    if isempty(rowData) || isempty(rowData{1})
-        return;
+    if ~isempty(data)
+        if numel(data) >= 1 && ~isempty(data{1})
+            existingNames = data{1};
+        end
+        if numel(data) >= 2 && ~isempty(data{2})
+            nums = data{2};
+            if size(nums, 2) >= numericCount
+                existingNums = nums(:, 1:numericCount);
+            else
+                pad = nan(size(nums, 1), numericCount - size(nums, 2));
+                existingNums = [nums, pad];
+
+                if size(nums, 2) == numericCount - 1
+                    warning('cut_micropads:coord_migration', ...
+                        'Migrating 9-column coordinates to 10-column format (rotation=0): %s', coordPath);
+                    existingNums(:, end) = 0;
+                end
+            end
+        end
     end
 
-    existingNames = rowData{1};
-    % Vectorize numeric data extraction
-    existingNums = cell2mat(rowData(2:end)');
+    if ~isempty(existingNames) && ~isempty(existingNums)
+        rows = min(numel(existingNames), size(existingNums, 1));
+        if size(existingNums, 1) ~= numel(existingNames)
+            existingNames = existingNames(1:rows);
+            existingNums = existingNums(1:rows, :);
+        end
 
-    % Validate and migrate coordinate format
-    if ~isempty(existingNums) && size(existingNums, 2) ~= 10
-        if size(existingNums, 2) == 9
-            % Migrate old 9-column format to 10-column by adding zero rotation
-            warning('cut_micropads:old_coord_format', ...
-                'Migrating old 9-column coordinate format to 10-column (adding rotation=0): %s', coordPath);
-            existingNums = [existingNums, zeros(size(existingNums, 1), 1)];
+        if iscell(existingNames)
+            emptyMask = cellfun(@(s) isempty(strtrim(s)), existingNames);
         else
-            error('cut_micropads:invalid_coord_format', ...
-                'Coordinate file has %d columns, expected 10 (with rotation): %s\nDelete this file to regenerate.', ...
-                size(existingNums, 2), coordPath);
+            emptyMask = arrayfun(@(s) isempty(strtrim(s)), existingNames);
+        end
+        if any(emptyMask)
+            existingNames = existingNames(~emptyMask);
+            existingNums = existingNums(~emptyMask, :);
         end
     end
 end
 
 function [filteredNames, filteredNums] = filterConflictingEntries(existingNames, existingNums, newName, concentration)
     if isempty(existingNames)
-        filteredNames = {};
-        filteredNums = [];
+        filteredNames = existingNames;
+        filteredNums = existingNums;
         return;
     end
 
-    matchMask = strcmp(existingNames, newName) & (existingNums(:, 1) == concentration);
+    existingNames = existingNames(:);
+    sameImageMask = strcmp(existingNames, newName);
+    sameConcentrationMask = false(size(sameImageMask));
+    if ~isempty(existingNums)
+        sameConcentrationMask = sameImageMask & (existingNums(:, 1) == concentration);
+    end
+    keepMask = ~sameConcentrationMask;
 
-    filteredNames = existingNames(~matchMask);
-    filteredNums = existingNums(~matchMask, :);
+    filteredNames = existingNames(keepMask);
+    if isempty(existingNums)
+        filteredNums = existingNums;
+    else
+        filteredNums = existingNums(keepMask, :);
+    end
 end
 
 function atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder)
@@ -1562,20 +1859,36 @@ function atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordF
 
     fid = fopen(tmpPath, 'wt');
     if fid == -1
-        error('cut_micropads:coord_write', 'Cannot open temp file for coordinates: %s', tmpPath);
+        warning('cut_micropads:coord_open', 'Cannot open temp coordinates file for writing: %s', tmpPath);
+        return;
     end
 
     fprintf(fid, '%s\n', header);
 
-    for i = 1:numel(names)
-        fprintf(fid, writeFmt, names{i}, nums(i, :));
+    for j = 1:numel(names)
+        rowVals = nums(j, :);
+        rowVals(isnan(rowVals)) = 0;
+        fprintf(fid, writeFmt, names{j}, rowVals);
     end
 
     fclose(fid);
 
     [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
     if ~ok
-        error('cut_micropads:coord_move', 'Failed to move temp coordinate file: %s (%s)', msg, msgid);
+        warning('cut_micropads:coord_move', ...
+            'Failed to move temp file to coordinates.txt: %s (%s). Attempting fallback copy.', msg, msgid);
+        [copied, cmsg, ~] = copyfile(tmpPath, coordPath, 'f');
+        if ~copied
+            if isfile(tmpPath)
+                delete(tmpPath);
+            end
+            error('cut_micropads:coord_write_fail', ...
+                'Cannot write coordinates to %s: movefile failed (%s), copyfile failed (%s).', ...
+                coordPath, msg, cmsg);
+        end
+        if isfile(tmpPath)
+            delete(tmpPath);
+        end
     end
 end
 
@@ -1827,6 +2140,17 @@ function [quads, confidences] = detectQuadsYOLO(img, cfg)
     validMask = confidences > 0;
     quads = quads(validMask, :, :);
     confidences = confidences(validMask);
+
+    % Ensure consistent left-to-right ordering by centroid X coordinate
+    if ~isempty(quads)
+        centroids = squeeze(mean(quads, 2));
+        if isvector(centroids)
+            centroids = centroids(:).';
+        end
+        [~, order] = sort(centroids(:, 1), 'ascend');
+        quads = quads(order, :, :);
+        confidences = confidences(order);
+    end
 end
 
 %% -------------------------------------------------------------------------
@@ -1850,47 +2174,64 @@ function memory = updateMemory(memory, polygonParams, rotation, imageSize)
     memory.imageSize = imageSize;
 end
 
-function initialPolygons = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
-    % Get initial polygons considering memory (scaled if image dimensions changed)
+function [initialPolygons, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
+    % Get initial polygons prioritizing AI detection with memory fallback
+    source = 'default';
 
-    % If memory has settings and image size matches (or can be scaled)
-    if memory.hasSettings && ~isempty(memory.polygonPositions) && ~isempty(memory.imageSize)
-        % Scale polygons if image dimensions changed
-        scaledPolygons = scalePolygonsForImageSize(memory.polygonPositions, memory.imageSize, imageSize);
-        initialPolygons = scaledPolygons;
-        fprintf('  Using polygon positions from memory (scaled if needed)\n');
+    aiPolygons = [];
+    detectionSucceeded = false;
+    if cfg.useAIDetection
+        [aiPolygons, detectionSucceeded] = getInitialPolygons(img, cfg);
+    end
+
+    if detectionSucceeded
+        initialPolygons = aiPolygons;
+        source = 'ai';
         return;
     end
 
-    % Otherwise use AI detection or default geometry
-    initialPolygons = getInitialPolygons(img, cfg);
+    if memory.hasSettings && ~isempty(memory.polygonPositions) && ~isempty(memory.imageSize)
+        scaledPolygons = scalePolygonsForImageSize(memory.polygonPositions, memory.imageSize, imageSize);
+        initialPolygons = scaledPolygons;
+        fprintf('  Using polygon positions from memory (scaled if needed)\n');
+        source = 'memory';
+        return;
+    end
+
+    [imageHeight, imageWidth, ~] = size(img);
+    fprintf('  Using default geometry for initial polygons\n');
+    initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
 end
 
 function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize)
     % Scale polygon coordinates when image dimensions change
+    if isempty(oldSize) || any(oldSize <= 0)
+        scaledPolygons = polygons;
+        return;
+    end
+
     oldHeight = oldSize(1);
     oldWidth = oldSize(2);
     newHeight = newSize(1);
     newWidth = newSize(2);
 
     if oldHeight == newHeight && oldWidth == newWidth
-        % No scaling needed
         scaledPolygons = polygons;
         return;
     end
 
-    % Compute scale factors
     scaleX = newWidth / oldWidth;
     scaleY = newHeight / oldHeight;
 
-    % Apply scaling to all polygons
     numPolygons = size(polygons, 1);
     scaledPolygons = zeros(size(polygons));
 
     for i = 1:numPolygons
         poly = squeeze(polygons(i, :, :));
-        poly(:, 1) = poly(:, 1) * scaleX;  % Scale X coordinates
-        poly(:, 2) = poly(:, 2) * scaleY;  % Scale Y coordinates
+        poly(:, 1) = poly(:, 1) * scaleX;
+        poly(:, 2) = poly(:, 2) * scaleY;
+        poly(:, 1) = max(1, min(poly(:, 1), newWidth));
+        poly(:, 2) = max(1, min(poly(:, 2), newHeight));
         scaledPolygons(i, :, :) = poly;
     end
 end

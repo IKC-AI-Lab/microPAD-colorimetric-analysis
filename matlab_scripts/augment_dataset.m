@@ -513,7 +513,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{2 * numel(stage3Coords)} = [];
+                    stage3Coords{numel(stage3Coords) + 1000} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -859,7 +859,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{2 * numel(stage3Coords)} = [];
+                    stage3Coords{numel(stage3Coords) + 1000} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -1055,7 +1055,8 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
     alpha = double(effectiveMask);
 
     % All images are RGB at this point (converted on load)
-    for c = 1:3
+    numChannels = size(bgRegion, 3);
+    for c = 1:numChannels
         R = double(bgRegion(:,:,c));
         F = double(resized(:,:,c));
         bgRegion(:,:,c) = uint8(R .* (1 - alpha) + F .* alpha);
@@ -1512,7 +1513,8 @@ function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
     end
 
     % Zero out pixels outside the ellipse per-channel (all images are RGB)
-    for c = 1:3
+    numChannels = size(patchImg, 3);
+    for c = 1:numChannels
         plane = patchImg(:,:,c);
         plane(~mask) = 0;
         patchImg(:,:,c) = plane;
@@ -1567,8 +1569,9 @@ function bg = generate_realistic_lab_surface(width, height, textureCfg, artifact
 
     baseRGB = max(100, min(230, baseRGB));
 
-    bgSingle = repmat(reshape(single(baseRGB), [1, 1, 3]), [height, width, 1]);
-    for c = 1:3
+    numChannels = 3;  % RGB backgrounds only
+    bgSingle = repmat(reshape(single(baseRGB), [1, 1, numChannels]), [height, width, 1]);
+    for c = 1:numChannels
         bgSingle(:,:,c) = bgSingle(:,:,c) + texture;
     end
 
@@ -1975,7 +1978,8 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
         % Blend artifact into background
         maskRegion = single(mask(maskYStart:maskYEnd, maskXStart:maskXEnd));
         intensitySingle = single(intensity);
-        for c = 1:3
+        numChannels = size(bg, 3);
+        for c = 1:numChannels
             region = single(bg(yStart:yEnd, xStart:xEnd, c));
             region = region + maskRegion .* intensitySingle;
             bg(yStart:yEnd, xStart:xEnd, c) = clamp_uint8(region);
@@ -2063,7 +2067,8 @@ function bg = add_polygon_occlusions(bg, scenePolygons, probability)
 
         % Blend into background
         region = bg(minY:maxY, minX:maxX, :);
-        for c = 1:3
+        numChannels = size(region, 3);
+        for c = 1:numChannels
             plane = double(region(:,:,c));
             plane = plane + lineMask * double(delta);
             region(:,:,c) = clamp_uint8(plane);
@@ -2115,9 +2120,12 @@ function img = apply_photometric_augmentation(img, mode)
 
     % 3. White balance jitter (per-channel gain), 60% probability
     if rand() < 0.60
-        gains = [0.92 + rand() * 0.16, 0.92 + rand() * 0.16, 0.92 + rand() * 0.16];
-        for c = 1:3
-            imgDouble(:,:,c) = imgDouble(:,:,c) * gains(c);
+        numChannels = size(imgDouble, 3);
+        if numChannels == 3  % White balance requires RGB
+            gains = [0.92 + rand() * 0.16, 0.92 + rand() * 0.16, 0.92 + rand() * 0.16];
+            for c = 1:numChannels
+                imgDouble(:,:,c) = imgDouble(:,:,c) * gains(c);
+            end
         end
     end
 
@@ -2584,10 +2592,12 @@ function entries = read_polygon_coordinates(coordPath)
     entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
     entries(maxEntries).image = '';
     count = 0;
+    skippedCount = 0;
 
     for i = 1:numel(lines)
         parts = strsplit(lines{i});
         if numel(parts) < 10
+            skippedCount = skippedCount + 1;
             continue;
         end
 
@@ -2606,6 +2616,7 @@ function entries = read_polygon_coordinates(coordPath)
         end
 
         if any(isnan([concentration, coords]))
+            skippedCount = skippedCount + 1;
             continue;
         end
 
@@ -2616,6 +2627,11 @@ function entries = read_polygon_coordinates(coordPath)
                                 'concentration', concentration, ...
                                 'vertices', vertices, ...
                                 'rotation', rotation);
+    end
+
+    if skippedCount > 0
+        warning('augmentDataset:invalidCoords', ...
+                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
     end
 
     entries = entries(1:count);
@@ -2631,10 +2647,12 @@ function entries = read_ellipse_coordinates(coordPath)
                      'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
     entries(maxEntries).image = '';
     count = 0;
+    skippedCount = 0;
 
     for i = 1:numel(lines)
         parts = strsplit(lines{i});
         if numel(parts) < 8
+            skippedCount = skippedCount + 1;
             continue;
         end
 
@@ -2642,6 +2660,7 @@ function entries = read_ellipse_coordinates(coordPath)
         nums = str2double(parts(2:8));
 
         if any(isnan(nums))
+            skippedCount = skippedCount + 1;
             continue;
         end
 
@@ -2653,6 +2672,11 @@ function entries = read_ellipse_coordinates(coordPath)
                                 'semiMajor', nums(5), ...
                                 'semiMinor', nums(6), ...
                                 'rotation', nums(7));
+    end
+
+    if skippedCount > 0
+        warning('augmentDataset:invalidCoords', ...
+                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
     end
 
     entries = entries(1:count);
