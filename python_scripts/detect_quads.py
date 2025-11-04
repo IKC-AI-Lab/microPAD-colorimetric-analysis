@@ -79,85 +79,6 @@ def order_corners_clockwise(quad: np.ndarray) -> np.ndarray:
     return quad_ordered
 
 
-def compute_iou(box1: np.ndarray, box2: np.ndarray) -> float:
-    """Compute Intersection over Union (IoU) between two bounding boxes.
-
-    Args:
-        box1: Array [x_min, y_min, x_max, y_max]
-        box2: Array [x_min, y_min, x_max, y_max]
-
-    Returns:
-        IoU score (0.0 to 1.0)
-    """
-    # Compute intersection area
-    x_min_inter = max(box1[0], box2[0])
-    y_min_inter = max(box1[1], box2[1])
-    x_max_inter = min(box1[2], box2[2])
-    y_max_inter = min(box1[3], box2[3])
-
-    if x_max_inter < x_min_inter or y_max_inter < y_min_inter:
-        return 0.0
-
-    intersection = (x_max_inter - x_min_inter) * (y_max_inter - y_min_inter)
-
-    # Compute union area
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    union = area1 + area2 - intersection
-
-    return intersection / union if union > 0 else 0.0
-
-
-def apply_nms(quads: List[np.ndarray], confidences: List[float], iou_threshold: float = 0.20) -> Tuple[List[np.ndarray], List[float]]:
-    """Apply Non-Maximum Suppression to remove overlapping detections.
-
-    Args:
-        quads: List of 4x2 keypoint arrays
-        confidences: List of confidence scores
-        iou_threshold: IoU threshold for suppression (default: 0.20)
-
-    Returns:
-        Tuple of (filtered_quads, filtered_confidences)
-    """
-    if len(quads) == 0:
-        return [], []
-
-    # Convert quads to bounding boxes [x_min, y_min, x_max, y_max]
-    boxes = []
-    for quad in quads:
-        x_coords = quad[:, 0]
-        y_coords = quad[:, 1]
-        boxes.append([x_coords.min(), y_coords.min(), x_coords.max(), y_coords.max()])
-    boxes = np.array(boxes)
-
-    # Sort by confidence (descending)
-    indices = np.argsort(confidences)[::-1]
-
-    keep = []
-    while len(indices) > 0:
-        # Keep highest confidence detection
-        current = indices[0]
-        keep.append(current)
-
-        if len(indices) == 1:
-            break
-
-        # Compute IoU with remaining detections
-        current_box = boxes[current]
-        remaining_boxes = boxes[indices[1:]]
-
-        ious = np.array([compute_iou(current_box, box) for box in remaining_boxes])
-
-        # Remove detections with IoU > threshold
-        indices = indices[1:][ious <= iou_threshold]
-
-    # Return filtered results
-    filtered_quads = [quads[i] for i in keep]
-    filtered_confidences = [confidences[i] for i in keep]
-
-    return filtered_quads, filtered_confidences
-
-
 def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 640) -> Tuple[List[np.ndarray], List[float]]:
     """Run YOLO pose inference and extract keypoint coordinates.
 
@@ -207,9 +128,6 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
 
         quads.append(ordered_kpts.astype(np.float64))
         confidences.append(float(conf))
-
-    # Apply Non-Maximum Suppression to remove overlapping detections
-    quads, confidences = apply_nms(quads, confidences, iou_threshold=0.20)
 
     return quads, confidences
 
