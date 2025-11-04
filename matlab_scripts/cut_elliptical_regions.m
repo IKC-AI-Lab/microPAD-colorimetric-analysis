@@ -12,8 +12,15 @@ function cut_elliptical_regions(varargin)
     % - Writes elliptical patches to 3_elliptical_regions/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level with format:
     %   image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-%   where rotationAngle is in degrees (-180 to 180, clockwise from horizontal major axis)
+    %   where rotationAngle is in degrees (-180 to 180, clockwise from horizontal major axis)
     % - No duplicate rows per image (existing entries are replaced)
+    %
+    % ROTATION SEMANTICS:
+    %   The rotation column in 2_micropads/coordinates.txt is a UI-only alignment
+    %   hint from cut_micropads.m. This script reads polygon crops (which are in
+    %   the original unrotated reference frame) and produces ellipse coordinates
+    %   where rotationAngle represents the ellipse's geometric orientation, NOT
+    %   the UI rotation hint. Downstream processing uses only ellipse rotationAngle.
     %
     % Behavior:
     % - Reads single-concentration polygon crops from 2_micropads/[phone]/con_*/
@@ -64,6 +71,9 @@ function cut_elliptical_regions(varargin)
     SEMI_MINOR_DEFAULT_RATIO = 0.85;                   % Default semi-minor/semi-major ratio
     ROTATION_DEFAULT_ANGLE = 0;                        % Default rotation (degrees)
 
+    % === ROTATION CONSTANTS ===
+    ROTATION_ANGLE_TOLERANCE = 1e-6;                   % Tolerance for detecting exact 90-degree rotations
+
     % === UI CONSTANTS ===
     UI_CONST = struct();
     UI_CONST.fontSize = struct('title',16,'path',12,'button',12,'label',10,'value',8,'instruction',10,'preview',14);
@@ -72,8 +82,14 @@ function cut_elliptical_regions(varargin)
                              'ellipse','cyan','value','yellow','preview','yellow','path',[0.7 0.7 0.7],'apply',[0.2 0.4 0.8]);
     UI_CONST.positions = struct('figure',[0 0 1 1],'title',[0.1 0.93 0.8 0.04], ...
                                 'image',[0.02 0.18 0.96 0.68], ...
+                                'rotationPanel',[0.02 0.02 0.20 0.12], ...
                                 'cutButtonPanel',[0.55 0.02 0.43 0.12],'previewPanel',[0.25 0.02 0.50 0.12], ...
                                 'stopButton',[0.02 0.93 0.06 0.05],'instructions',[0.02 0.145 0.96 0.025]);
+    UI_CONST.layout = struct();
+    UI_CONST.layout.rotationLabel = [0.05 0.78 0.90 0.18];
+    UI_CONST.layout.quickRotationRow1 = {[0.05 0.42 0.42 0.30], [0.53 0.42 0.42 0.30]};
+    UI_CONST.layout.quickRotationRow2 = {[0.05 0.08 0.42 0.30], [0.53 0.08 0.42 0.30]};
+    UI_CONST.rotation = struct('range',[-180 180],'quickAngles',[-90 0 90 180],'angleTolerance',ROTATION_ANGLE_TOLERANCE);
 
     %% ========================================================================
     
@@ -90,6 +106,9 @@ function cut_elliptical_regions(varargin)
 
     % Apply UI constants (separate from functionality constants)
     cfg.ui = createUIConfiguration(UI_CONST);
+
+    % Rotation configuration
+    cfg.rotation = struct('angleTolerance', ROTATION_ANGLE_TOLERANCE);
 
     % Output behavior is configured by createConfiguration (supports overrides)
     
@@ -371,7 +390,17 @@ function [updatedMemory, success, fig] = processOneImageWithPersistentWindow(ima
             saveCoordinates(outputDir, imageName, concIdx, coords, cfg);
         end
         saveCutPatchesToConcentrationFolders(img, imageName, concIdx, coords, outputDir, cfg);
-        updatedMemory = updateMemory(coords, img);
+
+        % Get rotation from fig if available, otherwise default to 0
+        rotationTotal = 0;
+        if isvalid(fig)
+            guiData = get(fig, 'UserData');
+            if isfield(guiData, 'rotation')
+                rotationTotal = guiData.rotation.total;
+            end
+        end
+
+        updatedMemory = updateMemory(coords, rotationTotal, img);
         success = true;
     else
         fprintf('  Image skipped by user\n');
@@ -507,16 +536,30 @@ function buildEllipticalPatchCuttingUI(fig, img, imageName, phoneName, cfg, memo
     % Create UI components
     guiData.titleHandle = createTitle(fig, phoneName, imageName, isFirst, cfg);
 
+    % Initialize rotation state (UI alignment only, no rotation on disk)
+    initialRotation = 0;
+    if memory.hasMemory && ~isFirst && isfield(memory, 'rotation')
+        initialRotation = memory.rotation;
+    end
+    guiData.rotation = struct('memory', initialRotation, 'offset', 0, 'total', initialRotation, 'angleTolerance', cfg.rotation.angleTolerance);
+    guiData.baseImg = img;
+
+    % Apply rotation to image for display
+    guiData.currentImg = applyRotationToImage(img, guiData.rotation.total, cfg);
+    [imageHeight, imageWidth, ~] = size(guiData.currentImg);
+
     % Display image
-    guiData.imgAxes = createImageAxes(fig, img, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, guiData.currentImg, cfg);
 
     % Calculate parameters and create ellipses
-    [imageHeight, imageWidth, ~] = size(img);
     geometryParams = calculateGeometryParameters(imageWidth, cfg);
     initialGeometry = getInitialEllipseGeometry(imageWidth, memory, isFirst, geometryParams, cfg);
 
     % Create interactive ellipses
-    guiData.ellipses = createEllipses(img, initialGeometry, geometryParams, cfg, memory, isFirst);
+    guiData.ellipses = createEllipses(guiData.currentImg, guiData.baseImg, guiData.rotation, initialGeometry, geometryParams, cfg, memory, isFirst);
+
+    % Rotation panel
+    guiData.rotationPanel = createRotationPanel(fig, cfg);
 
     % Create control buttons
     guiData.cutButtonPanel = createEllipticalPatchCuttingButtonPanel(fig, cfg);
@@ -552,7 +595,7 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, coords)
     
     % Create preview display
     guiData.imgAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.image);
-    createPreviewInExistingAxes(guiData.imgAxes, img, coords, cfg);
+    guiData.imgHandle = createPreviewInExistingAxes(guiData.imgAxes, img, coords, cfg);
     
     % Create stop button (always visible)
     guiData.stopButton = createStopButton(fig, cfg);
@@ -592,10 +635,10 @@ function titleHandle = createTitle(fig, phoneName, imageName, isFirst, cfg)
                            'HorizontalAlignment', 'center');
 end
 
-function imgAxes = createImageAxes(fig, img, cfg)
+function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
     % Create axes and display image
     imgAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.image);
-    imshow(img, 'Parent', imgAxes, 'InitialMagnification', 'fit');
+    imgHandle = imshow(img, 'Parent', imgAxes, 'InitialMagnification', 'fit');
     hold(imgAxes, 'on');
 end
 
@@ -672,9 +715,34 @@ function initialGeometry = getInitialEllipseGeometry(imageWidth, memory, isFirst
                              'rotation', rotationAngle);
 end
 
-function ellipses = createEllipses(img, initialGeometry, geometryParams, cfg, memory, isFirst)
-    % Create ellipse overlays using memory or defaults
+function ellipses = createEllipses(img, baseImg, rotationState, initialGeometry, geometryParams, cfg, memory, isFirst)
+    % createEllipses - Create interactive ellipse overlays with rotation support
+    %
+    % Transforms ellipse positions from memory (base frame) to current display frame
+    % (potentially rotated) while scaling for dimension changes between images.
+    %
+    % Inputs:
+    %   img             - Current rotated image for display (may differ from baseImg)
+    %   baseImg         - Original unrotated base image (reference frame for coordinates)
+    %   rotationState   - Struct with fields: total (degrees), angleTolerance
+    %   initialGeometry - Struct: semiMajor, semiMinor, rotation (base frame values)
+    %   geometryParams  - Struct: minPixels, maxPixels, rotationMin, rotationMax
+    %   cfg             - Configuration struct
+    %   memory          - Memory struct with positions from previous image (base frame)
+    %   isFirst         - Boolean, true if first image in batch
+    %
+    % Outputs:
+    %   ellipses - Cell array of drawellipse objects positioned in rotated display frame
+    %
+    % Coordinate transformation pipeline:
+    %   1. Memory positions (previous base frame) → scaled base frame (current image)
+    %   2. Scaled base frame → rotated display frame (if rotation applied)
+    %   3. Ellipse angles adjusted by rotation offset
+
     [imageHeight, imageWidth, ~] = size(img);
+    baseSize = [size(baseImg, 1), size(baseImg, 2)];
+    rotatedSize = [imageHeight, imageWidth];
+    appliedRotation = rotationState.total;
 
     baseSemiMajor = clampToRange(initialGeometry.semiMajor, geometryParams.minPixels, geometryParams.maxPixels);
     baseSemiMinor = clampToRange(initialGeometry.semiMinor, geometryParams.minPixels, baseSemiMajor);
@@ -684,28 +752,61 @@ function ellipses = createEllipses(img, initialGeometry, geometryParams, cfg, me
     ellipses = cell(1, cfg.numEllipses);
 
     useMemory = memory.hasMemory && ~isFirst && ~isempty(memory.positions);
-    widthScale = 1;
-    heightScale = 1;
-    if useMemory
-        if ~isempty(memory.imageWidth) && memory.imageWidth > 0
-            widthScale = imageWidth / memory.imageWidth;
-        end
-        if ~isempty(memory.imageHeight) && memory.imageHeight > 0
-            heightScale = imageHeight / memory.imageHeight;
-        end
-    end
-    scaleFactor = mean([widthScale, heightScale]);
-    if ~isfinite(scaleFactor) || scaleFactor <= 0
-        scaleFactor = widthScale;
-    end
 
     for i = 1:cfg.numEllipses
         if useMemory && i <= size(memory.positions, 1) && memory.positions(i, 1) > 0
-            centerX = memory.positions(i, 1) * widthScale;
-            centerY = memory.positions(i, 2) * heightScale;
-            major = clampToRange(memory.positions(i, 3) * scaleFactor, geometryParams.minPixels, geometryParams.maxPixels);
-            minor = clampToRange(memory.positions(i, 4) * scaleFactor, geometryParams.minPixels, min(major, geometryParams.maxPixels));
-            rotation = memory.positions(i, 5);
+            % Memory positions are in base (unrotated) frame
+            % Step 1: Scale positions using base-to-base dimensions
+            widthScale = 1;
+            heightScale = 1;
+            if ~isempty(memory.imageWidth) && memory.imageWidth > 0
+                widthScale = baseSize(2) / memory.imageWidth;
+            end
+            if ~isempty(memory.imageHeight) && memory.imageHeight > 0
+                heightScale = baseSize(1) / memory.imageHeight;
+            end
+            % Use geometric mean to preserve ellipse area under anisotropic scaling
+            scaleFactor = sqrt(widthScale * heightScale);
+            if ~isfinite(scaleFactor) || scaleFactor <= 0
+                scaleFactor = 1;
+                warning('cutEllipticalPatches:InvalidScaleFactor', ...
+                        'Invalid scale factor (widthScale=%.2f, heightScale=%.2f). Using default scale=1.', ...
+                        widthScale, heightScale);
+            end
+
+            % Warn if aspect ratio changed significantly (indicates mixed-orientation batch)
+            aspectRatioDiff = abs(widthScale - heightScale) / max(widthScale, heightScale);
+            if aspectRatioDiff > 0.05
+                warning('cutEllipticalPatches:AspectRatioChange', ...
+                        'Aspect ratio changed by %.1f%% between images (widthScale=%.2f, heightScale=%.2f). Ellipses may be distorted.', ...
+                        aspectRatioDiff * 100, widthScale, heightScale);
+            end
+
+            scaledBaseCenter = [memory.positions(i, 1) * widthScale, memory.positions(i, 2) * heightScale];
+
+            % Scale semi-axes uniformly using geometric mean (preserves area)
+            % For mixed-aspect batches, geometric mean minimizes distortion
+            major = memory.positions(i, 3) * scaleFactor;
+            minor = memory.positions(i, 4) * scaleFactor;
+            baseEllipseRotation = memory.positions(i, 5);
+
+            % Step 2: Transform center from base frame to rotated frame
+            if abs(appliedRotation) > rotationState.angleTolerance
+                rotatedCenter = applyRotationToPoints(scaledBaseCenter, baseSize, rotatedSize, appliedRotation, rotationState.angleTolerance);
+                displayRotation = baseEllipseRotation + appliedRotation;
+                displayRotation = mod(displayRotation + 180, 360) - 180;
+            else
+                rotatedCenter = scaledBaseCenter;
+                displayRotation = baseEllipseRotation;
+            end
+
+            centerX = rotatedCenter(1);
+            centerY = rotatedCenter(2);
+            rotation = displayRotation;
+
+            % Clamp to valid ranges
+            major = clampToRange(major, geometryParams.minPixels, geometryParams.maxPixels);
+            minor = clampToRange(minor, geometryParams.minPixels, min(major, geometryParams.maxPixels));
         else
             centerX = defaultPositions(i, 1);
             centerY = defaultPositions(i, 2);
@@ -759,12 +860,12 @@ function buttonPanel = createPreviewButtons(fig, cfg)
     createActionButton(buttonPanel, 'SKIP', [0.70 0.25 0.25 0.50], cfg.ui.colors.skip, cfg.ui.colors.foreground, 'skip', fig, cfg);
 end
 
-function createPreviewInExistingAxes(axesHandle, img, coords, cfg)
+function imgHandle = createPreviewInExistingAxes(axesHandle, img, coords, cfg)
     % Create preview in existing axes maintaining size and position
-    
+
     % Create dimmed background with highlighted patches
     maskedImg = createMaskedImage(img, coords, cfg.dimFactor);
-    imshow(maskedImg, 'Parent', axesHandle, 'InitialMagnification', 'fit');
+    imgHandle = imshow(maskedImg, 'Parent', axesHandle, 'InitialMagnification', 'fit');
     
     % ASCII-only preview title to avoid encoding surprises on some platforms
     previewTitle = sprintf('Preview: %d elliptical patches (%d replicates per concentration)', size(coords, 1), cfg.replicatesPerConcentration);
@@ -794,6 +895,7 @@ function maskedImg = createMaskedImage(img, coords, dimFactor)
     [height, width, numChannels] = size(img);
 
     % Persistent cache for meshgrid (reused across preview calls in same session)
+    % NOTE: Assumes single-threaded execution (standard for MATLAB interactive scripts)
     persistent lastSize Xcache Ycache; 
     if isempty(lastSize) || numel(lastSize) ~= 2 || any(lastSize ~= [height, width])
         [Xcache, Ycache] = meshgrid(1:width, 1:height);
@@ -825,8 +927,8 @@ function maskedImg = createMaskedImage(img, coords, dimFactor)
 
     % Vectorized dimming: apply mask to all channels at once
     maskedImg = double(img);
-    mask3D = repmat(~mask, [1, 1, numChannels]);
-    maskedImg(mask3D) = maskedImg(mask3D) * dimFactor;
+    inverseMask3D = repmat(~mask, [1, 1, numChannels]);
+    maskedImg(inverseMask3D) = maskedImg(inverseMask3D) * dimFactor;
     maskedImg = uint8(maskedImg);
 end
 
@@ -851,19 +953,37 @@ end
 function [action, coords] = waitForUserAction(fig)
     % Wait for user input and return results
     uiwait(fig);
-    
+
     action = '';
     coords = [];
-    
+
     if isvalid(fig)
         guiData = get(fig, 'UserData');
         action = guiData.action;
-        
+
         if strcmp(action, 'accept')
             if strcmp(guiData.mode, 'preview') && isfield(guiData, 'savedCoords')
                 coords = guiData.savedCoords;
             elseif strcmp(guiData.mode, 'cutting')
                 coords = getEllipseCoordinates(guiData.ellipses);
+
+                % Transform coordinates back to original (unrotated) frame
+                if isfield(guiData, 'rotation') && ~isempty(coords)
+                    rotationTotal = guiData.rotation.total;
+                    if abs(rotationTotal) > guiData.rotation.angleTolerance
+                        imageSize = [size(guiData.currentImg, 1), size(guiData.currentImg, 2)];
+                        baseSize = [size(guiData.baseImg, 1), size(guiData.baseImg, 2)];
+
+                        % Transform ellipse centers back to original frame
+                        coords(:, 1:2) = inverseRotatePoints(coords(:, 1:2), imageSize, baseSize, rotationTotal, guiData.rotation.angleTolerance);
+
+                        % Adjust ellipse rotation angles (applied AFTER axis constraint)
+                        coords(:, 5) = coords(:, 5) - rotationTotal;
+
+                        % Normalize angles to [-180, 180]
+                        coords(:, 5) = mod(coords(:, 5) + 180, 360) - 180;
+                    end
+                end
             end
 
             if isempty(coords)
@@ -881,9 +1001,22 @@ function coords = getEllipseCoordinates(ellipses)
         if isvalid(ellipses{i})
             center = ellipses{i}.Center;
             semiAxes = ellipses{i}.SemiAxes;
+
+            % Enforce constraint: semiMajorAxis >= semiMinorAxis
+            semiMajorAxis = max(semiAxes);
+            semiMinorAxis = min(semiAxes);
             rotation = ellipses{i}.RotationAngle;
+
+            % Adjust rotation if axes were swapped
+            if semiAxes(1) < semiAxes(2)
+                rotation = rotation + 90;
+            end
+
+            % Normalize rotation to [-180, 180]
+            rotation = mod(rotation + 180, 360) - 180;
+
             % Only round pixel positions; preserve decimal precision for dimensions and angles
-            coords(i, :) = [round(center), semiAxes, rotation];
+            coords(i, :) = [round(center), semiMajorAxis, semiMinorAxis, rotation];
         end
     end
 
@@ -926,6 +1059,9 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
     %   - Lazily creates coordinates.txt with header on first write
     %   - Ensures no duplicate rows per image (existing entries replaced)
     %   - Uses atomic write (temp file + move) to prevent corruption
+
+    COORD_NUM_COLUMNS = 7;  % concentration, replicate, x, y, a, b, theta
+
     coordFolder = phoneOutputDir;
     if ~exist(coordFolder, 'dir')
         mkdir(coordFolder);
@@ -936,7 +1072,7 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
 
     % Read existing entries (if any) and drop rows for this image
     existingNames = {};
-    existingNums = zeros(0, 7);  % 7 columns: concentration, replicate, x, y, a, b, theta
+    existingNums = zeros(0, COORD_NUM_COLUMNS);
     if exist(coordPath, 'file') == 2
         try
             % Read entire file and parse line by line (more robust than mixed fgetl/textscan)
@@ -946,7 +1082,7 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
             % Estimate capacity from line count for pre-allocation
             estimatedLines = length(lines);
             existingNames = cell(estimatedLines, 1);
-            existingNums = zeros(estimatedLines, 7);
+            existingNums = zeros(estimatedLines, COORD_NUM_COLUMNS);
             rowCount = 0;
 
             % First line should be header; skip if it matches expected format
@@ -961,8 +1097,8 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
                 if isempty(trimmedLine), continue; end
 
                 parts = strsplit(trimmedLine);
-                if numel(parts) >= 8
-                    nums = str2double(parts(2:8));
+                if numel(parts) >= (COORD_NUM_COLUMNS + 1)
+                    nums = str2double(parts(2:(COORD_NUM_COLUMNS + 1)));
                     if all(~isnan(nums))
                         rowCount = rowCount + 1;
                         existingNames{rowCount} = parts{1};
@@ -975,9 +1111,9 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
             existingNames = existingNames(1:rowCount);
             existingNums = existingNums(1:rowCount, :);
         catch ME
-            warning('cutEllipticalPatches:CoordReadFailed', ...
-                    'Cannot parse coordinates file %s: %s. File will be overwritten.', ...
-                    coordPath, ME.message);
+            error('cutEllipticalPatches:CorruptCoordinateFile', ...
+                  'Cannot parse coordinates file %s: %s\nAborting to prevent data loss. Please fix or delete the corrupted file manually.', ...
+                  coordPath, ME.message);
         end
     end
 
@@ -999,7 +1135,7 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
     validMask = coords(:, 1) > 0;  % Valid coordinates (x > 0)
     numValid = sum(validMask);
     newNames = cell(numValid, 1);
-    newNums = zeros(numValid, 7);  % Changed from 5 to 7 (conc, rep, x, y, a, b, theta)
+    newNums = zeros(numValid, COORD_NUM_COLUMNS);
 
     validIdx = 0;
     for i = 1:size(coords, 1)
@@ -1015,7 +1151,8 @@ function saveCoordinates(phoneOutputDir, imageName, concIdx, coords, cfg)
     % Rewrite atomically: write to a temp file in the same folder, then move over
     % Generate temp file in target directory with guaranteed uniqueness
     [~, baseName] = fileparts(cfg.coordinateFileName);
-    tmpPath = fullfile(coordFolder, sprintf('.%s_%s_tmp', baseName, datestr(now, 'yyyymmdd_HHMMSS_FFF'))); %#ok<TNOW1,DATST>
+    [~, tmpSuffix] = fileparts(tempname);
+    tmpPath = fullfile(coordFolder, sprintf('.%s_%s_tmp', baseName, tmpSuffix));
 
     fid_w = fopen(tmpPath, 'wt');
     if fid_w == -1
@@ -1126,16 +1263,16 @@ function saveCutPatchesToConcentrationFolders(img, imageName, concIdx, coords, o
 
             % Validate that patch contains pixels inside the ellipse
             if ~any(ellipseMask(:))
-                warning('cutEllipticalPatches:EmptyPatch', ...
-                        'Ellipse %d (%s_con%d_rep%d) has no pixels inside image bounds. Skipping.', ...
+                warning('cutEllipticalPatches:EllipseOutOfBounds', ...
+                        'Ellipse %d (%s_con%d_rep%d) lies outside image bounds. Skipped (expected for boundary cases).', ...
                         i, nameNoExt, concIdx, replicate);
                 continue;
             end
 
             % Vectorized mask application across all channels
             ellipticalPatch = patchRegion;
-            mask3D = repmat(~ellipseMask, [1, 1, numChannels]);
-            ellipticalPatch(mask3D) = 0;
+            inverseMask3D = repmat(~ellipseMask, [1, 1, numChannels]);
+            ellipticalPatch(inverseMask3D) = 0;
 
             % Save with format-aware settings
             patchFileName = sprintf(cfg.patchFilenameFormat, nameNoExt, concIdx, replicate, outExt);
@@ -1159,12 +1296,13 @@ function memory = initializeMemory()
                    'imageHeight', []);
 end
 
-function memory = updateMemory(coords, img)
+function memory = updateMemory(coords, rotationTotal, img)
     % Update memory with current settings derived from accepted ellipses
     [h, w, ~] = size(img);
 
     memory.hasMemory = ~isempty(coords);
     memory.positions = coords;
+    memory.rotation = rotationTotal;  % Store UI rotation for next image
     if memory.hasMemory
         memory.semiMajorAxis = coords(1, 3);
         memory.semiMinorAxis = coords(1, 4);
@@ -1178,8 +1316,8 @@ function memory = updateMemory(coords, img)
     memory.imageHeight = h;
 
     if memory.hasMemory
-        fprintf('  Memory updated: %d ellipses, a=%.1f, b=%.1f, rot=%.1f deg\n', ...
-                size(coords, 1), memory.semiMajorAxis, memory.semiMinorAxis, memory.rotationAngle);
+        fprintf('  Memory updated: %d ellipses, a=%.1f, b=%.1f, rot=%.1f deg, UI rotation=%.1f deg\n', ...
+                size(coords, 1), memory.semiMajorAxis, memory.semiMinorAxis, memory.rotationAngle, rotationTotal);
     else
         fprintf('  Memory cleared for this folder (no accepted ellipses)\n');
     end
@@ -1187,8 +1325,7 @@ end
 
 function guiData = initializeGUIData(guiData, width, height)
     % Initialize GUI data structure for cutting mode
-    guiData.width = width;
-    guiData.height = height;
+    guiData.imageSize = struct('width', width, 'height', height);
     guiData.action = '';
     % mode is already set in buildEllipticalPatchCuttingUI
 end
@@ -1419,39 +1556,245 @@ function outExt = determineOutputExtension(extOrig, supported, preserveFormat)
     end
 end
 
+%% -------------------------------------------------------------------------
+%% Rotation Helper Functions
+%% -------------------------------------------------------------------------
+
+function rotationPanel = createRotationPanel(fig, cfg)
+    % Create rotation panel with preset angle buttons
+    rotationPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
+                           'Position', cfg.ui.positions.rotationPanel, ...
+                           'BackgroundColor', cfg.ui.colors.panel, ...
+                           'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
+                           'BorderWidth', 2);
+
+    % Panel label
+    uicontrol('Parent', rotationPanel, 'Style', 'text', 'String', 'Rotation', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.rotationLabel, ...
+             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
+
+    % Rotation preset buttons
+    angles = cfg.ui.rotation.quickAngles;
+    positions = {cfg.ui.layout.quickRotationRow1{1}, cfg.ui.layout.quickRotationRow1{2}, ...
+                 cfg.ui.layout.quickRotationRow2{1}, cfg.ui.layout.quickRotationRow2{2}};
+
+    for i = 1:numel(angles)
+        uicontrol('Parent', rotationPanel, 'Style', 'pushbutton', ...
+                 'String', sprintf('%d%s', angles(i), char(176)), ...
+                 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+                 'Units', 'normalized', 'Position', positions{i}, ...
+                 'BackgroundColor', [0.25 0.25 0.25], ...
+                 'ForegroundColor', cfg.ui.colors.foreground, ...
+                 'Callback', @(~,~) applyRotation_UI(angles(i), fig, cfg));
+    end
+end
+
+function applyRotation_UI(angle, fig, cfg)
+    % Apply preset rotation angle (UI alignment only)
+    guiData = get(fig, 'UserData');
+    if ~strcmp(guiData.mode, 'cutting')
+        return;
+    end
+
+    % Skip update if rotation angle hasn't changed
+    if abs(guiData.rotation.total - angle) < cfg.rotation.angleTolerance
+        return;
+    end
+
+    % Update rotation state
+    guiData.rotation.total = angle;
+
+    % Validate image dimensions (defensive check)
+    currentWidth = guiData.imageSize.width;
+    currentHeight = guiData.imageSize.height;
+    if currentWidth <= 0 || currentHeight <= 0
+        warning('cutEllipticalPatches:InvalidDimensions', ...
+                'Image dimensions are invalid (width=%d, height=%d). Rotation aborted.', ...
+                currentWidth, currentHeight);
+        return;
+    end
+
+    % Convert ellipse positions to normalized axes coordinates [0, 1] before rotation
+    numEllipses = length(guiData.ellipses);
+    ellipseNormalized = zeros(numEllipses, 2);
+    for i = 1:numEllipses
+        if isvalid(guiData.ellipses{i})
+            centerData = guiData.ellipses{i}.Center;  % Data coordinates [x, y]
+            % Convert to normalized axes coordinates [0, 1]
+            ellipseNormalized(i, 1) = (centerData(1) - 1) / currentWidth;
+            ellipseNormalized(i, 2) = (centerData(2) - 1) / currentHeight;
+        end
+    end
+
+    % Apply rotation to image
+    guiData.currentImg = applyRotationToImage(guiData.baseImg, guiData.rotation.total, cfg);
+    [newHeight, newWidth, ~] = size(guiData.currentImg);
+
+    % Update image display - direct CData update preserves existing axes children
+    if ~isfield(guiData, 'imgHandle') || ~isvalid(guiData.imgHandle)
+        error('cutEllipticalPatches:InvalidImageHandle', ...
+              'Image handle is missing or invalid. Cannot update rotation.');
+    end
+
+    set(guiData.imgHandle, 'CData', guiData.currentImg, ...
+                            'XData', [1, newWidth], ...
+                            'YData', [1, newHeight]);
+
+    % Snap axes to new image bounds
+    axis(guiData.imgAxes, 'image');
+
+    % Update ellipse positions to maintain screen-space locations
+    for i = 1:numEllipses
+        if isvalid(guiData.ellipses{i})
+            % Convert normalized coordinates back to new data coordinates
+            newX = 1 + ellipseNormalized(i, 1) * newWidth;
+            newY = 1 + ellipseNormalized(i, 2) * newHeight;
+            guiData.ellipses{i}.Center = [newX, newY];
+        end
+    end
+
+    % Update image size
+    guiData.imageSize.width = newWidth;
+    guiData.imageSize.height = newHeight;
+
+    set(fig, 'UserData', guiData);
+end
+
+function rotatedImg = applyRotationToImage(img, rotation, cfg)
+    % Apply rotation to image (lossless rot90 for 90-deg multiples, bilinear otherwise)
+    if rotation == 0
+        rotatedImg = img;
+        return;
+    end
+
+    % For exact 90-degree multiples, use lossless rot90
+    if abs(mod(rotation, 90)) < cfg.rotation.angleTolerance
+        numRotations = mod(round(rotation / 90), 4);
+        if numRotations == 0
+            rotatedImg = img;
+        else
+            rotatedImg = rot90(img, -numRotations);
+        end
+    else
+        rotatedImg = imrotate(img, rotation, 'bilinear', 'loose');
+    end
+end
+
+function transformedPoints = inverseRotatePoints(points, rotatedSize, originalSize, rotation, angleTolerance)
+    % Transform points from rotated image frame back to original frame
+    % ROTATION CONVENTION: Positive rotation = clockwise in image coordinates
+    %                      (standard MATLAB imrotate convention)
+    % TRANSFORMATION: rotated → original (inverse/reverse rotation)
+    if rotation == 0 || isempty(points)
+        transformedPoints = points;
+        return;
+    end
+
+    % Handle exact 90-degree rotations
+    if abs(mod(rotation, 90)) < angleTolerance
+        numRotations = mod(round(rotation / 90), 4);
+
+        % Map centers back through discrete rotations (with +1 for MATLAB 1-based indexing)
+        switch numRotations
+            case 1  % -90 degrees (rot90(..., -1))
+                % rotated: (x_r, y_r), original: (y_r, W_r - x_r + 1)
+                x_orig = points(:, 2);
+                y_orig = rotatedSize(2) - points(:, 1) + 1;
+            case 2  % 180 degrees
+                x_orig = rotatedSize(2) - points(:, 1) + 1;
+                y_orig = rotatedSize(1) - points(:, 2) + 1;
+            case 3  % 90 degrees (rot90(..., 1))
+                % rotated: (x_r, y_r), original: (H_r - y_r + 1, x_r)
+                x_orig = rotatedSize(1) - points(:, 2) + 1;
+                y_orig = points(:, 1);
+            otherwise  % 0 degrees
+                x_orig = points(:, 1);
+                y_orig = points(:, 2);
+        end
+
+        transformedPoints = [x_orig, y_orig];
+    else
+        % For non-90-degree rotations, use geometric transform
+        theta = -deg2rad(rotation);  % Inverse rotation
+        cosTheta = cos(theta);
+        sinTheta = sin(theta);
+
+        % Center of rotated image
+        centerRotated = [rotatedSize(2)/2, rotatedSize(1)/2];
+        centerOriginal = [originalSize(2)/2, originalSize(1)/2];
+
+        % Translate to origin, rotate, translate back
+        pointsCentered = points - centerRotated;
+        x_orig = pointsCentered(:, 1) * cosTheta - pointsCentered(:, 2) * sinTheta;
+        y_orig = pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
+
+        transformedPoints = [x_orig + centerOriginal(1), y_orig + centerOriginal(2)];
+    end
+end
+
+function transformedPoints = applyRotationToPoints(points, originalSize, rotatedSize, rotation, angleTolerance)
+    % Transform points from original image frame to rotated frame (forward rotation)
+    % ROTATION CONVENTION: Positive rotation = clockwise in image coordinates
+    %                      (standard MATLAB imrotate convention)
+    % TRANSFORMATION: original → rotated (forward rotation)
+    if rotation == 0 || isempty(points)
+        transformedPoints = points;
+        return;
+    end
+
+    % Handle exact 90-degree rotations
+    if abs(mod(rotation, 90)) < angleTolerance
+        numRotations = mod(round(rotation / 90), 4);
+
+        % Map centers forward through discrete rotations (with +1 for MATLAB 1-based indexing)
+        switch numRotations
+            case 1  % 90 degrees (rot90(..., -1))
+                % original: (x, y), rotated: (H - y + 1, x)
+                x_rot = originalSize(1) - points(:, 2) + 1;
+                y_rot = points(:, 1);
+            case 2  % 180 degrees
+                x_rot = originalSize(2) - points(:, 1) + 1;
+                y_rot = originalSize(1) - points(:, 2) + 1;
+            case 3  % -90 degrees (rot90(..., 1))
+                % original: (x, y), rotated: (y, W - x + 1)
+                x_rot = points(:, 2);
+                y_rot = originalSize(2) - points(:, 1) + 1;
+            otherwise  % 0 degrees
+                x_rot = points(:, 1);
+                y_rot = points(:, 2);
+        end
+
+        transformedPoints = [x_rot, y_rot];
+    else
+        % For non-90-degree rotations, use geometric transform
+        theta = deg2rad(rotation);  % Forward rotation
+        cosTheta = cos(theta);
+        sinTheta = sin(theta);
+
+        % Center of original image
+        centerOriginal = [originalSize(2)/2, originalSize(1)/2];
+        centerRotated = [rotatedSize(2)/2, rotatedSize(1)/2];
+
+        % Translate to origin, rotate, translate back
+        pointsCentered = points - centerOriginal;
+        x_rot = pointsCentered(:, 1) * cosTheta - pointsCentered(:, 2) * sinTheta;
+        y_rot = pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
+
+        transformedPoints = [x_rot + centerRotated(1), y_rot + centerRotated(2)];
+    end
+end
+
+%% -------------------------------------------------------------------------
+%% Image Reading with EXIF Handling
+%% -------------------------------------------------------------------------
+
 function I = imread_raw(fname)
-% Return pixels in on-disk layout (no effective EXIF auto-upright).
-% - Always undoes EXIF 90 deg cases (5/6/7/8) with rot90/fliplr (lossless).
-% - Ignores flips/180 (2/3/4) by design. No cropping, no resampling.
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    % Read (some builds honor AutoOrient=false; some ignore it silently)
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch %#ok<CTCH>
-        I = imread(fname);
-    end
-
-    % Get EXIF orientation (if present)
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation') || isempty(info.Orientation), return; end
-        ori = double(info.Orientation);
-    catch %#ok<CTCH>
-        return; % no EXIF -> done
-    end
-
-    % Always invert only the 90 deg EXIF cases
-    switch ori
-        case 5  % mirror H + rotate -90 (to display upright)
-            I = rot90(I, +1); I = fliplr(I);   % invert: +90 then mirror H
-        case 6  % rotate +90
-            I = rot90(I, -1);                  % invert: -90 (== rot90(...,3))
-        case 7  % mirror H + rotate +90
-            I = rot90(I, -1); I = fliplr(I);   % invert: -90 then mirror H
-        case 8  % rotate +270 (== -90)
-            I = rot90(I, +1);                  % invert: +90
-        otherwise
-            % 1,2,3,4 -> leave unchanged (no risk of double-undo)
-    end
+    I = imread(fname);
 end
 

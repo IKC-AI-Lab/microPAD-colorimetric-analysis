@@ -54,6 +54,7 @@ Notes: Run from repo root or `matlab_scripts/`. Octave is not supported due to G
 ## Agent Execution Guidelines
 - **Ask questions if stuck**: Do not add fallback algorithms instead; clarify requirements first
 - **Never create new MATLAB scripts**: Only create new scripts when explicitly requested by the user
+- **No backward compatibility code**: Project is in active development and NOT production-ready until complete; do not add migration logic, compatibility shims, or handling for "old versions"; use current formats exclusively and error out cleanly on invalid data
 - No workarounds or fallbacks: implement direct solutions aligned with project constraints; do not add compatibility shims, alternative code paths, or temporary hacks
 - Avoid overengineering and verbosity: keep changes minimal, focused, and idiomatic; do not add redundant layers, unused abstractions, or repetitive code
 - Best practices first: follow all Coding Style & Naming Conventions above (snake_case, one public function per file, 4-space indent, name-value pairs, and validate with `inputParser`/`arguments`)

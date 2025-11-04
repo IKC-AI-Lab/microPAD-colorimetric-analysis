@@ -987,36 +987,11 @@ function name = compute_display_name(root, pathStr)
 end
 
 function I = imread_raw(fname)
-    %% Read image with EXIF orientation handling
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    % Get EXIF orientation (if present)
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation') || isempty(info.Orientation), return; end
-        ori = double(info.Orientation);
-    catch
-        return; % no EXIF -> done
-    end
-
-    % Invert only the 90 deg EXIF cases
-    switch ori
-        case 5  % mirror H + rotate -90 (to display upright)
-            I = rot90(I, +1); I = fliplr(I);   % invert: +90 then mirror H
-        case 6  % rotate +90
-            I = rot90(I, -1);                  % invert: -90 (== rot90(...,3))
-        case 7  % mirror H + rotate +90
-            I = rot90(I, -1); I = fliplr(I);   % invert: -90 then mirror H
-        case 8  % rotate +270 (== -90)
-            I = rot90(I, +1);                  % invert: +90
-        otherwise
-            % 1,2,3,4 -> leave unchanged (no risk of double-undo)
-    end
+    I = imread(fname);
 end
 
 function concValues = extract_concentration_column(T)

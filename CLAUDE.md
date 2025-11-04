@@ -26,6 +26,23 @@ When handling complex multi-phase implementations, follow this orchestration wor
 **Creating a plan:**
 Use the `plan-writer` agent to create structured implementation plans with checkboxes and progress tracking.
 
+**Plan Philosophy:**
+Plans are **high-order strategic documents**, not detailed implementation guides. They specify:
+- **WHAT** needs to be done (clear task objectives)
+- **WHERE** it needs to be done (file paths, integration points)
+- **WHY** it needs to be done (rationale, context)
+- **HOW TO VERIFY** it works (test cases, success criteria)
+
+Plans should **NOT** include:
+- Complete code implementations (that's the coder agents' job)
+- Detailed function bodies or algorithms
+- Line-by-line code snippets
+
+**Separation of concerns:**
+- `plan-writer` creates high-level roadmap with clear objectives
+- `matlab-coder` and `python-coder` implement the actual code
+- Code reviewers verify implementation quality
+
 ### Task Delegation and Workflow
 
 **Standard workflow for complex tasks:**
@@ -37,11 +54,13 @@ Use the `plan-writer` agent to create structured implementation plans with check
 2. **Implementation Phase**
    - Delegate MATLAB work to `matlab-coder` agent
    - Delegate Python work to `python-coder` agent
+   - Agents implement **entire phase** (all steps within a phase) before review
    - Agents perform quick sanity checks only (no self-review)
 
-3. **Independent Review Phase** (MANDATORY after each file implementation)
+3. **Independent Review Phase** (MANDATORY after each phase completes)
    - Delegate MATLAB code review to `matlab-code-reviewer` agent
    - Delegate Python code review to `python-code-reviewer` agent
+   - Reviewers assess **entire phase** as a complete system
    - Reviewers identify issues but do NOT fix them
 
 4. **Iteration Phase**
@@ -50,7 +69,7 @@ Use the `plan-writer` agent to create structured implementation plans with check
    - Continue until review is clean
 
 5. **Completion**
-   - Mark task complete in plan file only after passing review
+   - Mark phase complete in plan file only after passing review
    - After entire plan completes: Ask user whether to delete plan file
 
 ### Critical Rules for Orchestration
@@ -62,8 +81,9 @@ Use the `plan-writer` agent to create structured implementation plans with check
 - Never create fallback code or workarounds due to uncertainty
 
 **Quality assurance:**
-- Every file implementation MUST be independently reviewed
-- No task marked complete without passing review
+- Implement complete phases before review (e.g., Phase 1: steps 1.1, 1.2, 1.3 → then review)
+- Review entire phase as a cohesive system, not individual steps
+- No phase marked complete without passing review
 - Issues found in review MUST be fixed before proceeding
 - Re-review after fixes until clean
 
@@ -84,12 +104,12 @@ User: "Implement feature X that requires MATLAB and Python changes"
 1. Check complexity → 3 phases, cross-language → CREATE PLAN
 2. Delegate to plan-writer: Create plan in documents/plans/FEATURE_X_PLAN.md
 3. Review plan with user → Get approval
-4. For each task in plan:
-   a. Delegate to matlab-coder or python-coder
-   b. After implementation, delegate to respective code-reviewer
+4. For each phase in plan:
+   a. Delegate to matlab-coder or python-coder: Implement ALL steps in phase
+   b. After entire phase implemented, delegate to respective code-reviewer
    c. If issues found → Send back to coder with fixes → Re-review
-   d. Mark task complete only after clean review
-5. After all tasks complete: "Feature X complete. Delete documents/plans/FEATURE_X_PLAN.md? (Yes/No)"
+   d. Mark phase complete only after clean review
+5. After all phases complete: "Feature X complete. Delete documents/plans/FEATURE_X_PLAN.md? (Yes/No)"
 ```
 
 ## Code Quality Standards
@@ -100,11 +120,19 @@ User: "Implement feature X that requires MATLAB and Python changes"
 - **NEVER write overengineered code** - Keep implementations simple, direct, and maintainable
 - **NEVER add redundant or verbose code** - Every line must serve a clear purpose
 - **NEVER create new MATLAB scripts** - Only create new scripts when explicitly requested by the user
+- **NEVER add backward compatibility code** - This project is in active development and not production-ready until all work is complete; do not add migration logic, compatibility shims, or handling for "old versions"
 - **ALWAYS use best practices** for MATLAB and this project's architecture
 - **ALWAYS consider side effects** of changes across the entire pipeline
 - **ALWAYS implement bulletproof solutions** that handle edge cases without defensive bloat
 - **ALWAYS analyze root causes** before proposing solutions
 - **ASK QUESTIONS if stuck** - Do not add fallback algorithms instead; clarify requirements first
+
+**Development vs Production Philosophy:**
+- This codebase is **NOT production-ready** until explicitly stated by the user
+- Code runs in development mode (with and without AI detection enabled)
+- Do not add migration paths for "previous versions" that don't exist in production
+- Use current formats exclusively; error out cleanly on invalid data instead of attempting migration
+- Backward compatibility is only needed when code is actually deployed to production with existing users
 
 **Naming and Documentation Standards:**
 - Variable names: descriptive nouns without opinions or history
@@ -273,11 +301,7 @@ movefile(tmpPath, coordPath, 'f');
 **No duplicate rows per image**: Scripts automatically filter existing entries before appending new coordinates.
 
 ### Image Orientation Handling
-All scripts include `imread_raw()` as a local function that:
-- Inverts EXIF 90-degree rotations (tags 5/6/7/8) to preserve raw sensor layout
-- Ignores flips/180-degree rotations (tags 2/3/4)
-- Prevents double-rotation when user manually rotates images
-- Each script contains its own copy to maintain script independence
+All pipeline scripts use an `imread_raw()` helper that simply defers to MATLAB's `imread()` so we always work with raw sensor pixels. We intentionally ignore EXIF orientation metadata and instead record any manual rotation adjustments in `coordinates.txt` (10th column in `2_micropads/coordinates.txt`). Downstream steps apply those rotations when needed.
 
 ### Geometry and Projection
 - **Stage 2 (cut_micropads.m)**:
@@ -371,8 +395,8 @@ Could not find input folder "X_*". Using current directory as project root.
 ```
 Solution: Run from `matlab_scripts/` or project root directory.
 
-### EXIF Orientation Conflicts
-If images appear rotated after cropping, check EXIF orientation tags. The pipeline intentionally preserves on-disk layout.
+### EXIF Orientation Issues
+If images appear incorrectly rotated, re-run the GUI stage to update the stored rotation in `coordinates.txt`. The pipeline relies solely on that metadata and does not modify image files in place.
 
 ### Coordinate File Corruption
 Atomic writes prevent most corruption, but if coordinates.txt is malformed:

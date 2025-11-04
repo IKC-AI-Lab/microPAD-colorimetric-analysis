@@ -27,6 +27,12 @@ function extract_features(varargin)
     %   (default: augmented_3_elliptical_regions for augmented data, or 3_elliptical_regions for original data)
     % - Extracts features per patch and aggregates results by concentration replicate
     %
+    % ROTATION SEMANTICS:
+    %   This script reads ellipse coordinates from 3_elliptical_regions/coordinates.txt
+    %   (8-column format). The rotationAngle field represents the ellipse's geometric
+    %   orientation in the original (unrotated) image reference frame. The micropad UI
+    %   rotation column from 2_micropads/coordinates.txt is NOT used by this script.
+    %
     % Usage:
     %   extract_features()                    % Show dialog
     %   extract_features('preset', 'minimal') % Use 'minimal' feature group set
@@ -3991,8 +3997,10 @@ end
 %% COORDINATE PARSING FUNCTIONS
 function coordinateData = parseCoordinatesFile(coordinatesFilePath)
     %% Parse phone-level coordinates.txt file and extract patch location information
-    % Expected format (header optional):
+    % Expected format (8 columns, header optional):
     %   image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
+    %   where rotationAngle is the ellipse's geometric orientation in degrees
+    %   (-180 to 180, clockwise from horizontal major axis)
 
     coordinateData = struct('images', containers.Map('KeyType', 'char', 'ValueType', 'any'), ...
                             'isValid', false, ...
@@ -4335,39 +4343,11 @@ function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalIma
 end
 
 function I = imread_raw(fname)
-% Return pixels in on-disk layout (no effective EXIF auto-upright).
-% - Always undoes EXIF 90° cases (5/6/7/8) with rot90/fliplr (lossless).
-% - Ignores flips/180 (2/3/4) by design. No cropping, no resampling.
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    % Read (some builds honor AutoOrient=false; some ignore it silently)
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    % Get EXIF orientation (if present)
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation') || isempty(info.Orientation), return; end
-        ori = double(info.Orientation);
-    catch
-        return; % no EXIF → done
-    end
-
-    % Always invert only the 90° EXIF cases
-    switch ori
-        case 5  % mirror H + rotate -90 (to display upright)
-            I = rot90(I, +1); I = fliplr(I);   % invert: +90 then mirror H
-        case 6  % rotate +90
-            I = rot90(I, -1);                  % invert: -90 (== rot90(...,3))
-        case 7  % mirror H + rotate +90
-            I = rot90(I, -1); I = fliplr(I);   % invert: -90 then mirror H
-        case 8  % rotate +270 (== -90)
-            I = rot90(I, +1);                  % invert: +90
-        otherwise
-            % 1,2,3,4 → leave unchanged (no risk of double-undo)
-    end
+    I = imread(fname);
 end
 
 function [mask, bbox] = createEllipticalPatchMask(imageSize, xCenter, yCenter, semiMajorAxis, semiMinorAxis, rotationAngle)

@@ -31,6 +31,13 @@ function cut_micropads(varargin)
     % - Writes polygon crops to 2_micropads/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level (atomic, no duplicate rows per image)
     %
+    % ROTATION SEMANTICS:
+    %   The rotation column in coordinates.txt is a UI-only alignment hint that
+    %   records how much the user rotated the image to facilitate labeling. This
+    %   value is NOT applied by downstream processing (extraction, augmentation,
+    %   feature extraction). All saved coordinates are in the original (unrotated)
+    %   image reference frame.
+    %
     % Behavior:
     % - Shows interactive UI with drawpolygon editing for every image
     % - If useAIDetection=true, attempts AI detection for initial placement
@@ -76,7 +83,7 @@ function cut_micropads(varargin)
     %   Windows: 'C:\Users\YourName\miniconda3\envs\YourPythonEnv\python.exe'
     %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
-    DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
+    DEFAULT_PYTHON_PATH = '';
 
     DEFAULT_INFERENCE_SIZE = 1280;
 
@@ -99,6 +106,7 @@ function cut_micropads(varargin)
         'instruction', 10, ...
         'preview', 14, ...
         'label', 12, ...
+        'status', 13, ...
         'value', 13);
     UI_CONST.colors = struct(...
         'background', 'black', ...
@@ -112,19 +120,26 @@ function cut_micropads(varargin)
         'info', [1.0 1.0 0.3], ...
         'path', [0.75 0.75 0.75], ...
         'apply', [0.2 0.5 0.9]);
+    % UI positions use normalized coordinates [x, y, width, height]
+    % Origin: (0, 0) = bottom-left, (1, 1) = top-right
+    % Standard gap: 0.01 (1% of figure)
     UI_CONST.positions = struct(...
-        'figure', [0 0 1 1], ...
-        'stopButton', [0.01 0.945 0.06 0.045], ...
-        'title', [0.08 0.945 0.84 0.045], ...
-        'pathDisplay', [0.08 0.90 0.84 0.035], ...
-        'instructions', [0.01 0.855 0.98 0.035], ...
-        'image', [0.01 0.16 0.98 0.68], ...
-        'rotationPanel', [0.01 0.01 0.24 0.14], ...
-        'zoomPanel', [0.26 0.01 0.26 0.14], ...
-        'cutButtonPanel', [0.53 0.01 0.46 0.14], ...
-        'previewPanel', [0.25 0.01 0.50 0.14], ...
-        'previewLeft', [0.01 0.16 0.48 0.73], ...
-        'previewRight', [0.50 0.16 0.49 0.73]);
+        'figure', [0 0 1 1], ...                      % Full window
+        'stopButton', [0.01 0.945 0.06 0.045], ...    % Top-left corner, 6% width
+        'title', [0.08 0.945 0.84 0.045], ...         % Top center bar (84% width)
+        'pathDisplay', [0.08 0.90 0.84 0.035], ...    % Below title, same width
+        'aiStatus', [0.25 0.905 0.50 0.035], ...      % Centered AI status label
+        'instructions', [0.01 0.855 0.98 0.035], ...  % Full-width instruction text
+        'image', [0.01 0.215 0.98 0.64], ...          % Primary image axes (64% height)
+        'runAIButton', [0.01 0.16 0.08 0.045], ...    % "RUN AI" button above rotation panel
+        'rotationPanel', [0.01 0.01 0.24 0.14], ...   % Left: rotation preset buttons
+        'zoomPanel', [0.26 0.01 0.26 0.14], ...       % Center: zoom slider + controls
+        'cutButtonPanel', [0.53 0.01 0.46 0.14], ...  % Right: APPLY/SKIP buttons (46% = 98%-24%-26%-2%)
+        'previewPanel', [0.25 0.01 0.50 0.14], ...    % Preview action buttons in main window
+        'previewTitle', [0.01 0.92 0.98 0.04], ...    % Preview window title bar
+        'previewMeta', [0.01 0.875 0.98 0.035], ...   % Preview metadata text below title
+        'previewLeft', [0.01 0.22 0.48 0.64], ...     % Left comparison image (48% width)
+        'previewRight', [0.50 0.22 0.49 0.64]);       % Right comparison image (49% width)
     UI_CONST.polygon = struct(...
         'lineWidth', 3, ...
         'borderWidth', 2);
@@ -400,7 +415,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDir, cfg, fig
         return;
     end
 
-    % Get initial polygon positions (AI detection, memory, or default geometry)
+    % Get initial polygon positions (memory or default, NOT AI yet)
     [imageHeight, imageWidth, ~] = size(img);
     [initialPolygons, initialSource] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
     useMemoryRotation = strcmp(initialSource, 'memory');
@@ -409,70 +424,25 @@ function [success, fig, memory] = processOneImage(imageName, outputDir, cfg, fig
         rotationAngle = memory.rotation;
         if isMultipleOfNinety(rotationAngle, cfg.rotation.angleTolerance)
             [initialPolygons, ~] = rotatePolygonsDiscrete(initialPolygons, [imageHeight, imageWidth], rotationAngle);
+            % Normalize to horizontal rectangles after rotation
+            initialPolygons = normalizePolygonsForDisplay(initialPolygons, rotationAngle, ...
+                                                          [imageHeight, imageWidth], [imageHeight, imageWidth], ...
+                                                          cfg.rotation.angleTolerance);
         end
     end
     initialPolygons = sortPolygonArrayByX(initialPolygons);
 
-    % Interactive region selection with persistent window
+    % Display GUI immediately with memory/default polygons
     [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory, useMemoryRotation);
+
+    % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
+    % (Implementation in Phase 2.3)
 
     if ~isempty(polygonParams)
         saveCroppedRegions(img, imageName, polygonParams, outputDir, cfg, rotation);
         % Update memory with current polygons and rotation
         memory = updateMemory(memory, polygonParams, rotation, [imageHeight, imageWidth]);
         success = true;
-    end
-end
-
-function [polygons, detectionSucceeded] = getInitialPolygons(img, cfg)
-    % Attempt AI detection for initial polygons
-    polygons = [];
-    detectionSucceeded = false;
-
-    if ~cfg.useAIDetection
-        return;
-    end
-
-    try
-        [detectedQuads, confidences] = detectQuadsYOLO(img, cfg);
-
-        if isempty(detectedQuads)
-            fprintf('  No AI detections\n');
-            return;
-        end
-
-        numDetected = size(detectedQuads, 1);
-
-        if numDetected == cfg.numSquares
-            fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
-                numDetected, mean(confidences));
-            polygons = detectedQuads;
-            detectionSucceeded = true;
-            return;
-        elseif numDetected > cfg.numSquares
-            fprintf('  AI detected %d regions, filtering to top %d by confidence...\n', ...
-                numDetected, cfg.numSquares);
-
-            [~, sortIdx] = sort(confidences, 'descend');
-            topIdx = sortIdx(1:cfg.numSquares);
-            detectedQuads = detectedQuads(topIdx, :, :);
-            confidences = confidences(topIdx);
-
-            centroids = squeeze(mean(detectedQuads, 2));
-            [~, spatialIdx] = sort(centroids(:, 1));
-            detectedQuads = detectedQuads(spatialIdx, :, :);
-            confidences = confidences(spatialIdx);
-
-            fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
-                cfg.numSquares, mean(confidences));
-            polygons = detectedQuads;
-            detectionSucceeded = true;
-            return;
-        else
-            fprintf('  AI detected only %d/%d regions\n', numDetected, cfg.numSquares);
-        end
-    catch ME
-        fprintf('  AI detection failed (%s)\n', ME.message);
     end
 end
 
@@ -575,11 +545,18 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
 
         [action, userPolygons, userRotation] = waitForUserAction(fig);
 
+        % Defensive check: if figure was closed/deleted, exit cleanly
+        if ~isvalid(fig) || isempty(action)
+            return;
+        end
+
         switch action
             case 'skip'
                 return;
             case 'stop'
-                close(fig);
+                if isvalid(fig)
+                    delete(fig);
+                end
                 error('User stopped execution');
             case 'accept'
                 guiDataEditing = get(fig, 'UserData');
@@ -600,6 +577,11 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
 
                 [prevAction, ~, ~] = waitForUserAction(fig);
 
+                % Defensive check: if figure was closed/deleted, exit cleanly
+                if ~isvalid(fig) || isempty(prevAction)
+                    return;
+                end
+
                 switch prevAction
                     case 'accept'
                         polygonParams = savedBasePolygons;
@@ -607,7 +589,9 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
                         return;
                     case {'skip', 'stop'}
                         if strcmp(prevAction, 'stop')
-                            close(fig);
+                            if isvalid(fig)
+                                delete(fig);
+                            end
                             error('User stopped execution');
                         end
                         return;
@@ -634,6 +618,7 @@ function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonPar
     switch mode
         case 'editing'
             buildEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation);
+
         case 'preview'
             buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams);
     end
@@ -664,6 +649,23 @@ function clearAllUIElements(fig, guiData)
         end
     end
 
+    % Add polygon labels from guiData
+    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'polygonLabels')
+        numLabels = numel(guiData.polygonLabels);
+        validLabels = gobjects(numLabels, 1);
+        validCount = 0;
+        for i = 1:numLabels
+            if isvalid(guiData.polygonLabels{i})
+                validCount = validCount + 1;
+                validLabels(validCount) = guiData.polygonLabels{i};
+            end
+        end
+        validLabels = validLabels(1:validCount);
+        if ~isempty(validLabels)
+            toDelete = [toDelete; validLabels];
+        end
+    end
+
     % Bulk delete
     if ~isempty(toDelete)
         validMask = arrayfun(@isvalid, toDelete);
@@ -676,6 +678,16 @@ function clearAllUIElements(fig, guiData)
         validRois = rois(arrayfun(@isvalid, rois));
         if ~isempty(validRois)
             delete(validRois);
+        end
+    end
+
+    % Clean up timer if still running
+    if ~isempty(guiData) && isstruct(guiData)
+        if isfield(guiData, 'aiTimer')
+            safeStopTimer(guiData.aiTimer);
+        end
+        if isfield(guiData, 'aiBreathingTimer')
+            stopAIBreathingTimer(guiData);
         end
     end
 
@@ -696,8 +708,18 @@ function polys = collectValidPolygons(guiData)
         % Clear appdata before collecting for deletion
         validPolys = guiData.polygons(validMask);
         for i = 1:length(validPolys)
-            if isvalid(validPolys{i}) && isappdata(validPolys{i}, 'LastValidPosition')
-                rmappdata(validPolys{i}, 'LastValidPosition');
+            if isvalid(validPolys{i})
+                if isappdata(validPolys{i}, 'LastValidPosition')
+                    rmappdata(validPolys{i}, 'LastValidPosition');
+                end
+                if isappdata(validPolys{i}, 'ListenerHandle')
+                    delete(getappdata(validPolys{i}, 'ListenerHandle'));
+                    rmappdata(validPolys{i}, 'ListenerHandle');
+                end
+                if isappdata(validPolys{i}, 'LabelUpdateListener')
+                    delete(getappdata(validPolys{i}, 'LabelUpdateListener'));
+                    rmappdata(validPolys{i}, 'LabelUpdateListener');
+                end
             end
         end
         polys = [guiData.polygons{validMask}]';
@@ -714,6 +736,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     guiData = struct();
     guiData.mode = 'editing';
+    guiData.cfg = cfg;
 
     % Initialize rotation data (from memory or default to 0)
     guiData.baseImg = img;
@@ -725,6 +748,8 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Initialize zoom state
     guiData.zoomLevel = 0;  % 0 = full image, 1 = single micropad size
+    guiData.autoZoomAvailable = false;
+    guiData.autoZoomBounds = [];
 
     % Title and path
     guiData.titleHandle = createTitle(fig, phoneName, imageName, cfg);
@@ -739,14 +764,44 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
         guiData.currentImg = displayImg;
     end
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
-    guiData.imgAxes = createImageAxes(fig, displayImg, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
 
     % Create editable polygons
-    guiData.polygons = createPolygons(initialPolygons, cfg);
+    guiData.polygons = createPolygons(initialPolygons, cfg, fig);
     guiData.polygons = assignPolygonLabels(guiData.polygons);
+
+    numInitialPolygons = numel(guiData.polygons);
+    totalForColor = max(numInitialPolygons, 1);
+    guiData.aiBaseColors = zeros(numInitialPolygons, 3);
+    for idx = 1:numInitialPolygons
+        polyHandle = guiData.polygons{idx};
+        if isvalid(polyHandle)
+            baseColor = getConcentrationColor(idx - 1, totalForColor);
+            setPolygonColor(polyHandle, baseColor, 0.25);
+            guiData.aiBaseColors(idx, :) = baseColor;
+        else
+            guiData.aiBaseColors(idx, :) = [NaN NaN NaN];
+        end
+    end
+    guiData.aiBreathingTimer = [];
+
+    % Async detection state
+    guiData.asyncDetection = struct();
+    guiData.asyncDetection.active = false;        % Is detection running?
+    guiData.asyncDetection.outputFile = '';       % Path to output file
+    guiData.asyncDetection.imgPath = '';          % Path to temp image
+    guiData.asyncDetection.startTime = [];        % tic() timestamp
+    guiData.asyncDetection.pollingTimer = [];     % Timer handle
+    guiData.asyncDetection.timeoutSeconds = 10;   % Max detection time
+
+    % Add concentration labels
+    guiData.polygonLabels = addPolygonLabels(guiData.polygons, guiData.imgAxes);
 
     % Rotation panel (preset buttons only)
     guiData.rotationPanel = createRotationButtonPanel(fig, cfg);
+
+    % Run AI button sits above rotation controls for manual detection refresh
+    guiData.runAIButton = createRunAIButton(fig, cfg);
 
     % Zoom panel
     [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
@@ -755,6 +810,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.cutButtonPanel = createEditButtonPanel(fig, cfg);
     guiData.stopButton = createStopButton(fig, cfg);
     guiData.instructionText = createInstructions(fig, cfg);
+    guiData.aiStatusLabel = createAIStatusLabel(fig, cfg);
 
     guiData.action = '';
 
@@ -764,37 +820,54 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     % Auto-zoom to polygons after all UI is created
     guiData = get(fig, 'UserData');
     applyAutoZoom(fig, guiData, cfg);
+
+    % Trigger deferred AI detection if enabled (after GUI fully built)
+    if cfg.useAIDetection
+        guiData = get(fig, 'UserData');
+
+        % Use timer to run AI detection after GUI fully renders
+        % Delay ensures UI is interactive before blocking operation starts
+        t = timer('StartDelay', 0.1, ...
+                  'TimerFcn', @(~,~) runDeferredAIDetection(fig, cfg), ...
+                  'ExecutionMode', 'singleShot');
+        start(t);
+
+        % Store timer handle for cleanup
+        guiData.aiTimer = t;
+        set(fig, 'UserData', guiData);
+    end
 end
 
 function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams)
     % Build UI for preview mode
-    set(fig, 'Name', sprintf('PREVIEW - %s - %s', phoneName, imageName));
+    set(fig, 'Name', sprintf('Preview - %s - %s', phoneName, imageName));
 
     guiData = struct();
     guiData.mode = 'preview';
     guiData.savedPolygonParams = polygonParams;
 
-    % Title and path
-    titleText = sprintf('PREVIEW: %s - %s', phoneName, imageName);
+    % Preview titles occupying the top band
+    numRegions = size(polygonParams, 1);
+    titleText = sprintf('Preview - %s', phoneName);
     guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                                   'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
+                                   'Units', 'normalized', 'Position', cfg.ui.positions.previewTitle, ...
                                    'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
                                    'ForegroundColor', cfg.ui.colors.foreground, ...
                                    'BackgroundColor', cfg.ui.colors.background, ...
                                    'HorizontalAlignment', 'center');
 
-    pathText = sprintf('PREVIEW - Path: %s | Image: %s', phoneName, imageName);
-    guiData.pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                                  'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
+    metaText = sprintf('Image: %s | Regions: %d', imageName, numRegions);
+    guiData.metaHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', metaText, ...
+                                  'Units', 'normalized', 'Position', cfg.ui.positions.previewMeta, ...
                                   'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
                                   'ForegroundColor', cfg.ui.colors.path, ...
                                   'BackgroundColor', cfg.ui.colors.background, ...
                                   'HorizontalAlignment', 'center');
 
-    % Preview axes
-    [guiData.leftAxes, guiData.rightAxes] = createPreviewAxes(fig, img, polygonParams, cfg);
+    % Preview axes fill the middle band between titles and bottom controls
+    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = createPreviewAxes(fig, img, polygonParams, cfg);
 
-    % Buttons
+    % Bottom controls
     guiData.stopButton = createStopButton(fig, cfg);
     guiData.buttonPanel = createPreviewButtons(fig, cfg);
 
@@ -811,7 +884,8 @@ function fig = createFigure(imageName, phoneName, cfg)
     fig = figure('Name', titleText, ...
                 'Units', 'normalized', 'Position', cfg.ui.positions.figure, ...
                 'MenuBar', 'none', 'ToolBar', 'none', ...
-                'Color', cfg.ui.colors.background, 'KeyPressFcn', @keyPressHandler);
+                'Color', cfg.ui.colors.background, 'KeyPressFcn', @keyPressHandler, ...
+                'CloseRequestFcn', @(src, ~) cleanupAndClose(src));
 
     drawnow limitrate;
     pause(0.05);
@@ -840,9 +914,9 @@ function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
                           'HorizontalAlignment', 'center');
 end
 
-function imgAxes = createImageAxes(fig, img, cfg)
+function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
     imgAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.image);
-    imshow(img, 'Parent', imgAxes, 'InitialMagnification', 'fit');
+    imgHandle = imshow(img, 'Parent', imgAxes, 'InitialMagnification', 'fit');
     axis(imgAxes, 'image');
     axis(imgAxes, 'tight');
     hold(imgAxes, 'on');
@@ -856,24 +930,99 @@ function stopButton = createStopButton(fig, cfg)
                           'Callback', @(~,~) stopExecution(fig));
 end
 
-function polygons = createPolygons(initialPolygons, cfg)
-    % Create drawpolygon objects from initial positions
+function runAIButton = createRunAIButton(fig, cfg)
+    runAIButton = uicontrol('Parent', fig, 'Style', 'pushbutton', ...
+                           'String', 'RUN AI', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+                           'Units', 'normalized', 'Position', cfg.ui.positions.runAIButton, ...
+                           'BackgroundColor', [0.30 0.50 0.70], ...
+                           'ForegroundColor', cfg.ui.colors.foreground, ...
+                           'TooltipString', 'Run YOLO detection on the current view', ...
+                           'Callback', @(~,~) rerunAIDetection(fig, cfg));
+end
+
+function polygons = createPolygons(initialPolygons, cfg, ~)
+    % Create drawpolygon objects from initial positions with color gradient
     n = size(initialPolygons, 1);
     polygons = cell(1, n);
 
     for i = 1:n
         pos = squeeze(initialPolygons(i, :, :));
+
+        % Apply color gradient based on concentration index (zero-based)
+        concentrationIndex = i - 1;
+        polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
+
         polygons{i} = drawpolygon('Position', pos, ...
-                                 'Color', cfg.ui.colors.polygon, ...
+                                 'Color', polyColor, ...
                                  'LineWidth', cfg.ui.polygon.lineWidth, ...
                                  'MarkerSize', 8, ...
                                  'Selected', false);
+
+        % Ensure consistent face styling even on releases that lack name-value support
+        setPolygonColor(polygons{i}, polyColor, 0.25);
 
         % Store initial valid position
         setappdata(polygons{i}, 'LastValidPosition', pos);
 
         % Add listener for quadrilateral enforcement
-        addlistener(polygons{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(polygons{i}));
+        listenerHandle = addlistener(polygons{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(polygons{i}));
+        setappdata(polygons{i}, 'ListenerHandle', listenerHandle);
+
+        % Add listener for label updates when user drags vertices
+        labelUpdateListener = addlistener(polygons{i}, 'ROIMoved', @(~,~) updatePolygonLabelsCallback(polygons{i}));
+        setappdata(polygons{i}, 'LabelUpdateListener', labelUpdateListener);
+    end
+end
+
+function labelHandles = addPolygonLabels(polygons, axesHandle)
+    % Add text labels showing concentration number on each polygon
+    % Labels positioned at TOP edge of polygon (per user requirement)
+    %
+    % Inputs:
+    %   polygons - cell array of drawpolygon objects
+    %   axesHandle - axes where labels should be drawn
+    %
+    % Output:
+    %   labelHandles - cell array of text object handles
+
+    n = numel(polygons);
+    labelHandles = cell(1, n);
+
+    for i = 1:n
+        poly = polygons{i};
+        if ~isvalid(poly)
+            continue;
+        end
+
+        % Get polygon position
+        pos = poly.Position;
+        if isempty(pos) || size(pos, 1) < 3
+            continue;
+        end
+
+        % CHANGED: Position at TOP of polygon, not center
+        % Use image-relative units (polygon height fraction) instead of fixed pixels
+        % for zoom/rotation consistency
+        centerX = mean(pos(:, 1));
+        minY = min(pos(:, 2));  % Top edge (smallest Y value)
+        polyHeight = max(pos(:, 2)) - minY;
+        labelY = minY - max(15, polyHeight * 0.1);  % 10% of polygon height or 15px minimum
+
+        % Create label text
+        concentrationIndex = i - 1;  % Zero-based
+        labelText = sprintf('con_%d', concentrationIndex);
+
+        % Create text object with dark background for visibility
+        % NOTE: BackgroundColor only supports 3-element RGB (no alpha channel)
+        labelHandles{i} = text(axesHandle, centerX, labelY, labelText, ...
+                              'HorizontalAlignment', 'center', ...
+                              'VerticalAlignment', 'bottom', ...  % CHANGED: anchor bottom to position
+                              'FontSize', 12, ...
+                              'FontWeight', 'bold', ...
+                              'Color', [1 1 1], ...  % White text
+                              'BackgroundColor', [0.2 0.2 0.2], ...  % Dark gray (opaque)
+                              'EdgeColor', 'none', ...
+                              'Margin', 2);
     end
 end
 
@@ -894,6 +1043,56 @@ function enforceQuadrilateral(polygon)
     else
         % Store valid state
         setappdata(polygon, 'LastValidPosition', pos);
+    end
+end
+
+function color = getConcentrationColor(concentrationIndex, totalConcentrations)
+    % Generate spectrum gradient: blue (cold) → red (hot)
+    % Uses HSV color space for maximum visual distinction
+    %
+    % Inputs:
+    %   concentrationIndex - zero-based index (0 to totalConcentrations-1)
+    %   totalConcentrations - total number of concentration regions
+    %
+    % Output:
+    %   color - [R G B] triplet in range [0, 1]
+
+    if totalConcentrations <= 1
+        color = [0.0 0.5 1.0];  % Default blue for single region
+        return;
+    end
+
+    % Normalize index to [0, 1]
+    t = concentrationIndex / (totalConcentrations - 1);
+
+    % Interpolate hue from 240° (blue) to 0° (red) through spectrum
+    hue = (1 - t) * 240 / 360;  % 240° = blue, 0° = red
+    sat = 1.0;  % Full saturation
+    val = 1.0;  % Full value/brightness
+
+    % Convert HSV to RGB
+    color = hsv2rgb([hue, sat, val]);
+end
+
+function setPolygonColor(polygonHandle, colorValue, faceAlpha)
+    % Apply edge/face color updates with compatibility guards
+    if nargin < 3
+        faceAlpha = [];
+    end
+
+    if isempty(polygonHandle) || ~isvalid(polygonHandle)
+        return;
+    end
+
+    if ~isempty(colorValue) && all(isfinite(colorValue))
+        set(polygonHandle, 'Color', colorValue);
+        if isprop(polygonHandle, 'FaceColor')
+            set(polygonHandle, 'FaceColor', colorValue);
+        end
+    end
+
+    if ~isempty(faceAlpha) && isprop(polygonHandle, 'FaceAlpha')
+        set(polygonHandle, 'FaceAlpha', faceAlpha);
     end
 end
 
@@ -919,12 +1118,37 @@ function cutButtonPanel = createEditButtonPanel(fig, cfg)
 end
 
 function instructionText = createInstructions(fig, cfg)
-    instructionString = 'Mouse = Drag Vertices | Buttons = Rotate | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
+    instructionString = 'Mouse = Drag Vertices | Buttons = Rotate | RUN AI = Detect Polygons | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
 
     instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionString, ...
              'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
              'FontSize', cfg.ui.fontSize.instruction, 'ForegroundColor', cfg.ui.colors.foreground, ...
              'BackgroundColor', cfg.ui.colors.background, 'HorizontalAlignment', 'center');
+end
+
+function statusLabel = createAIStatusLabel(fig, cfg)
+    if nargin < 2 || isempty(cfg) || ~isfield(cfg, 'ui')
+        position = [0.25 0.905 0.50 0.035];
+        fontSize = 13;
+        infoColor = [1 1 0.3];
+        backgroundColor = 'black';
+    else
+        position = cfg.ui.positions.aiStatus;
+        fontSize = cfg.ui.fontSize.status;
+        infoColor = cfg.ui.colors.info;
+        backgroundColor = cfg.ui.colors.background;
+    end
+
+    statusLabel = uicontrol('Parent', fig, 'Style', 'text', ...
+                           'String', 'AI DETECTION RUNNING', ...
+                           'Units', 'normalized', ...
+                           'Position', position, ...
+                           'FontSize', fontSize, ...
+                           'FontWeight', 'bold', ...
+                           'ForegroundColor', infoColor, ...
+                           'BackgroundColor', backgroundColor, ...
+                           'HorizontalAlignment', 'center', ...
+                           'Visible', 'off');
 end
 
 function buttonPanel = createPreviewButtons(fig, cfg)
@@ -948,26 +1172,282 @@ function buttonPanel = createPreviewButtons(fig, cfg)
     end
 end
 
-function [leftAxes, rightAxes] = createPreviewAxes(fig, img, polygonParams, cfg)
+function showAIProgressIndicator(fig, show)
+    % Toggle AI detection status indicator and polygon breathing animation
+    if ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+    if isempty(guiData) || ~isstruct(guiData) || ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    if show
+        % Ensure status label exists and is visible
+        if ~isfield(guiData, 'aiStatusLabel') || ~isvalid(guiData.aiStatusLabel)
+            cfgForLabel = [];
+            if isfield(guiData, 'cfg')
+                cfgForLabel = guiData.cfg;
+            end
+            guiData.aiStatusLabel = createAIStatusLabel(fig, cfgForLabel);
+        end
+        set(guiData.aiStatusLabel, 'String', 'AI DETECTION RUNNING', 'Visible', 'on');
+        uistack(guiData.aiStatusLabel, 'top');
+
+        % Capture current polygon colors as animation baseline
+        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+
+        % Start breathing animation timer if polygons exist
+        guiData = stopAIBreathingTimer(guiData);
+        if ~isempty(guiData.aiBaseColors)
+            guiData.aiBreathingStart = tic;
+            guiData.aiBreathingFrequency = 0.8;            % Hz (slow breathing cadence)
+            guiData.aiBreathingMixRange = [0.12, 0.36];    % Blend-to-white range (min..max)
+            guiData.aiBreathingDimFactor = 0.22;           % Max dim amount during exhale (22%)
+            guiData.aiBreathingTimer = timer(...
+                'Name', 'microPAD-AI-breathing', ...
+                'Period', 1/45, ...                        % ~22 ms (≈45 FPS)
+                'ExecutionMode', 'fixedRate', ...
+                'BusyMode', 'queue', ...
+                'TasksToExecute', Inf, ...
+                'TimerFcn', @(~,~) animatePolygonBreathing(fig));
+            start(guiData.aiBreathingTimer);
+        end
+
+        drawnow limitrate;
+    else
+        % Hide status label if present
+        if isfield(guiData, 'aiStatusLabel') && isvalid(guiData.aiStatusLabel)
+            set(guiData.aiStatusLabel, 'Visible', 'off');
+        end
+
+        % Stop animation timer and restore base colors
+        guiData = stopAIBreathingTimer(guiData);
+        if isfield(guiData, 'polygons') && iscell(guiData.polygons) && ~isempty(guiData.aiBaseColors)
+            numRestore = min(size(guiData.aiBaseColors, 1), numel(guiData.polygons));
+            for idx = 1:numRestore
+                poly = guiData.polygons{idx};
+                baseColor = guiData.aiBaseColors(idx, :);
+                if isvalid(poly) && all(isfinite(baseColor))
+                    setPolygonColor(poly, baseColor, 0.25);
+                end
+            end
+            drawnow limitrate;
+        end
+
+        % Refresh baseline colors to reflect final state
+        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+    end
+
+    set(fig, 'UserData', guiData);
+end
+
+function guiData = stopAIBreathingTimer(guiData)
+    if isfield(guiData, 'aiBreathingTimer')
+        safeStopTimer(guiData.aiBreathingTimer);
+    end
+    guiData.aiBreathingTimer = [];
+    guiData.aiBreathingStart = [];
+    if isfield(guiData, 'aiBreathingFrequency')
+        guiData.aiBreathingFrequency = [];
+    end
+    if isfield(guiData, 'aiBreathingMixRange')
+        guiData.aiBreathingMixRange = [];
+    end
+    if isfield(guiData, 'aiBreathingDimFactor')
+        guiData.aiBreathingDimFactor = [];
+    end
+end
+
+function baseColors = capturePolygonColors(polygons)
+    baseColors = [];
+    if isempty(polygons) || ~iscell(polygons)
+        return;
+    end
+
+    numPolygons = numel(polygons);
+    baseColors = nan(numPolygons, 3);
+
+    for idx = 1:numPolygons
+        if isvalid(polygons{idx})
+            color = get(polygons{idx}, 'Color');
+            if numel(color) == 3
+                baseColors(idx, :) = color;
+            end
+        end
+    end
+end
+
+function animatePolygonBreathing(fig)
+    if ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+    if isempty(guiData) || ~isstruct(guiData)
+        return;
+    end
+    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons)
+        return;
+    end
+    if ~isfield(guiData, 'aiBaseColors') || isempty(guiData.aiBaseColors)
+        return;
+    end
+    if ~isfield(guiData, 'aiBreathingStart') || isempty(guiData.aiBreathingStart)
+        return;
+    end
+    defaultsUpdated = false;
+    if ~isfield(guiData, 'aiBreathingFrequency') || isempty(guiData.aiBreathingFrequency)
+        guiData.aiBreathingFrequency = 0.8;
+        defaultsUpdated = true;
+    end
+    if ~isfield(guiData, 'aiBreathingMixRange') || numel(guiData.aiBreathingMixRange) ~= 2
+        guiData.aiBreathingMixRange = [0.12, 0.36];
+        defaultsUpdated = true;
+    end
+    if ~isfield(guiData, 'aiBreathingDimFactor') || isempty(guiData.aiBreathingDimFactor)
+        guiData.aiBreathingDimFactor = 0.22;
+        defaultsUpdated = true;
+    end
+    if defaultsUpdated
+        set(fig, 'UserData', guiData);
+    end
+
+    elapsed = toc(guiData.aiBreathingStart);
+    phase = 2 * pi * guiData.aiBreathingFrequency * elapsed;
+    wave = sin(phase);
+    inhale = max(wave, 0);    % 0..1 when lightening toward white
+    exhale = max(-wave, 0);   % 0..1 when dimming toward base color
+
+    mixRange = guiData.aiBreathingMixRange;
+    brightenMix = mixRange(1) + (mixRange(2) - mixRange(1)) * inhale;
+    dimScale = 1 - guiData.aiBreathingDimFactor * exhale;
+
+    numPolygons = min(size(guiData.aiBaseColors, 1), numel(guiData.polygons));
+    for idx = 1:numPolygons
+        poly = guiData.polygons{idx};
+        baseColor = guiData.aiBaseColors(idx, :);
+        if isvalid(poly) && all(isfinite(baseColor))
+            whitened = baseColor * (1 - brightenMix) + brightenMix;
+            newColor = min(max(whitened * dimScale, 0), 1);
+            setPolygonColor(poly, newColor, []);
+        end
+    end
+
+    drawnow limitrate;
+end
+
+function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
+    % Synchronize drawpolygon handles with detection output preserving UI ordering
+
+    if isempty(newPolygons)
+        return;
+    end
+
+    % Ensure polygons are ordered left-to-right, bottom-to-top in UI space
+    newPolygons = sortPolygonArrayByX(newPolygons);
+    targetCount = size(newPolygons, 1);
+
+    if targetCount == 0
+        return;
+    end
+
+    % Determine whether we can reuse existing polygon handles
+    hasPolygons = isfield(guiData, 'polygons') && iscell(guiData.polygons) && ~isempty(guiData.polygons);
+    validMask = hasPolygons;
+    if hasPolygons
+        validMask = cellfun(@isvalid, guiData.polygons);
+    end
+    reusePolygons = hasPolygons && all(validMask) && numel(guiData.polygons) == targetCount;
+
+    if reusePolygons
+        updatePolygonPositions(guiData.polygons, newPolygons);
+    else
+        % Clean up existing polygons if present
+        if hasPolygons
+            for idx = 1:numel(guiData.polygons)
+                if isvalid(guiData.polygons{idx})
+                    delete(guiData.polygons{idx});
+                end
+            end
+        end
+
+        guiData.polygons = createPolygons(newPolygons, cfg, fig);
+    end
+
+    % Reorder polygons to enforce gradient ordering
+    [guiData.polygons, order] = assignPolygonLabels(guiData.polygons);
+
+    % Synchronize labels
+    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
+    reuseLabels = false;
+    if hasLabels
+        labelValidMask = cellfun(@isvalid, guiData.polygonLabels);
+        reuseLabels = all(labelValidMask) && numel(guiData.polygonLabels) == targetCount;
+    end
+
+    if ~reuseLabels
+        if hasLabels
+            for idx = 1:numel(guiData.polygonLabels)
+                if isvalid(guiData.polygonLabels{idx})
+                    delete(guiData.polygonLabels{idx});
+                end
+            end
+        end
+        guiData.polygonLabels = addPolygonLabels(guiData.polygons, guiData.imgAxes);
+    elseif ~isempty(order)
+        guiData.polygonLabels = guiData.polygonLabels(order);
+    end
+
+    % Apply consistent cold-to-hot gradient and refresh label strings
+    numPolygons = numel(guiData.polygons);
+    totalForColor = max(numPolygons, 1);
+    for idx = 1:numPolygons
+        polyHandle = guiData.polygons{idx};
+        if isvalid(polyHandle)
+            gradColor = getConcentrationColor(idx - 1, totalForColor);
+            setPolygonColor(polyHandle, gradColor, 0.25);
+
+        end
+    end
+
+    if ~isempty(guiData.polygonLabels)
+        for idx = 1:min(numPolygons, numel(guiData.polygonLabels))
+            labelHandle = guiData.polygonLabels{idx};
+            if isvalid(labelHandle)
+                set(labelHandle, 'String', sprintf('con_%d', idx - 1));
+            end
+        end
+        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+    end
+
+    guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+end
+
+function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxes(fig, img, polygonParams, cfg)
     % Left: original with overlays
     leftAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.previewLeft);
-    imshow(img, 'Parent', leftAxes, 'InitialMagnification', 'fit');
+    leftImgHandle = imshow(img, 'Parent', leftAxes, 'InitialMagnification', 'fit');
     axis(leftAxes, 'image');
     axis(leftAxes, 'tight');
-    title(leftAxes, sprintf('Original with %d Concentration Regions', size(polygonParams, 1)), ...
-          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold');
+    title(leftAxes, 'Original Image', ...
+          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
     hold(leftAxes, 'on');
 
     % Draw polygon overlays
     for i = 1:size(polygonParams, 1)
         poly = squeeze(polygonParams(i,:,:));
         if size(poly, 1) >= 3
+            concentrationIndex = i - 1;
+            polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
+
             plot(leftAxes, [poly(:,1); poly(1,1)], [poly(:,2); poly(1,2)], ...
-                 'Color', cfg.ui.colors.polygon, 'LineWidth', cfg.ui.polygon.lineWidth);
+                 'Color', polyColor, 'LineWidth', cfg.ui.polygon.lineWidth);
 
             centerX = mean(poly(:,1));
             centerY = mean(poly(:,2));
-            text(leftAxes, centerX, centerY, sprintf('C%d', i-1), ...
+            text(leftAxes, centerX, centerY, sprintf('con_%d', i-1), ...
                  'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
                  'FontSize', cfg.ui.fontSize.info, 'FontWeight', 'bold', ...
                  'Color', cfg.ui.colors.info, 'BackgroundColor', [0 0 0], ...
@@ -979,11 +1459,11 @@ function [leftAxes, rightAxes] = createPreviewAxes(fig, img, polygonParams, cfg)
     % Right: highlighted regions
     rightAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.previewRight);
     maskedImg = createMaskedPreview(img, polygonParams, cfg);
-    imshow(maskedImg, 'Parent', rightAxes, 'InitialMagnification', 'fit');
+    rightImgHandle = imshow(maskedImg, 'Parent', rightAxes, 'InitialMagnification', 'fit');
     axis(rightAxes, 'image');
     axis(rightAxes, 'tight');
-    title(rightAxes, 'Highlighted Concentration Regions', ...
-          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold');
+    title(rightAxes, 'Masked Preview', ...
+          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
 end
 
 function maskedImg = createMaskedPreview(img, polygonParams, cfg)
@@ -1039,6 +1519,7 @@ function rotationPanel = createRotationButtonPanel(fig, cfg)
                  'ForegroundColor', cfg.ui.colors.foreground, ...
                  'Callback', @(~,~) applyRotation_UI(angles(i), fig, cfg));
     end
+
 end
 
 function [zoomSlider, zoomValue] = createZoomPanel(fig, cfg)
@@ -1099,21 +1580,6 @@ function applyRotation_UI(angle, fig, cfg)
         return;
     end
 
-    % Capture state before rotation changes
-    oldRotation = guiData.totalRotation;
-    oldImageSize = guiData.imageSize;
-    if numel(oldImageSize) > 2
-        oldImageSize = oldImageSize(1:2);
-    end
-    if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
-        baseImageSize = guiData.baseImageSize;
-    else
-        baseImageSize = [size(guiData.baseImg, 1), size(guiData.baseImg, 2)];
-    end
-
-    % Save polygon positions BEFORE clearing axes
-    savedPositions = extractPolygonPositions(guiData);
-
     % Update rotation state (quick buttons are absolute presets)
     guiData.adjustmentRotation = angle;
     guiData.memoryRotation = angle;
@@ -1121,86 +1587,83 @@ function applyRotation_UI(angle, fig, cfg)
 
     % Apply rotation to image
     guiData.currentImg = applyRotation(guiData.baseImg, guiData.totalRotation, cfg);
-    guiData.imageSize = [size(guiData.currentImg, 1), size(guiData.currentImg, 2)];
 
-    % Update image display
-    axes(guiData.imgAxes);
-    cla(guiData.imgAxes);
-    imshow(guiData.currentImg, 'Parent', guiData.imgAxes, 'InitialMagnification', 'fit');
-    axis(guiData.imgAxes, 'image');
-    axis(guiData.imgAxes, 'tight');
-    hold(guiData.imgAxes, 'on');
+    % Store current image dimensions before rotation
+    currentHeight = guiData.imageSize(1);
+    currentWidth = guiData.imageSize(2);
 
-    % Prepare fallback polygons in case AI is disabled or fails
-    fallbackPolygons = remapPolygonsForRotation(savedPositions, oldImageSize, baseImageSize, ...
-        oldRotation, guiData.totalRotation, cfg.rotation.angleTolerance);
-    fallbackPolygons = sortPolygonArrayByX(fallbackPolygons);
+    % Update image dimensions
+    newHeight = size(guiData.currentImg, 1);
+    newWidth = size(guiData.currentImg, 2);
+    guiData.imageSize = [newHeight, newWidth];
 
-    % Re-run AI detection if enabled and recreate polygons
-    if cfg.useAIDetection
-        try
-            [detectedQuads, confidences] = detectQuadsYOLO(guiData.currentImg, cfg);
-
-            if ~isempty(detectedQuads)
-                numDetected = size(detectedQuads, 1);
-
-                if numDetected == cfg.numSquares
-                    % Perfect match - use all detections
-                    guiData.polygons = createPolygons(detectedQuads, cfg);
-                    guiData.polygons = assignPolygonLabels(guiData.polygons);
-                    fprintf('  AI re-detected %d regions after rotation (avg confidence: %.2f)\n', ...
-                        numDetected, mean(confidences));
-
-                elseif numDetected > cfg.numSquares
-                    % Too many detections - keep top N by confidence
-                    fprintf('  AI detected %d regions after rotation, filtering to top %d...\n', ...
-                        numDetected, cfg.numSquares);
-
-                    % Sort by confidence (descending) and keep top N
-                    [~, sortIdx] = sort(confidences, 'descend');
-                    topIdx = sortIdx(1:cfg.numSquares);
-                    detectedQuads = detectedQuads(topIdx, :, :);
-                    confidences = confidences(topIdx);
-
-                    % Sort spatially (left to right)
-                    centroids = squeeze(mean(detectedQuads, 2));
-                    [~, spatialIdx] = sort(centroids(:, 1));
-                    detectedQuads = detectedQuads(spatialIdx, :, :);
-
-                    guiData.polygons = createPolygons(detectedQuads, cfg);
-                    guiData.polygons = assignPolygonLabels(guiData.polygons);
-                    fprintf('  Using top %d detections (avg confidence: %.2f)\n', ...
-                        cfg.numSquares, mean(confidences));
-
-                else
-                    % Too few detections - use saved positions
-                    fprintf('  AI detected only %d regions after rotation, using previous positions\n', numDetected);
-                    guiData.polygons = createPolygons(fallbackPolygons, cfg);
-                    guiData.polygons = assignPolygonLabels(guiData.polygons);
-                end
-            else
-                % No detections - use saved positions
-                guiData.polygons = createPolygons(fallbackPolygons, cfg);
-                guiData.polygons = assignPolygonLabels(guiData.polygons);
+    % Convert polygon positions to normalized coordinates [0, 1] before image update
+    numPolygons = 0;
+    polygonNormalized = {};
+    if isfield(guiData, 'polygons') && iscell(guiData.polygons)
+        numPolygons = length(guiData.polygons);
+        polygonNormalized = cell(numPolygons, 1);
+        for i = 1:numPolygons
+            if isvalid(guiData.polygons{i})
+                posData = guiData.polygons{i}.Position;  % [N x 2] array of vertices
+                % Convert to normalized axes coordinates [0, 1]
+                polygonNormalized{i} = [(posData(:, 1) - 1) / currentWidth, (posData(:, 2) - 1) / currentHeight];
             end
-        catch ME
-            fprintf('  AI detection after rotation failed: %s\n', ME.message);
-            % Recreate polygons at their previous positions
-            guiData.polygons = createPolygons(fallbackPolygons, cfg);
-            guiData.polygons = assignPolygonLabels(guiData.polygons);
         end
-    else
-        % No AI detection - recreate polygons at their previous positions
-        guiData.polygons = createPolygons(fallbackPolygons, cfg);
-        guiData.polygons = assignPolygonLabels(guiData.polygons);
     end
 
-    % Save guiData before auto-zoom
-    set(fig, 'UserData', guiData);
+    % Update image data and spatial extent (preserves all axes children)
+    set(guiData.imgHandle, 'CData', guiData.currentImg, ...
+                            'XData', [1, newWidth], ...
+                            'YData', [1, newHeight]);
 
-    % Auto-zoom to polygons after rotation (will update guiData internally)
-    guiData = get(fig, 'UserData');
-    applyAutoZoom(fig, guiData, cfg);
+    % Snap axes to new image bounds
+    axis(guiData.imgAxes, 'image');
+
+    % Update polygon positions to maintain screen-space locations
+    for i = 1:numPolygons
+        if isvalid(guiData.polygons{i})
+            % Convert normalized coordinates back to new data coordinates
+            newPos = [1 + polygonNormalized{i}(:, 1) * newWidth, 1 + polygonNormalized{i}(:, 2) * newHeight];
+            guiData.polygons{i}.Position = newPos;
+        end
+    end
+
+    % Reorder polygons to maintain concentration ordering after rotation
+    [guiData.polygons, order] = assignPolygonLabels(guiData.polygons);
+
+    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
+    if hasLabels && ~isempty(order) && numel(guiData.polygonLabels) >= numel(order)
+        guiData.polygonLabels = guiData.polygonLabels(order);
+    end
+
+    numPolygons = numel(guiData.polygons);
+    totalForColor = max(numPolygons, 1);
+    for idx = 1:numPolygons
+        polyHandle = guiData.polygons{idx};
+        if isvalid(polyHandle)
+            gradColor = getConcentrationColor(idx - 1, totalForColor);
+            setPolygonColor(polyHandle, gradColor, 0.25);
+
+        end
+
+        if hasLabels && idx <= numel(guiData.polygonLabels)
+            labelHandle = guiData.polygonLabels{idx};
+            if isvalid(labelHandle)
+                set(labelHandle, 'String', sprintf('con_%d', idx - 1));
+            end
+        end
+    end
+
+    if hasLabels
+        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+    end
+
+    guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+    guiData.autoZoomBounds = [];
+
+    % Save guiData
+    set(fig, 'UserData', guiData);
 end
 
 function zoomSliderCallback(slider, fig, cfg)
@@ -1241,7 +1704,16 @@ end
 
 function applyAutoZoom(fig, guiData, cfg)
     % Auto-zoom to fit all polygons
-    if ~strcmp(guiData.mode, 'editing')
+
+    if isempty(guiData) || ~isstruct(guiData)
+        return;
+    end
+
+    if ~isfield(guiData, 'mode') || ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    if ~isfield(guiData, 'autoZoomAvailable') || ~guiData.autoZoomAvailable
         return;
     end
 
@@ -1257,8 +1729,12 @@ function applyAutoZoom(fig, guiData, cfg)
 
     % Set zoom to auto (maximum zoom level = 1)
     guiData.zoomLevel = 1;
-    set(guiData.zoomSlider, 'Value', 1);
-    set(guiData.zoomValue, 'String', '100%');
+    if isfield(guiData, 'zoomSlider') && ishandle(guiData.zoomSlider)
+        set(guiData.zoomSlider, 'Value', 1);
+    end
+    if isfield(guiData, 'zoomValue') && ishandle(guiData.zoomValue)
+        set(guiData.zoomValue, 'String', '100%');
+    end
 
     % Apply zoom to axes
     applyZoomToAxes(guiData, cfg);
@@ -1361,27 +1837,6 @@ function bounds = estimateSingleMicropadBounds(guiData, cfg)
     bounds = [xmin, xmax, ymin, ymax];
 end
 
-function positions = extractPolygonPositions(guiData)
-    % Extract current polygon positions from valid polygon objects
-    % Must be called BEFORE clearing axes to preserve positions
-
-    if ~isfield(guiData, 'polygons') || isempty(guiData.polygons)
-        positions = [];
-        return;
-    end
-
-    numPolygons = numel(guiData.polygons);
-    positions = zeros(numPolygons, 4, 2);
-
-    for i = 1:numPolygons
-        if isvalid(guiData.polygons{i})
-            positions(i, :, :) = guiData.polygons{i}.Position;
-        else
-            warning('cut_micropads:invalid_polygon', 'Polygon %d is invalid before extraction', i);
-        end
-    end
-end
-
 function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, cfg)
     % Convert polygons from rotated display coordinates back to original image coordinates
     basePolygons = displayPolygons;
@@ -1438,35 +1893,6 @@ function rotatedImg = applyRotation(img, rotation, cfg)
     else
         rotatedImg = imrotate(img, rotation, 'bilinear', 'loose');
     end
-end
-
-function remappedPolygons = remapPolygonsForRotation(polygons, oldImageSize, baseImageSize, oldRotation, newRotation, tolerance)
-    % Remap polygon coordinates when the displayed image rotation changes
-    if isempty(polygons)
-        remappedPolygons = polygons;
-        return;
-    end
-
-    if nargin < 6 || isempty(tolerance)
-        tolerance = 1e-6;
-    end
-
-    if isempty(oldImageSize)
-        remappedPolygons = polygons;
-        return;
-    end
-
-    oldImageSize = oldImageSize(1:2);
-    baseImageSize = baseImageSize(1:2);
-
-    if ~isMultipleOfNinety(oldRotation, tolerance) || ~isMultipleOfNinety(newRotation, tolerance)
-        remappedPolygons = polygons;
-        return;
-    end
-
-    [basePolygons, ~] = rotatePolygonsDiscrete(polygons, oldImageSize, -oldRotation);
-    [remappedPolygons, ~] = rotatePolygonsDiscrete(basePolygons, baseImageSize, newRotation);
-    remappedPolygons = sortPolygonArrayByX(remappedPolygons);
 end
 
 function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize, rotation)
@@ -1542,8 +1968,159 @@ function clamped = clampPolygonToImage(poly, imageSize)
     clamped(:, 2) = max(1, min(height, clamped(:, 2)));
 end
 
-function polygons = assignPolygonLabels(polygons)
-    % Reorder drawpolygon handles so con0..conN map left-to-right (ties by top-to-bottom)
+function alignedQuads = normalizePolygonsForDisplay(detectedQuads, totalRotation, imgSize, baseImgSize, angleTolerance)
+    % Convert YOLO detections into axis-aligned horizontal rectangles for display
+    %
+    % Inputs:
+    %   detectedQuads - YOLO output [N x 4 x 2] in currentImg (rotated frame)
+    %   totalRotation - cumulative rotation in degrees
+    %   imgSize - [height, width] of currentImg
+    %   baseImgSize - [height, width] of base image
+    %   angleTolerance - tolerance for rotation angle comparisons
+    %
+    % Outputs:
+    %   alignedQuads - [N x 4 x 2] axis-aligned horizontal rectangles
+
+    if isempty(detectedQuads)
+        alignedQuads = detectedQuads;
+        return;
+    end
+
+    numQuads = size(detectedQuads, 1);
+    alignedQuads = zeros(size(detectedQuads));
+
+    % Step 1: Compute axis-aligned bounding boxes directly in currentImg frame
+    for i = 1:numQuads
+        quad = squeeze(detectedQuads(i, :, :));  % [4 x 2] vertices
+        quadX = quad(:, 1);
+        quadY = quad(:, 2);
+
+        xMin = min(quadX);
+        xMax = max(quadX);
+        yMin = min(quadY);
+        yMax = max(quadY);
+
+        % Build horizontal rectangle (clockwise from TL)
+        alignedQuads(i, :, :) = [xMin, yMin; xMax, yMin; xMax, yMax; xMin, yMax];
+    end
+
+    % Step 2: Sort by base-frame X coordinate for stable left-to-right labeling
+    centroids = squeeze(mean(alignedQuads, 2));  % [N x 2]
+    baseCentroids = inverseRotatePoints(centroids, imgSize, baseImgSize, totalRotation, angleTolerance);
+    [~, sortIdx] = sort(baseCentroids(:, 1));  % Sort by base-frame X
+    alignedQuads = alignedQuads(sortIdx, :, :);
+end
+
+function updatePolygonLabels(polygons, labelHandles)
+    % Update label positions to follow polygon top edges
+    %
+    % Inputs:
+    %   polygons - cell array of drawpolygon objects
+    %   labelHandles - cell array of text objects
+
+    n = numel(polygons);
+    if numel(labelHandles) ~= n
+        return;
+    end
+
+    for i = 1:n
+        poly = polygons{i};
+        label = labelHandles{i};
+
+        if ~isvalid(poly) || ~isvalid(label)
+            continue;
+        end
+
+        pos = poly.Position;
+        if isempty(pos) || size(pos, 1) < 3
+            continue;
+        end
+
+        % CHANGED: Position at TOP edge, not center
+        % Use image-relative units (polygon height fraction) for consistency
+        centerX = mean(pos(:, 1));
+        minY = min(pos(:, 2));
+        polyHeight = max(pos(:, 2)) - minY;
+        labelY = minY - max(15, polyHeight * 0.1);  % 10% of polygon height or 15px minimum
+
+        set(label, 'Position', [centerX, labelY, 0]);
+    end
+end
+
+function updatePolygonLabelsCallback(polygon, ~)
+    % Callback for ROIMoved event to update ALL labels
+    % Note: Updates all labels for simplicity (performance impact negligible for ~7 polygons)
+    fig = ancestor(polygon, 'figure');
+    if isempty(fig)
+        return;
+    end
+    guiData = get(fig, 'UserData');
+    if isfield(guiData, 'polygons') && isfield(guiData, 'polygonLabels')
+        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+    end
+end
+
+function basePoints = inverseRotatePoints(rotatedPoints, ~, baseSize, rotation, angleTolerance)
+    % Transform points from rotated image frame back to base image frame
+    %
+    % Inputs:
+    %   rotatedPoints - [N x 2] points in rotated frame
+    %   baseSize - [height, width] of base image
+    %   rotation - rotation angle in degrees (cumulative)
+    %   angleTolerance - tolerance for detecting exact 90-degree rotations
+    %
+    % Outputs:
+    %   basePoints - [N x 2] points in base image frame
+
+    if isempty(rotatedPoints)
+        basePoints = rotatedPoints;
+        return;
+    end
+
+    % Only handle multiples of 90 degrees
+    if ~isMultipleOfNinety(rotation, angleTolerance)
+        basePoints = rotatedPoints;
+        return;
+    end
+
+    k = mod(round(rotation / 90), 4);
+    if k == 0
+        basePoints = rotatedPoints;
+        return;
+    end
+
+    H_base = baseSize(1);
+    W_base = baseSize(2);
+
+    basePoints = zeros(size(rotatedPoints));
+
+    % Inverse transformations (opposite of rotatePolygonsDiscrete)
+    switch k
+        case 1  % Rotated 90 CW, so inverse is 90 CCW (270 CW)
+            % Original: x' = H - y + 1, y' = x
+            % Inverse: x = y', y = H - x' + 1
+            basePoints(:, 1) = rotatedPoints(:, 2);
+            basePoints(:, 2) = H_base - rotatedPoints(:, 1) + 1;
+
+        case 2  % Rotated 180, so inverse is also 180
+            % Original: x' = W - x + 1, y' = H - y + 1
+            % Inverse: x = W - x' + 1, y = H - y' + 1
+            basePoints(:, 1) = W_base - rotatedPoints(:, 1) + 1;
+            basePoints(:, 2) = H_base - rotatedPoints(:, 2) + 1;
+
+        case 3  % Rotated 270 CW (90 CCW), so inverse is 90 CW
+            % Original: x' = y, y' = W - x + 1
+            % Inverse: x = W - y' + 1, y = x'
+            basePoints(:, 1) = W_base - rotatedPoints(:, 2) + 1;
+            basePoints(:, 2) = rotatedPoints(:, 1);
+    end
+end
+
+function [polygons, order] = assignPolygonLabels(polygons)
+    % Reorder drawpolygon handles so con0..conN map left-to-right, bottom-to-top
+    % con_0 (blue) at BOTTOM (large Y), con_max (red) at TOP (small Y)
+    order = [];
+
     if isempty(polygons) || ~iscell(polygons)
         return;
     end
@@ -1567,12 +2144,16 @@ function polygons = assignPolygonLabels(polygons)
         return;
     end
 
-    [~, order] = sortrows(centroids, [1 2]);
+    % Sort by Y DESCENDING (bottom→top, primary), then X ascending (left→right, secondary)
+    % This puts bottom row first (large Y), sorted left-to-right
+    sortKey = [-centroids(:, 2), centroids(:, 1)];
+    [~, order] = sortrows(sortKey);
     polygons = polygons(order);
 end
 
 function sortedPolygons = sortPolygonArrayByX(polygons)
-    % Sort numeric polygon array by centroid (X primary, Y secondary)
+    % Sort numeric polygon array by centroid: left→right, bottom→top in UI window
+    % con_0 (blue) at BOTTOM (large Y), con_max (red) at TOP (small Y)
     sortedPolygons = polygons;
     if isempty(polygons)
         return;
@@ -1584,6 +2165,11 @@ function sortedPolygons = sortPolygonArrayByX(polygons)
     numPolygons = size(polygons, 1);
     centroids = zeros(numPolygons, 2);
 
+    if numPolygons == 0
+        sortedPolygons = polygons;
+        return;
+    end
+
     for i = 1:numPolygons
         poly = squeeze(polygons(i, :, :));
         if isempty(poly)
@@ -1594,7 +2180,10 @@ function sortedPolygons = sortPolygonArrayByX(polygons)
         end
     end
 
-    [~, order] = sortrows(centroids, [1 2]);
+    % Sort by Y DESCENDING (bottom→top, primary), then X ascending (left→right, secondary)
+    % This puts bottom row first (large Y), sorted left-to-right
+    sortKey = [-centroids(:, 2), centroids(:, 1)];
+    [~, order] = sortrows(sortKey);
     sortedPolygons = polygons(order, :, :);
 end
 
@@ -1614,6 +2203,29 @@ function stopExecution(fig)
     guiData.action = 'stop';
     set(fig, 'UserData', guiData);
     uiresume(fig);
+end
+
+function rerunAIDetection(fig, cfg)
+    % Re-run AI detection and replace current polygons with fresh detections
+    guiData = get(fig, 'UserData');
+
+    if ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    if ~cfg.useAIDetection
+        warning('cut_micropads:ai_disabled', 'AI detection is disabled');
+        return;
+    end
+
+    % Avoid launching another job while one is already running
+    if isfield(guiData, 'asyncDetection') && guiData.asyncDetection.active
+        fprintf('  AI detection already running - ignoring manual rerun request\n');
+        return;
+    end
+
+    fprintf('  Re-running AI detection asynchronously...\n');
+    runDeferredAIDetection(fig, cfg);
 end
 
 function keyPressHandler(src, event)
@@ -1797,18 +2409,18 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
         end
         if numel(data) >= 2 && ~isempty(data{2})
             nums = data{2};
-            if size(nums, 2) >= numericCount
-                existingNums = nums(:, 1:numericCount);
-            else
-                pad = nan(size(nums, 1), numericCount - size(nums, 2));
-                existingNums = [nums, pad];
 
-                if size(nums, 2) == numericCount - 1
-                    warning('cut_micropads:coord_migration', ...
-                        'Migrating 9-column coordinates to 10-column format (rotation=0): %s', coordPath);
-                    existingNums(:, end) = 0;
-                end
+            % Validate coordinate format (no migration - project is in active development)
+            if size(nums, 2) ~= numericCount
+                error('cut_micropads:invalid_coord_format', ...
+                    ['Coordinate file has invalid format: %d columns found, expected %d.\n' ...
+                     'File: %s\n' ...
+                     'This project requires the current 10-column format (image, concentration, x1, y1, x2, y2, x3, y3, x4, y4, rotation).\n' ...
+                     'Delete the corrupted file and rerun the stage to regenerate.'], ...
+                    size(nums, 2), numericCount, coordPath);
             end
+
+            existingNums = nums;
         end
     end
 
@@ -1859,8 +2471,8 @@ function atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordF
 
     fid = fopen(tmpPath, 'wt');
     if fid == -1
-        warning('cut_micropads:coord_open', 'Cannot open temp coordinates file for writing: %s', tmpPath);
-        return;
+        error('cut_micropads:coord_write_failed', ...
+              'Cannot open temp coordinates file for writing: %s\nCheck folder permissions.', tmpPath);
     end
 
     fprintf(fid, '%s\n', header);
@@ -1912,7 +2524,6 @@ function [img, isValid] = loadImage(imageName)
         warning('cut_micropads:read_error', 'Failed to read image %s: %s', imageName, ME.message);
     end
 end
-
 
 function saveImageWithFormat(img, outPath, outExt, cfg)
     if strcmpi(outExt, '.jpg') || strcmpi(outExt, '.jpeg')
@@ -2016,63 +2627,37 @@ function ensurePythonSetup(pythonPath)
     end
 end
 
-
 function I = imread_raw(fname)
-    % Read image with EXIF orientation handling for microPAD pipeline
-    %
-    % This function reads images while preserving raw sensor layout by
-    % inverting EXIF 90-degree rotation tags. This ensures polygon coordinates
-    % remain valid across pipeline stages.
-    %
-    % Inputs:
-    %   fname - Path to image file (char or string)
-    %
-    % Outputs:
-    %   I - Image array with EXIF rotations inverted
-    %
-    % EXIF Orientation Handling:
-    %   - Tags 5/6/7/8 (90-degree rotations): INVERTED to preserve raw layout
-    %   - Tags 2/3/4 (flips/180): IGNORED (not inverted)
-    %   - Tag 1 or missing: No modification
-    %
-    % Example:
-    %   img = imread_raw('micropad_photo.jpg');
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    % Read image without automatic orientation
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    % Get EXIF orientation tag
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation')
-            return;
-        end
-        ori = double(info.Orientation);
-    catch
-        return;
-    end
-
-    % Invert 90-degree EXIF rotations to preserve raw sensor layout
-    switch ori
-        case 5
-            I = rot90(I, +1);
-            I = fliplr(I);
-        case 6
-            I = rot90(I, -1);
-        case 7
-            I = rot90(I, -1);
-            I = fliplr(I);
-        case 8
-            I = rot90(I, +1);
-    end
+    I = imread(fname);
 end
 
-function [quads, confidences] = detectQuadsYOLO(img, cfg)
+function [quads, confidences, outputFile, imgPath] = detectQuadsYOLO(img, cfg, varargin)
     % Run YOLO detection via Python helper script (subprocess interface)
+    %
+    % Inputs:
+    %   img - input image array
+    %   cfg - configuration struct
+    %   varargin - optional name-value pairs:
+    %     'async' - if true, launch non-blocking and return immediately
+    %               returns empty quads/confidences, non-empty outputFile
+    %
+    % Outputs:
+    %   quads - detected quadrilaterals (Nx4x2 array) or [] if async
+    %   confidences - detection confidences (Nx1 array) or [] if async
+    %   outputFile - path to output file for async mode, empty otherwise
+    %   imgPath - path to temp image file (for caller cleanup in async mode)
+
+    % Extract image dimensions for validation
+    [imageHeight, imageWidth, ~] = size(img);
+
+    p = inputParser;
+    addParameter(p, 'async', false, @islogical);
+    parse(p, varargin{:});
+    asyncMode = p.Results.async;
 
     % Save image to temporary file
     tmpDir = tempdir;
@@ -2080,17 +2665,58 @@ function [quads, confidences] = detectQuadsYOLO(img, cfg)
     tmpImgPath = fullfile(tmpDir, sprintf('%s_micropad_detect.jpg', tmpName));
     imwrite(img, tmpImgPath, 'JPEG', 'Quality', 95);
 
-    % Ensure cleanup even if error occurs
-    cleanupObj = onCleanup(@() cleanupTempFile(tmpImgPath));
+    % Ensure cleanup even if error occurs (only in blocking mode)
+    if ~asyncMode
+        cleanupObj = onCleanup(@() cleanupTempFile(tmpImgPath));
+    end
 
-    % Build command (redirect stderr to stdout to capture all output)
-    cmdRedirect = '2>&1';  % Works on both Windows and Unix
+    % Initialize output variables
+    outputFile = '';
+    imgPath = '';
 
-    cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d %s', ...
-        cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
-        cfg.minConfidence, cfg.inferenceSize, cmdRedirect);
+    % Create output file for async mode
+    if asyncMode
+        outputFile = fullfile(tmpDir, sprintf('%s_detection_output.txt', tmpName));
+    end
+
+    % Build command with platform-specific syntax
+    if asyncMode
+        % Platform-specific background execution
+        if ispc
+            % Windows: Build command with proper quote handling for cmd /c
+            innerCmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d', ...
+                cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
+                cfg.minConfidence, cfg.inferenceSize);
+
+            % Escape quotes with double-quote for cmd /c context
+            escapedOutput = strrep(outputFile, '"', '""');
+
+            % Construct command: double-quotes work inside cmd /c "..."
+            cmd = sprintf('start /B "" cmd /c "%s > ""%s"" 2>&1"', innerCmd, escapedOutput);
+        else
+            % Unix/macOS: Use '&' suffix for background execution
+            cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d > "%s" 2>&1 &', ...
+                cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
+                cfg.minConfidence, cfg.inferenceSize, outputFile);
+        end
+    else
+        % Blocking mode: redirect stderr to stdout to capture all output
+        cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d 2>&1', ...
+            cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
+            cfg.minConfidence, cfg.inferenceSize);
+    end
 
     % Run detection
+    if asyncMode
+        % Launch background process and return immediately
+        system(cmd);
+        quads = [];
+        confidences = [];
+        imgPath = tmpImgPath;  % Return temp image path for caller cleanup
+        return;
+    end
+
+    % Blocking mode: continue with original code
     [status, output] = system(cmd);
 
     if status ~= 0
@@ -2099,19 +2725,125 @@ function [quads, confidences] = detectQuadsYOLO(img, cfg)
 
     % Parse output (split by newlines - R2019b compatible)
     lines = strsplit(output, {'\n', '\r\n', '\r'}, 'CollapseDelimiters', false);
-    lines = lines(~cellfun(@isempty, lines));  % Remove empty lines
+    lines = lines(~cellfun(@isempty, lines));
+    [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth);
+end
+
+function [isComplete, quads, confidences, errorMsg] = checkDetectionComplete(outputFile, img)
+    % Check if async detection has completed and parse results
+    %
+    % Inputs:
+    %   outputFile - path to detection output file
+    %   img - input image for dimension validation
+    %
+    % Outputs:
+    %   isComplete - true if detection finished (success or error)
+    %   quads - detected quadrilaterals (Nx4x2) or [] if not complete/failed
+    %   confidences - detection confidences (Nx1) or [] if not complete/failed
+    %   errorMsg - error message string if parsing failed, empty otherwise
+
+    isComplete = false;
+    quads = [];
+    confidences = [];
+    errorMsg = '';
+
+    % Extract image dimensions for validation
+    [imageHeight, imageWidth, ~] = size(img);
+
+    % Check if output file exists and has content
+    if ~exist(outputFile, 'file')
+        return;
+    end
+
+    % Try to read the file
+    try
+        fid = fopen(outputFile, 'rt');
+        if fid < 0
+            return;
+        end
+
+        % Read all content
+        content = fread(fid, '*char')';
+        fclose(fid);
+
+        % Empty file means process hasn't written yet
+        if isempty(content)
+            return;
+        end
+
+        % Check for error patterns using single regexp
+        isError = ~isempty(regexp(content, '(ERROR:|Traceback|Exception|FileNotFoundError)', 'once', 'ignorecase'));
+
+        if isError
+            % Extract first 200 characters for error context (simple and reliable)
+            errorMsg = content;
+            if length(errorMsg) > 200
+                errorMsg = [errorMsg(1:200) '...'];
+            end
+            isComplete = true;
+            return;
+        end
+
+        % Parse output
+        lines = strsplit(content, {'\n', '\r\n', '\r'}, 'CollapseDelimiters', false);
+        lines = lines(~cellfun(@isempty, lines));
+
+        % Check for incomplete writes (detection count > 0 but no valid detections parsed)
+        if ~isempty(lines)
+            numDetections = str2double(lines{1});
+            if numDetections > 0 && length(lines) < numDetections + 1
+                % Incomplete write - Python still writing output
+                return;
+            end
+        end
+
+        [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth);
+
+        % Additional check: if count > 0 but parsing returned nothing, might be incomplete
+        if ~isempty(lines)
+            numDetections = str2double(lines{1});
+            if numDetections > 0 && isempty(quads)
+                return;
+            end
+        end
+
+        % Successfully parsed - mark complete
+        isComplete = true;
+
+    catch ME
+        % Error reading or parsing - consider complete but failed
+        isComplete = true;
+        errorMsg = sprintf('Failed to parse detection output: %s', ME.message);
+        warning('cut_micropads:detection_parse_error', '%s', errorMsg);
+    end
+end
+
+function [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth)
+    % Parse YOLO detection output format into polygon arrays
+    %
+    % Inputs:
+    %   lines - cell array of text lines (first line = count, rest = detections)
+    %   imageHeight - image height for bounds validation
+    %   imageWidth - image width for bounds validation
+    %
+    % Outputs:
+    %   quads - detected quadrilaterals [N x 4 x 2]
+    %   confidences - detection confidence scores [N x 1]
+    %
+    % Format: Each detection line contains 9 space-separated values:
+    %   x1 y1 x2 y2 x3 y3 x4 y4 confidence
+    %   (0-based coordinates from Python, converted to 1-based for MATLAB)
+
+    quads = [];
+    confidences = [];
 
     if isempty(lines)
-        quads = [];
-        confidences = [];
         return;
     end
 
     numDetections = str2double(lines{1});
 
     if numDetections == 0 || isnan(numDetections)
-        quads = [];
-        confidences = [];
         return;
     end
 
@@ -2124,24 +2856,34 @@ function [quads, confidences] = detectQuadsYOLO(img, cfg)
         end
 
         parts = str2double(split(lines{i+1}));
-        if length(parts) < 9
+        if length(parts) < 9 || any(isnan(parts)) || any(isinf(parts))
+            warning('cut_micropads:invalid_detection', ...
+                    'Skipping detection %d: invalid numeric data', i);
             continue;
         end
 
         % Parse: x1 y1 x2 y2 x3 y3 x4 y4 confidence (0-based from Python)
         % Convert to MATLAB 1-based indexing
         vertices = parts(1:8) + 1;
-        quad = reshape(vertices, 2, 4)';  % 4x2 matrix
+
+        % Validate vertices are within reasonable bounds (2× image size for rotations)
+        if any(vertices < 0) || any(vertices > max([imageHeight, imageWidth]) * 2)
+            warning('cut_micropads:out_of_bounds', ...
+                    'Skipping detection %d: vertices out of bounds', i);
+            continue;
+        end
+
+        quad = reshape(vertices, 2, 4)';  % Reshape to 4x2 matrix
         quads(i, :, :) = quad;
         confidences(i) = parts(9);
     end
 
-    % Filter out empty detections
+    % Filter out empty detections (where confidence = 0)
     validMask = confidences > 0;
     quads = quads(validMask, :, :);
     confidences = confidences(validMask);
 
-    % Ensure consistent left-to-right ordering by centroid X coordinate
+    % Sort by centroid X coordinate for consistent left-to-right ordering
     if ~isempty(quads)
         centroids = squeeze(mean(quads, 2));
         if isvector(centroids)
@@ -2150,6 +2892,25 @@ function [quads, confidences] = detectQuadsYOLO(img, cfg)
         [~, order] = sort(centroids(:, 1), 'ascend');
         quads = quads(order, :, :);
         confidences = confidences(order);
+    end
+end
+
+function safeStopTimer(timerObj)
+    % Safely stop and delete timer without generating warnings
+    %
+    % Input:
+    %   timerObj - timer object to stop and delete
+    %
+    % Behavior:
+    %   - Checks if timer exists and is valid
+    %   - Only calls stop() if timer is currently running
+    %   - Always calls delete() to free resources
+
+    if ~isempty(timerObj) && isvalid(timerObj)
+        if strcmp(timerObj.Running, 'on')
+            stop(timerObj);
+        end
+        delete(timerObj);
     end
 end
 
@@ -2175,38 +2936,34 @@ function memory = updateMemory(memory, polygonParams, rotation, imageSize)
 end
 
 function [initialPolygons, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
-    % Get initial polygons prioritizing AI detection with memory fallback
-    source = 'default';
+    % Get initial polygons with progressive AI detection workflow
+    % Priority: memory (if available) -> default -> AI updates later
 
-    aiPolygons = [];
-    detectionSucceeded = false;
-    if cfg.useAIDetection
-        [aiPolygons, detectionSucceeded] = getInitialPolygons(img, cfg);
-    end
-
-    if detectionSucceeded
-        initialPolygons = aiPolygons;
-        source = 'ai';
-        return;
-    end
-
+    % CHANGE: Check memory FIRST (even when AI is enabled)
     if memory.hasSettings && ~isempty(memory.polygonPositions) && ~isempty(memory.imageSize)
         scaledPolygons = scalePolygonsForImageSize(memory.polygonPositions, memory.imageSize, imageSize);
         initialPolygons = scaledPolygons;
-        fprintf('  Using polygon positions from memory (scaled if needed)\n');
+        fprintf('  Using polygon positions from memory (AI will update if enabled)\n');
         source = 'memory';
         return;
     end
 
+    % No memory available: use default geometry for immediate display
     [imageHeight, imageWidth, ~] = size(img);
-    fprintf('  Using default geometry for initial polygons\n');
+    fprintf('  Using default geometry (AI will update if enabled)\n');
     initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+    source = 'default';
+
+    % NOTE: AI detection will run asynchronously after GUI displays
 end
 
 function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize)
     % Scale polygon coordinates when image dimensions change
-    if isempty(oldSize) || any(oldSize <= 0)
+    if isempty(oldSize) || any(oldSize <= 0) || isempty(newSize) || any(newSize <= 0)
         scaledPolygons = polygons;
+        warning('cut_micropads:invalid_image_size', ...
+                'Invalid image dimensions for scaling: old=[%d %d], new=[%d %d]', ...
+                oldSize(1), oldSize(2), newSize(1), newSize(2));
         return;
     end
 
@@ -2236,6 +2993,275 @@ function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize)
     end
 end
 
+function runDeferredAIDetection(fig, cfg)
+    % Run AI detection asynchronously and update polygons when complete
+    %
+    % Called via timer after GUI is fully rendered
+
+    % CRITICAL FIX: Guard against invalid/deleted figure
+    if ~ishandle(fig) || ~isvalid(fig)
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+
+    % CRITICAL FIX: Guard against empty or non-struct guiData
+    if isempty(guiData) || ~isstruct(guiData)
+        return;
+    end
+
+    if ~cfg.useAIDetection || ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    % Check if detection is already running
+    if guiData.asyncDetection.active
+        return;
+    end
+
+    % Show progress indicator (starts animation timer)
+    showAIProgressIndicator(fig, true);
+
+    % Re-fetch guiData to get breathing timer reference
+    guiData = get(fig, 'UserData');
+
+    try
+        % Launch async detection
+        img = guiData.currentImg;
+        [~, ~, outputFile, imgPath] = detectQuadsYOLO(img, cfg, 'async', true);
+
+        % Store detection state
+        guiData.asyncDetection.active = true;
+        guiData.asyncDetection.outputFile = outputFile;
+        guiData.asyncDetection.imgPath = imgPath;
+        guiData.asyncDetection.startTime = tic;
+
+        % Create polling timer (100ms interval)
+        guiData.asyncDetection.pollingTimer = timer(...
+            'Period', 0.1, ...
+            'ExecutionMode', 'fixedSpacing', ...
+            'TimerFcn', @(~,~) pollDetectionStatus(fig, cfg));
+
+        % Save state and start polling
+        set(fig, 'UserData', guiData);
+        start(guiData.asyncDetection.pollingTimer);
+
+    catch ME
+        % Failed to launch - clean up and fall back to default geometry
+        warning('cut_micropads:async_launch_failed', ...
+                'Failed to launch async detection: %s', ME.message);
+        guiData.asyncDetection.active = false;
+        showAIProgressIndicator(fig, false);
+        set(fig, 'UserData', guiData);
+    end
+end
+
+function pollDetectionStatus(fig, cfg)
+    % Poll for async detection completion and update polygons when ready
+    %
+    % Called by polling timer every 100ms
+
+    % Guard against invalid figure
+    if ~ishandle(fig) || ~isvalid(fig)
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+
+    % Guard against invalid guiData
+    if isempty(guiData) || ~isstruct(guiData)
+        return;
+    end
+
+    % Guard against inactive detection
+    if ~guiData.asyncDetection.active
+        return;
+    end
+
+    % Check for timeout
+    elapsed = toc(guiData.asyncDetection.startTime);
+    if elapsed > guiData.asyncDetection.timeoutSeconds
+        fprintf('  AI detection timeout after %.1f seconds\n', elapsed);
+        cleanupAsyncDetection(fig, guiData, false, cfg);
+        return;
+    end
+
+    % Check if detection completed
+    [isComplete, quads, confidences, errorMsg] = checkDetectionComplete(...
+        guiData.asyncDetection.outputFile, ...
+        guiData.currentImg);
+
+    if ~isComplete
+        return;  % Still running, keep polling
+    end
+
+    % Check for error messages
+    if ~isempty(errorMsg)
+        fprintf('  AI detection failed: %s\n', errorMsg);
+    end
+
+    % Detection finished - update polygons if successful
+    detectionSucceeded = false;
+
+    if ~isempty(quads)
+        numDetected = size(quads, 1);
+
+        if numDetected >= cfg.numSquares
+            % Use top N detections by confidence
+            [~, sortIdx] = sort(confidences, 'descend');
+            quads = quads(sortIdx(1:cfg.numSquares), :, :);
+            topConfidences = confidences(sortIdx(1:cfg.numSquares));
+
+            % Normalize and apply polygons respecting UI ordering
+            newPolygons = normalizePolygonsForDisplay(quads, guiData.totalRotation, ...
+                                                      guiData.imageSize, guiData.baseImageSize, ...
+                                                      cfg.rotation.angleTolerance);
+
+            % Apply detected polygons with race condition guard
+            try
+                guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig);
+                detectionSucceeded = true;
+
+                fprintf('  AI detection complete: %d regions (avg confidence: %.2f)\n', ...
+                        cfg.numSquares, mean(topConfidences));
+            catch ME
+                % Figure was deleted during update - ignore error
+                if strcmp(ME.identifier, 'MATLAB:class:InvalidHandle')
+                    return;
+                else
+                    rethrow(ME);
+                end
+            end
+        else
+            fprintf('  AI detected only %d/%d regions - keeping initial positions\n', ...
+                    numDetected, cfg.numSquares);
+        end
+    else
+        fprintf('  AI detection found no regions - keeping initial positions\n');
+    end
+
+    % Re-check figure validity after polygon update (race condition guard)
+    if ~ishandle(fig) || ~isvalid(fig)
+        return;
+    end
+
+    % Update auto-zoom state based on detection result (with race condition guard)
+    try
+        if detectionSucceeded
+            guiData.autoZoomAvailable = true;
+            guiData.autoZoomBounds = [];
+        else
+            guiData.autoZoomAvailable = false;
+            guiData.autoZoomBounds = [];
+        end
+
+        % Save state to figure
+        set(fig, 'UserData', guiData);
+
+        % Re-fetch guiData to ensure cleanup gets fresh state (handles concurrent updates)
+        guiData = get(fig, 'UserData');
+
+        % Clean up async state
+        cleanupAsyncDetection(fig, guiData, detectionSucceeded, cfg);
+    catch ME
+        % Figure was deleted during final state update - ignore error
+        if ~strcmp(ME.identifier, 'MATLAB:class:InvalidHandle')
+            rethrow(ME);
+        end
+    end
+end
+
+function cleanupAsyncDetection(fig, guiData, success, cfg)
+    % Clean up async detection resources and stop animation
+    %
+    % Inputs:
+    %   fig - figure handle
+    %   guiData - GUI data structure (may be modified)
+    %   success - true if detection succeeded and polygons updated
+    %   cfg - configuration struct (for auto-zoom)
+
+    % Stop and delete polling timer
+    if ~isempty(guiData.asyncDetection.pollingTimer)
+        safeStopTimer(guiData.asyncDetection.pollingTimer);
+    end
+
+    % Clean up output file
+    if ~isempty(guiData.asyncDetection.outputFile) && ...
+       exist(guiData.asyncDetection.outputFile, 'file')
+        try
+            delete(guiData.asyncDetection.outputFile);
+        catch
+            % Ignore cleanup errors
+        end
+    end
+
+    % Clean up image file
+    if ~isempty(guiData.asyncDetection.imgPath) && ...
+       exist(guiData.asyncDetection.imgPath, 'file')
+        try
+            delete(guiData.asyncDetection.imgPath);
+        catch
+            % Ignore cleanup errors
+        end
+    end
+
+    % Reset async state
+    guiData.asyncDetection.active = false;
+    guiData.asyncDetection.outputFile = '';
+    guiData.asyncDetection.imgPath = '';
+    guiData.asyncDetection.startTime = [];
+    guiData.asyncDetection.pollingTimer = [];
+
+    % Stop animation
+    showAIProgressIndicator(fig, false);
+
+    % Update guiData
+    set(fig, 'UserData', guiData);
+
+    % Apply auto-zoom if detection succeeded
+    if success
+        applyAutoZoom(fig, guiData, cfg);
+    end
+end
+
+function updatePolygonPositions(polygonHandles, newPositions, labelHandles)
+    % Update drawpolygon positions smoothly without recreating objects
+    %
+    % Inputs:
+    %   polygonHandles - cell array of drawpolygon objects
+    %   newPositions - [N x 4 x 2] array of new polygon positions
+    %   labelHandles - cell array of text objects (optional)
+
+    n = numel(polygonHandles);
+    if size(newPositions, 1) ~= n
+        warning('Polygon count mismatch: %d handles vs %d positions', n, size(newPositions, 1));
+        return;
+    end
+
+    for i = 1:n
+        poly = polygonHandles{i};
+        if ~isvalid(poly)
+            continue;
+        end
+
+        newPos = squeeze(newPositions(i, :, :));
+
+        % Update position property directly (smooth transition)
+        poly.Position = newPos;
+
+        % CRITICAL: Update LastValidPosition appdata to prevent snap-back on next drag
+        % (enforceQuadrilateral listener compares against this stored value)
+        setappdata(poly, 'LastValidPosition', newPos);
+    end
+
+    % NEW: Update labels after polygon positions change
+    if nargin >= 3 && ~isempty(labelHandles)
+        updatePolygonLabels(polygonHandles, labelHandles);
+    end
+
+    drawnow limitrate;
+end
+
 %% -------------------------------------------------------------------------
 %% Error Handling
 %% -------------------------------------------------------------------------
@@ -2263,4 +3289,80 @@ function cleanupTempFile(tmpPath)
             % Silently ignore cleanup errors
         end
     end
+end
+
+function cleanupAndClose(fig)
+    % Clean up timers and progress indicators before closing figure
+
+    % Guard against invalid figure
+    if ~isvalid(fig)
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+
+    % Clean up async detection if active
+    if isstruct(guiData) && isfield(guiData, 'asyncDetection')
+        if guiData.asyncDetection.active
+            % Stop polling timer
+            if ~isempty(guiData.asyncDetection.pollingTimer)
+                safeStopTimer(guiData.asyncDetection.pollingTimer);
+            end
+
+            % Clean up temp files
+            if ~isempty(guiData.asyncDetection.outputFile) && ...
+               exist(guiData.asyncDetection.outputFile, 'file')
+                try
+                    delete(guiData.asyncDetection.outputFile);
+                catch
+                    % Ignore cleanup errors
+                end
+            end
+
+            % Clean up temp image file
+            if ~isempty(guiData.asyncDetection.imgPath) && ...
+               exist(guiData.asyncDetection.imgPath, 'file')
+                try
+                    delete(guiData.asyncDetection.imgPath);
+                catch
+                    % Ignore cleanup errors
+                end
+            end
+
+            % Reset async state
+            guiData.asyncDetection.active = false;
+            guiData.asyncDetection.outputFile = '';
+            guiData.asyncDetection.imgPath = '';
+            guiData.asyncDetection.startTime = [];
+            guiData.asyncDetection.pollingTimer = [];
+
+            % Update guiData after async cleanup
+            set(fig, 'UserData', guiData);
+        end
+    end
+
+    % Stop and delete AI timer if exists
+    if isstruct(guiData) && isfield(guiData, 'aiTimer')
+        safeStopTimer(guiData.aiTimer);
+    end
+
+    % CRITICAL FIX: Set action='stop' before deleting so main loop can exit cleanly
+    % Without this, waitForUserAction returns empty action, main loop continues,
+    % and tries to rebuild UI with deleted figure handle
+    if isstruct(guiData)
+        guiData.action = 'stop';
+        set(fig, 'UserData', guiData);
+    end
+
+    % Clean up progress indicator
+    showAIProgressIndicator(fig, false);
+
+    % CRITICAL FIX: Resume event loop before deleting
+    % This allows waitForUserAction to read the 'stop' action we just set
+    if strcmp(get(fig, 'waitstatus'), 'waiting')
+        uiresume(fig);
+    end
+
+    % Delete figure
+    delete(fig);
 end

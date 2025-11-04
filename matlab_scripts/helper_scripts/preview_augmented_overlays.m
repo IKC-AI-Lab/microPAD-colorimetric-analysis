@@ -516,39 +516,9 @@ end
 end
 
 function I = imread_raw(fname)
-% Read image with EXIF orientation handling for 90-degree rotations
-% Inverts EXIF 90-degree rotation tags (5/6/7/8) to preserve raw sensor layout
-%
-% This ensures consistent display with the pipeline's coordinate system,
-% which references raw pixel positions (not camera-corrected orientation).
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    % Read (some builds honor AutoOrient=false; some ignore it silently)
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    % Get EXIF orientation (if present)
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation') || isempty(info.Orientation), return; end
-        ori = double(info.Orientation);
-    catch
-        return; % no EXIF → done
-    end
-
-    % Always invert only the 90° EXIF cases
-    switch ori
-        case 5  % mirror H + rotate -90 (to display upright)
-            I = rot90(I, +1); I = fliplr(I);   % invert: +90 then mirror H
-        case 6  % rotate +90
-            I = rot90(I, -1);                  % invert: -90 (== rot90(...,3))
-        case 7  % mirror H + rotate +90
-            I = rot90(I, -1); I = fliplr(I);   % invert: -90 then mirror H
-        case 8  % rotate +270 (== -90)
-            I = rot90(I, +1);                  % invert: +90
-        otherwise
-            % 1,2,3,4 → leave unchanged (no risk of double-undo)
-    end
+    I = imread(fname);
 end

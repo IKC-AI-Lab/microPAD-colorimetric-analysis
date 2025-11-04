@@ -237,14 +237,9 @@ function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
         end
         img = imread_raw(srcPath);
 
-        % Apply rotation if present
-        rotation = 0;
-        if isfield(row, 'rotation') && ~isempty(row.rotation) && isfinite(row.rotation)
-            rotation = row.rotation;
-        end
-        if rotation ~= 0
-            img = imrotate(img, rotation, 'bilinear', 'loose');
-        end
+        % Rotation column is UI-only metadata (alignment hint)
+        % Coordinates are already in original (unrotated) image frame
+        % No image warp applied - coordinates already match original frame
 
         cropped = crop_with_polygon(img, row.polygon);
         [~, ~, extOrig] = fileparts(srcPath);
@@ -277,14 +272,9 @@ function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
         end
         img = imread_raw(srcPath);
 
-        % Apply rotation if present
-        rotation = 0;
-        if isfield(row, 'rotation') && ~isempty(row.rotation) && isfinite(row.rotation)
-            rotation = row.rotation;
-        end
-        if rotation ~= 0
-            img = imrotate(img, rotation, 'bilinear', 'loose');
-        end
+        % Rotation column is UI-only metadata (alignment hint)
+        % Coordinates are already in original (unrotated) image frame
+        % No image warp applied - coordinates already match original frame
 
         cropped = crop_with_polygon(img, row.polygon);
         [~, ~, extOrig] = fileparts(srcPath);
@@ -878,51 +868,11 @@ function srcPath = resolve_polygon_source(baseDir, row, cfg, polyConDirs)
 end
 
 function I = imread_raw(fname)
-    % Read without EXIF auto-rotation to match stored coordinates.
-    %
-    % COORDINATE SYSTEM ASSUMPTIONS:
-    % - coordinates.txt assumes pixel coordinates in EXIF-oriented image space.
-    % - If coordinates were saved from EXIF-auto-rotated images (the pipeline default),
-    %   this function maintains consistency by reading with AutoOrient: false and
-    %   manually applying EXIF transformations to match the coordinate reference frame.
-    % - If coordinates were saved from un-oriented raw images, upstream scripts should
-    %   have set AutoOrient: true when saving coordinates (non-standard workflow).
-    %
-    % This ensures (x,y) in coordinates.txt always maps to correct pixel in loaded image.
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% during downstream processing rather than via image metadata.
 
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    try
-        info = safe_imfinfo(fname);
-    catch
-        info = [];
-    end
-    if isempty(info) || ~isstruct(info) || ~isfield(info, 'Orientation') || isempty(info.Orientation)
-        return;
-    end
-    ori = double(info.Orientation);
-
-    switch ori
-        case 5
-            I = rot90(I, +1); I = fliplr(I);
-        case 6
-            I = rot90(I, -1);
-        case 7
-            I = rot90(I, -1); I = fliplr(I);
-        case 8
-            I = rot90(I, +1);
-        otherwise
-            % leave as-is
-    end
-end
-
-function info = safe_imfinfo(fname)
-    % Lightweight wrapper around imfinfo; callers can handle warnings upstream.
-    info = imfinfo(fname);
+    I = imread(fname);
 end
 
 function s = strip_ext(nameOrPath)

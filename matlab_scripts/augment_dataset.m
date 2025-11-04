@@ -513,7 +513,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{numel(stage3Coords) + 1000} = [];
+                    stage3Coords{max(s3Count, numel(stage3Coords) * 2)} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -626,7 +626,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             'augPolygonImg', augPolygonImg, ...
             'contentBbox', contentBbox, ...
             'origVertices', origVertices, ...
-            'independentRotAngle', independentRotAngle);
+            'independentRotAngle', independentRotAngle, ...
+            'originalRotation', polyEntry.rotation);
     end
 
     % Trim to valid regions
@@ -745,12 +746,16 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         imwrite(augPolygonImg, polygonOutPath);
 
         % Record stage 2 coordinates (polygon in scene)
+        % Compute total applied rotation and update saved rotation field
+        totalAppliedRotation = rotAngle + region.independentRotAngle;
+        augmentedRotation = normalizeAngle(region.originalRotation - totalAppliedRotation);
+
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
             'image', polygonFileName, ...
             'concentration', concentration, ...
             'vertices', sceneVertices, ...
-            'rotation', 0);
+            'rotation', augmentedRotation);
 
         % Track polygon in scene space for optional occlusions
         polygonIdx = polygonIdx + 1;
@@ -836,8 +841,10 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                     ellipseCrop.rotation = ellipseCrop.rotation + 90;
                 end
 
-                % Normalize rotation angle to [-180, 180]
-                ellipseCrop.rotation = mod(ellipseCrop.rotation + 180, 360) - 180;
+                % Adjust ellipse rotation to account for augmentation transforms
+                % Total applied rotation cancels out, leaving corrective angle
+                totalAppliedRotation = rotAngle + region.independentRotAngle;
+                ellipseCrop.rotation = normalizeAngle(ellipseCrop.rotation - totalAppliedRotation);
 
                 % Extract ellipse patch
                 [patchImg, patchValid] = crop_ellipse_patch(augPolygonImg, ellipseCrop);
@@ -859,7 +866,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{numel(stage3Coords) + 1000} = [];
+                    stage3Coords{max(s3Count, numel(stage3Coords) * 2)} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -1087,13 +1094,12 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
     end
 
     numSource = numel(regions);
-    numPolygons = size(occupiedBboxes, 1);
-    maxBboxes = targetCount + numPolygons;
+    maxBboxes = targetCount + size(occupiedBboxes, 1);
     allBboxes = zeros(maxBboxes, 4);
     bboxCount = 0;
 
     if ~isempty(occupiedBboxes)
-        bboxCount = numPolygons;
+        bboxCount = size(occupiedBboxes, 1);
         allBboxes(1:bboxCount, :) = double(occupiedBboxes);
     end
 
@@ -1524,6 +1530,11 @@ end
 
 function bbox = ellipse_bounding_box(ellipse)
     % Compute axis-aligned bounding box for rotated ellipse
+    validateattributes(ellipse.semiMajor, {'numeric'}, {'scalar', 'positive', 'finite'}, ...
+        'ellipse_bounding_box', 'ellipse.semiMajor');
+    validateattributes(ellipse.semiMinor, {'numeric'}, {'scalar', 'positive', 'finite'}, ...
+        'ellipse_bounding_box', 'ellipse.semiMinor');
+
     theta = deg2rad(ellipse.rotation);
     a = ellipse.semiMajor;
     b = ellipse.semiMinor;
@@ -2385,6 +2396,11 @@ function tform = centered_rotation_tform(imageSize, angleDeg)
 end
 
 function angleDeg = normalize_to_angle(value, range, maxAngle)
+    if numel(range) ~= 2
+        error('augment_dataset:invalidRange', ...
+            'Range parameter must have exactly 2 elements. Got %d.', numel(range));
+    end
+
     mid = mean(range);
     span = (range(2) - range(1)) / 2;
     if span <= 0
@@ -2587,8 +2603,8 @@ function entries = read_polygon_coordinates(coordPath)
     % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
     lines = read_coordinate_file_lines(coordPath);
 
-    % Pre-allocate with generous estimate
-    maxEntries = max(10000, numel(lines));
+    % Pre-allocate with efficient estimate
+    maxEntries = max(100, numel(lines) * 2);
     entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
     entries(maxEntries).image = '';
     count = 0;
@@ -2638,11 +2654,11 @@ function entries = read_polygon_coordinates(coordPath)
 end
 
 function entries = read_ellipse_coordinates(coordPath)
-    % Read ellipse coordinates from stage 4
+    % Read ellipse coordinates from stage 3
     lines = read_coordinate_file_lines(coordPath);
 
     % Pre-allocate with generous estimate
-    maxEntries = max(10000, numel(lines));
+    maxEntries = max(100, numel(lines) * 2);
     entries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
                      'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
     entries(maxEntries).image = '';
@@ -2736,6 +2752,11 @@ end
 %% =========================================================================
 %% VALIDATION AND UTILITIES
 %% =========================================================================
+
+function angle = normalizeAngle(angle)
+    % Normalize angle to range [-180, 180] degrees
+    angle = mod(angle + 180, 360) - 180;
+end
 
 function valid = is_valid_polygon(vertices, minArea)
     % Check if polygon is valid (non-degenerate)
@@ -2968,7 +2989,18 @@ function points = generate_poisson_disk_points(width, height, margin, radius)
     [initCx, initCy] = grid_coords(initialPoint, margin, cellSize, gridWidth, gridHeight);
     grid{initCy, initCx} = 1;
 
+    maxIterations = 10000;
+    iterCount = 0;
+
     while ~isempty(active)
+        iterCount = iterCount + 1;
+        if iterCount > maxIterations
+            warning('augment_dataset:poissonIterLimit', ...
+                'Poisson disk sampling exceeded %d iterations. Returning %d points.', ...
+                maxIterations, size(points, 1));
+            break;
+        end
+
         activeIdx = randi(size(active, 1));
         anchor = active(activeIdx, :);
         placed = false;
@@ -3076,6 +3108,7 @@ end
 
 function img = clamp_uint8(img)
     % Clamp image values to [0, 255] and convert to uint8
+    % Input must be in [0, 255] range (not normalized [0, 1])
     img = uint8(min(255, max(0, img)));
 end
 
@@ -3102,33 +3135,11 @@ function img = apply_motion_blur(img)
 end
 
 function I = imread_raw(fname)
-    % Read image with EXIF orientation handling for 90-degree rotations
-    % Inverts EXIF 90-degree rotation tags (5/6/7/8) to preserve raw sensor layout
+% Read image pixels in their recorded layout without applying EXIF orientation
+% metadata. Any user-requested rotation is stored in coordinates.txt and applied
+% downstream rather than via image metadata.
 
-    try
-        I = imread(fname, 'AutoOrient', false);
-    catch
-        I = imread(fname);
-    end
-
-    try
-        info = imfinfo(fname);
-        if ~isfield(info, 'Orientation') || isempty(info.Orientation), return; end
-        ori = double(info.Orientation);
-    catch
-        return;
-    end
-
-    switch ori
-        case 5
-            I = rot90(I, +1); I = fliplr(I);
-        case 6
-            I = rot90(I, -1);
-        case 7
-            I = rot90(I, -1); I = fliplr(I);
-        case 8
-            I = rot90(I, +1);
-    end
+    I = imread(fname);
 end
 
 function ensure_folder(pathStr)
