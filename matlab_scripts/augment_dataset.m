@@ -74,7 +74,7 @@ function augment_dataset(varargin)
     COORDINATE_FILENAME = 'coordinates.txt';
     CONCENTRATION_PREFIX = 'con_';
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
-    JPEG_QUALITY = 95;
+    JPEG_QUALITY = 100;
     MIN_VALID_POLYGON_AREA = 100;
 
     % Camera/transformation parameters
@@ -246,8 +246,7 @@ function augment_dataset(varargin)
         error('augmentDataset:missingCoords', 'Stage 2 coordinates folder not found: %s', cfg.paths.stage2Coords);
     end
     if ~isfolder(cfg.paths.ellipseCoords)
-        warning('augmentDataset:missingEllipse', ...
-                'Ellipse coordinates folder not found: %s\nEllipse processing will be skipped.', ...
+        fprintf('Note: Elliptical regions folder not found (%s) - ellipse processing will be skipped\n', ...
                 cfg.paths.ellipseCoords);
     end
 
@@ -358,7 +357,10 @@ function augment_phone(phoneName, cfg)
     stage3PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage3Output, phoneName);
     ensure_folder(stage1PhoneOut);
     ensure_folder(stage2PhoneOut);
-    ensure_folder(stage3PhoneOut);
+    % Only create stage3 output folder if we have ellipse data
+    if hasEllipses
+        ensure_folder(stage3PhoneOut);
+    end
 
     % Get unique paper names
     paperNames = keys(paperGroups);
@@ -2494,6 +2496,11 @@ function write_stage3_coordinates(coords, outputDir, filename)
     % Atomically write stage 3 coordinates (dedup by image+concentration+replicate)
     % Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
 
+    % Skip if no coordinates to write
+    if isempty(coords)
+        return;
+    end
+
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
         mkdir(coordFolder);
@@ -2691,8 +2698,8 @@ function entries = read_ellipse_coordinates(coordPath)
     end
 
     if skippedCount > 0
-        warning('augmentDataset:invalidCoords', ...
-                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
+        fprintf('  Note: Skipped %d invalid ellipse coordinate entries in %s (missing or invalid values)\n', ...
+                skippedCount, coordPath);
     end
 
     entries = entries(1:count);

@@ -56,7 +56,14 @@ requestedPhones = requestedPhones(requestedPhones ~= "");
 
 stage1Root = resolve_repo_path(opts.stage1Folder);
 stage2Root = resolve_repo_path(opts.stage2Folder);
-stage3Root = resolve_repo_path(opts.stage3Folder);
+
+% Stage 3 (ellipse) folder is optional
+try
+    stage3Root = resolve_repo_path(opts.stage3Folder);
+catch
+    stage3Root = '';
+    fprintf('Note: Elliptical regions folder not found (%s) - skipping ellipse overlays\n', opts.stage3Folder);
+end
 
 phoneDirs = list_phone_dirs(stage2Root);
 if isempty(phoneDirs)
@@ -72,8 +79,13 @@ if ~isempty(requestedPhones)
     end
 end
 
-fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 2: %s\n  Stage 3: %s\n', ...
-    stage1Root, stage2Root, stage3Root);
+if isempty(stage3Root)
+    fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 2: %s\n  Stage 3: (skipped)\n', ...
+        stage1Root, stage2Root);
+else
+    fprintf('Previewing augmented overlays from:\n  Stage 1: %s\n  Stage 2: %s\n  Stage 3: %s\n', ...
+        stage1Root, stage2Root, stage3Root);
+end
 
 % Build preview plan aggregating all overlays per base scene
 plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, ...
@@ -222,12 +234,16 @@ for pIdx = 1:numel(phoneDirs)
         continue;
     end
 
-    % Read stage-3 ellipse coordinates
-    s3CoordPath = fullfile(stage3Root, phoneStr, 'coordinates.txt');
-    if isfile(s3CoordPath)
-        s3Table = read_ellipse_table(s3CoordPath, stage3Cols);
-    else
+    % Read stage-3 ellipse coordinates (optional)
+    if isempty(stage3Root) || ~isfolder(stage3Root)
         s3Table = table();
+    else
+        s3CoordPath = fullfile(stage3Root, phoneStr, 'coordinates.txt');
+        if isfile(s3CoordPath)
+            s3Table = read_ellipse_table(s3CoordPath, stage3Cols);
+        else
+            s3Table = table();
+        end
     end
 
     % Group polygons by base scene name
@@ -376,7 +392,7 @@ for i = 1:numPolygons
         'Color', overlayColor, 'LineWidth', 0.5);
 end
 
-% Draw all ellipses
+% Draw all ellipses (if available)
 numEllipses = numel(entry.ellipses);
 if numEllipses > 0
     for i = 1:numEllipses
@@ -392,12 +408,8 @@ if numEllipses > 0
 
         plot(ax, ellipseX, ellipseY, '-', 'Color', overlayColor, 'LineWidth', 0.5);
     end
-else
-    if numPolygons > 0
-        text(ax, 12, 22, 'No ellipse data found for this scene', ...
-            'Color', [1, 0.9, 0.2], 'FontWeight', 'bold', 'FontSize', 11);
-    end
 end
+% Note: Silently skip ellipse overlay if no data available (not an error)
 end
 
 function rootPath = resolve_repo_path(targetFolder)
