@@ -21,7 +21,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 import yaml
 
 try:
@@ -61,7 +61,7 @@ DEFAULT_LEARNING_RATE_STAGE2 = 0.01  # Lower LR for fine-tuning
 # Default '0,2' selects dual RTX A6000 GPUs (skips RTX 3090 for homogeneous pairing)
 DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,2')
 DEFAULT_NUM_WORKERS = 32             # Half of 64 CPU cores for data loading
-DEFAULT_CACHE_ENABLED = True         # Cache images in RAM (requires ~10-20 GB)
+DEFAULT_CACHE_ENABLED = False        # Cache disabled by default
 
 # Checkpoint configuration
 CHECKPOINT_SAVE_PERIOD = 10          # Save checkpoint every N epochs
@@ -139,7 +139,7 @@ class YOLOTrainer:
         device: str = DEFAULT_GPU_DEVICES,
         patience: int = DEFAULT_PATIENCE_STAGE1,
         workers: int = DEFAULT_NUM_WORKERS,
-        cache: bool = DEFAULT_CACHE_ENABLED,
+        cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
         name: str = 'yolo11m_pose',
         **kwargs
     ) -> Dict[str, Any]:
@@ -154,7 +154,7 @@ class YOLOTrainer:
             device: GPU device(s) (e.g., '0' for single GPU, '0,1' for multi-GPU)
             patience: Early stopping patience
             workers: Number of dataloader workers
-            cache: Cache images in RAM/disk for faster training
+            cache: Cache images in RAM/disk for faster training (True, False, or 'disk')
             name: Experiment name
             **kwargs: Additional training arguments passed to YOLO
 
@@ -248,7 +248,7 @@ class YOLOTrainer:
         device: str = DEFAULT_GPU_DEVICES,
         patience: int = DEFAULT_PATIENCE_STAGE2,
         workers: int = DEFAULT_NUM_WORKERS,
-        cache: bool = DEFAULT_CACHE_ENABLED,
+        cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
         name: str = 'yolo11m_pose_stage2',
         **kwargs
@@ -264,7 +264,7 @@ class YOLOTrainer:
             device: GPU device(s)
             patience: Early stopping patience
             workers: Number of dataloader workers
-            cache: Cache images in RAM/disk
+            cache: Cache images in RAM/disk for faster training (True, False, or 'disk')
             lr0: Initial learning rate for fine-tuning
             name: Experiment name
             **kwargs: Additional training arguments
@@ -570,8 +570,8 @@ Examples:
     # Advanced training arguments
     parser.add_argument('--workers', type=int, default=DEFAULT_NUM_WORKERS,
                        help=f'Number of dataloader workers (default: {DEFAULT_NUM_WORKERS})')
-    parser.add_argument('--cache', type=str, default='True', choices=['True', 'False', 'disk'],
-                       help='Image caching: True (RAM), False (disabled), disk (disk cache) (default: True)')
+    parser.add_argument('--cache', type=str, default='False', choices=['True', 'False', 'disk'],
+                       help='Image caching: True (RAM), False (disabled), disk (disk cache) (default: False)')
     parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW', 'NAdam', 'RAdam', 'RMSProp', 'auto'],
                        help='Optimizer (default: auto - lets YOLO choose)')
     parser.add_argument('--cos-lr', action='store_true',
