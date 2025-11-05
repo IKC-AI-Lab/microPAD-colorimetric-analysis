@@ -18,6 +18,7 @@ PERFORMANCE TARGETS:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -34,26 +35,36 @@ except ImportError:
 # ============================================================================
 # TRAINING CONFIGURATION CONSTANTS
 # ============================================================================
+#
+# ZERO-CONFIGURATION TRAINING:
+# These defaults are optimized for dual RTX A6000 workstation (96 GB VRAM total).
+# Simply run: python train_yolo.py
+# No command-line arguments required for optimal performance!
+#
+# To customize: Override any parameter via CLI flags (see --help)
+# ============================================================================
 
 # Model configuration
 DEFAULT_MODEL = 'yolo11m-pose.pt'
 DEFAULT_IMAGE_SIZE = 960
 
-# Training hyperparameters
-DEFAULT_BATCH_SIZE = 64
-DEFAULT_EPOCHS_STAGE1 = 150
-DEFAULT_EPOCHS_STAGE2 = 80
-DEFAULT_PATIENCE_STAGE1 = 20
+# Training hyperparameters (optimized for dual A6000 workstation)
+DEFAULT_BATCH_SIZE = 64              # 32 per GPU on dual A6000 setup
+DEFAULT_EPOCHS_STAGE1 = 150          # Sufficient for convergence on synthetic data
+DEFAULT_EPOCHS_STAGE2 = 80           # Fine-tuning with early stopping
+DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
 DEFAULT_PATIENCE_STAGE2 = 15
-DEFAULT_LEARNING_RATE_STAGE2 = 0.01
+DEFAULT_LEARNING_RATE_STAGE2 = 0.01  # Lower LR for fine-tuning
 
-# Hardware configuration
-DEFAULT_GPU_DEVICES = '0,2'
-DEFAULT_NUM_WORKERS = 32
-DEFAULT_CACHE_ENABLED = True
+# Hardware configuration (optimized for 64-core CPU + dual RTX A6000)
+# GPU device selection: Use CUDA_VISIBLE_DEVICES environment variable or default
+# Default '0,2' selects dual RTX A6000 GPUs (skips RTX 3090 for homogeneous pairing)
+DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,2')
+DEFAULT_NUM_WORKERS = 32             # Half of 64 CPU cores for data loading
+DEFAULT_CACHE_ENABLED = True         # Cache images in RAM (requires ~10-20 GB)
 
 # Checkpoint configuration
-CHECKPOINT_SAVE_PERIOD = 10
+CHECKPOINT_SAVE_PERIOD = 10          # Save checkpoint every N epochs
 
 # Augmentation configuration
 AUG_HSV_HUE = 0.015
@@ -239,7 +250,7 @@ class YOLOTrainer:
         workers: int = DEFAULT_NUM_WORKERS,
         cache: bool = DEFAULT_CACHE_ENABLED,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
-        name: str = 'yolo11n_mixed',
+        name: str = 'yolo11m_pose_stage2',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 2: Fine-tuning with mixed data.
@@ -507,19 +518,25 @@ Examples:
   python train_yolo.py --stage 1  # Explicit stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
-  python train_yolo.py --stage 2 --weights models/yolo11m_micropad_pose.pt
+  python train_yolo.py --stage 2 --weights training_runs/yolo11m_pose/weights/best.pt
 
   # Validate model
-  python train_yolo.py --validate --weights models/yolo11m_micropad_pose.pt
+  python train_yolo.py --validate --weights training_runs/yolo11m_pose/weights/best.pt
 
   # Export to TFLite for mobile deployment
-  python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt
+  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt
+
+  # Export with FP32 precision (instead of default FP16)
+  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt --no-half
 
   # Export with INT8 quantization
-  python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt --formats tflite --int8
+  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt --int8
 
-  # Custom training parameters
-  python train_yolo.py --stage 1 --epochs 200 --batch 128
+  # Custom training parameters (adjust batch size, workers, cache strategy)
+  python train_yolo.py --stage 1 --epochs 200 --batch 128 --workers 16 --cache disk
+
+  # Advanced: custom optimizer and learning rate scheduler
+  python train_yolo.py --stage 1 --optimizer AdamW --cos-lr
         """
     )
 
@@ -550,12 +567,26 @@ Examples:
     parser.add_argument('--lr0', type=float,
                        help=f'Initial learning rate (default: {DEFAULT_LEARNING_RATE_STAGE2} for stage 2)')
 
+    # Advanced training arguments
+    parser.add_argument('--workers', type=int, default=DEFAULT_NUM_WORKERS,
+                       help=f'Number of dataloader workers (default: {DEFAULT_NUM_WORKERS})')
+    parser.add_argument('--cache', type=str, default='True', choices=['True', 'False', 'disk'],
+                       help='Image caching: True (RAM), False (disabled), disk (disk cache) (default: True)')
+    parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW', 'NAdam', 'RAdam', 'RMSProp', 'auto'],
+                       help='Optimizer (default: auto - lets YOLO choose)')
+    parser.add_argument('--cos-lr', action='store_true',
+                       help='Enable cosine learning rate scheduler')
+
     # Export arguments
     parser.add_argument('--formats', nargs='+', default=['tflite'],
                        choices=['tflite', 'torchscript', 'coreml'],
                        help='Export formats (default: tflite for Android)')
-    parser.add_argument('--half', action='store_true', default=True,
-                       help='Use FP16 for TFLite (default: True)')
+    export_precision = parser.add_mutually_exclusive_group()
+    export_precision.add_argument('--half', dest='half', action='store_true',
+                       help='Use FP16 precision for TFLite export (default)')
+    export_precision.add_argument('--no-half', dest='half', action='store_false',
+                       help='Use FP32 precision for TFLite export')
+    parser.set_defaults(half=True)
     parser.add_argument('--int8', action='store_true',
                        help='Use INT8 quantization for TFLite')
 
@@ -586,6 +617,21 @@ Examples:
             if args.data:
                 train_kwargs['data'] = args.data
 
+            # Advanced options
+            train_kwargs['workers'] = args.workers
+            # Convert cache string to appropriate type
+            if args.cache == 'True':
+                train_kwargs['cache'] = True
+            elif args.cache == 'False':
+                train_kwargs['cache'] = False
+            else:
+                train_kwargs['cache'] = args.cache  # 'disk'
+
+            if args.optimizer:
+                train_kwargs['optimizer'] = args.optimizer
+            if args.cos_lr:
+                train_kwargs['cos_lr'] = True
+
             trainer.train_stage1(
                 device=args.device,
                 imgsz=args.imgsz,
@@ -596,7 +642,7 @@ Examples:
             # Stage 2: Fine-tuning
             if not args.weights:
                 print("ERROR: --weights required for Stage 2 fine-tuning")
-                print("Example: --weights models/yolo11n_micropad_seg.pt")
+                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
                 sys.exit(1)
 
             train_kwargs = {}
@@ -611,6 +657,21 @@ Examples:
             if args.data:
                 train_kwargs['data'] = args.data
 
+            # Advanced options
+            train_kwargs['workers'] = args.workers
+            # Convert cache string to appropriate type
+            if args.cache == 'True':
+                train_kwargs['cache'] = True
+            elif args.cache == 'False':
+                train_kwargs['cache'] = False
+            else:
+                train_kwargs['cache'] = args.cache  # 'disk'
+
+            if args.optimizer:
+                train_kwargs['optimizer'] = args.optimizer
+            if args.cos_lr:
+                train_kwargs['cos_lr'] = True
+
             trainer.train_stage2(
                 weights=args.weights,
                 device=args.device,
@@ -622,7 +683,7 @@ Examples:
             # Validation
             if not args.weights:
                 print("ERROR: --weights required for validation")
-                print("Example: --weights models/yolo11n_micropad_seg.pt")
+                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
                 sys.exit(1)
 
             trainer.validate(
@@ -636,7 +697,7 @@ Examples:
             # Export
             if not args.weights:
                 print("ERROR: --weights required for export")
-                print("Example: --weights models/yolo11n_micropad_seg.pt")
+                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
                 sys.exit(1)
 
             trainer.export(

@@ -7,7 +7,6 @@ val: val.txt
 nc: 1
 names:
 - concentration_zone
-
-# Keypoint configuration for YOLOv11-pose
-kpt_shape: [4, 3]
-flip_idx: [1, 0, 3, 2]
+kpt_shape:
+- 4
+- 2

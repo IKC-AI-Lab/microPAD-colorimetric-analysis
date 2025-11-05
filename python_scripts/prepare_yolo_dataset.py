@@ -359,7 +359,8 @@ def create_yolo_config(config_name: str, description: str) -> Path:
         'train': 'train.txt',
         'val': 'val.txt',
         'nc': 1,
-        'names': ['concentration_zone']
+        'names': ['concentration_zone'],
+        'kpt_shape': [4, 2]  # 4 keypoints (TL, TR, BR, BL), 2 dimensions each (x, y)
     }
 
     config_path = CONFIGS_DIR / f"{config_name}.yaml"
