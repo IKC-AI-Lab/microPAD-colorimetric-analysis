@@ -74,7 +74,7 @@ function cut_micropads(varargin)
     DEFAULT_GAP_PERCENT = 0.19;  % 19% gap between regions
 
     % === AI DETECTION DEFAULTS ===
-    DEFAULT_USE_AI_DETECTION = true;
+    DEFAULT_USE_AI_DETECTION = false;
     DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_seg.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
@@ -83,8 +83,7 @@ function cut_micropads(varargin)
     %   Windows: 'C:\Users\YourName\miniconda3\envs\YourPythonEnv\python.exe'
     %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
-    DEFAULT_PYTHON_PATH = '';
-
+    DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
     DEFAULT_INFERENCE_SIZE = 1280;
 
     % === ROTATION CONSTANTS ===
@@ -415,33 +414,23 @@ function [success, fig, memory] = processOneImage(imageName, outputDir, cfg, fig
         return;
     end
 
-    % Get initial polygon positions (memory or default, NOT AI yet)
+    % Get initial polygon positions and rotation (memory or default, NOT AI yet)
     [imageHeight, imageWidth, ~] = size(img);
-    [initialPolygons, initialSource] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
-    useMemoryRotation = strcmp(initialSource, 'memory');
+    [initialPolygons, initialRotation, ~] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
 
-    if useMemoryRotation && memory.hasSettings
-        rotationAngle = memory.rotation;
-        if isMultipleOfNinety(rotationAngle, cfg.rotation.angleTolerance)
-            [initialPolygons, ~] = rotatePolygonsDiscrete(initialPolygons, [imageHeight, imageWidth], rotationAngle);
-            % Normalize to horizontal rectangles after rotation
-            initialPolygons = normalizePolygonsForDisplay(initialPolygons, rotationAngle, ...
-                                                          [imageHeight, imageWidth], [imageHeight, imageWidth], ...
-                                                          cfg.rotation.angleTolerance);
-        end
-    end
+    % Memory polygons are exact display coordinates - use them directly
     initialPolygons = sortPolygonArrayByX(initialPolygons);
 
-    % Display GUI immediately with memory/default polygons
-    [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory, useMemoryRotation);
+    % Display GUI immediately with memory/default polygons and rotation
+    [polygonParams, displayPolygons, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation);
 
     % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
     % (Implementation in Phase 2.3)
 
     if ~isempty(polygonParams)
         saveCroppedRegions(img, imageName, polygonParams, outputDir, cfg, rotation);
-        % Update memory with current polygons and rotation
-        memory = updateMemory(memory, polygonParams, rotation, [imageHeight, imageWidth]);
+        % Update memory with exact display polygon shapes and rotation
+        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth]);
         success = true;
     end
 end
@@ -519,24 +508,20 @@ end
 %% Interactive UI
 %% -------------------------------------------------------------------------
 
-function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, memory, useMemoryRotation)
+function [polygonParams, displayPolygons, fig, rotation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation)
     % Show interactive GUI with editing and preview modes
     polygonParams = [];
+    displayPolygons = [];
     rotation = 0;
-
-    if nargin < 8
-        useMemoryRotation = false;
-    end
 
     % Create figure if needed
     if isempty(fig) || ~isvalid(fig)
         fig = createFigure(imageName, phoneName, cfg);
     end
 
-    % Initialize rotation from memory if available
-    initialRotation = 0;
-    if useMemoryRotation && memory.hasSettings
-        initialRotation = memory.rotation;
+    % Use rotation from memory (or 0 if no memory)
+    if nargin < 7
+        initialRotation = 0;
     end
 
     while true
@@ -585,6 +570,7 @@ function [polygonParams, fig, rotation] = showInteractiveGUI(img, imageName, pho
                 switch prevAction
                     case 'accept'
                         polygonParams = savedBasePolygons;
+                        displayPolygons = savedDisplayPolygons;
                         rotation = savedRotation;
                         return;
                     case {'skip', 'stop'}
@@ -748,7 +734,6 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Initialize zoom state
     guiData.zoomLevel = 0;  % 0 = full image, 1 = single micropad size
-    guiData.autoZoomAvailable = false;
     guiData.autoZoomBounds = [];
 
     % Title and path
@@ -1713,10 +1698,6 @@ function applyAutoZoom(fig, guiData, cfg)
         return;
     end
 
-    if ~isfield(guiData, 'autoZoomAvailable') || ~guiData.autoZoomAvailable
-        return;
-    end
-
     % Calculate bounding box of all polygons
     [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
 
@@ -1758,8 +1739,15 @@ function applyZoomToAxes(guiData, cfg)
         if isfield(guiData, 'autoZoomBounds') && ~isempty(guiData.autoZoomBounds)
             autoZoomBounds = guiData.autoZoomBounds;
         else
-            % If no auto-zoom bounds calculated yet, use center single micropad estimate
-            [autoZoomBounds] = estimateSingleMicropadBounds(guiData, cfg);
+            % Calculate bounds from polygons if they exist
+            [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+            if ~isempty(xmin)
+                % Use actual polygon bounds
+                autoZoomBounds = [xmin, xmax, ymin, ymax];
+            else
+                % No polygons yet - use center estimate
+                [autoZoomBounds] = estimateSingleMicropadBounds(guiData, cfg);
+            end
             guiData.autoZoomBounds = autoZoomBounds;
         end
 
@@ -2213,8 +2201,16 @@ function rerunAIDetection(fig, cfg)
         return;
     end
 
-    if ~cfg.useAIDetection
-        warning('cut_micropads:ai_disabled', 'AI detection is disabled');
+    % Validate AI detection prerequisites even if auto-detection is disabled
+    if ~isfile(cfg.pythonScriptPath)
+        warning('cut_micropads:script_missing', ...
+            'Python script not found: %s\nCannot run AI detection.', cfg.pythonScriptPath);
+        return;
+    end
+
+    if ~isfile(cfg.detectionModel)
+        warning('cut_micropads:model_missing', ...
+            'Model not found: %s\nCannot run AI detection.', cfg.detectionModel);
         return;
     end
 
@@ -2922,28 +2918,31 @@ function memory = initializeMemory()
     % Initialize empty memory structure
     memory = struct();
     memory.hasSettings = false;
-    memory.polygonPositions = [];
-    memory.rotation = 0;
+    memory.displayPolygons = [];  % Exact display coordinates (preserves quadrilateral shapes)
+    memory.rotation = 0;          % Image rotation angle
     memory.imageSize = [];
 end
 
-function memory = updateMemory(memory, polygonParams, rotation, imageSize)
-    % Update memory with current settings
+function memory = updateMemory(memory, displayPolygons, rotation, imageSize)
+    % Update memory with exact display polygon coordinates and rotation
+    % These preserve the exact quadrilateral shapes and rotation as seen by the user
     memory.hasSettings = true;
-    memory.polygonPositions = polygonParams;
+    memory.displayPolygons = displayPolygons;
     memory.rotation = rotation;
     memory.imageSize = imageSize;
 end
 
-function [initialPolygons, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
-    % Get initial polygons with progressive AI detection workflow
+function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
+    % Get initial polygons and rotation with progressive AI detection workflow
     % Priority: memory (if available) -> default -> AI updates later
 
-    % CHANGE: Check memory FIRST (even when AI is enabled)
-    if memory.hasSettings && ~isempty(memory.polygonPositions) && ~isempty(memory.imageSize)
-        scaledPolygons = scalePolygonsForImageSize(memory.polygonPositions, memory.imageSize, imageSize);
+    % Check memory FIRST (even when AI is enabled)
+    if memory.hasSettings && ~isempty(memory.displayPolygons) && ~isempty(memory.imageSize)
+        % Use exact display polygons and rotation from memory
+        scaledPolygons = scalePolygonsForImageSize(memory.displayPolygons, memory.imageSize, imageSize);
         initialPolygons = scaledPolygons;
-        fprintf('  Using polygon positions from memory (AI will update if enabled)\n');
+        rotation = memory.rotation;
+        fprintf('  Using exact polygon shapes and rotation from memory (AI will update if enabled)\n');
         source = 'memory';
         return;
     end
@@ -2952,6 +2951,7 @@ function [initialPolygons, source] = getInitialPolygonsWithMemory(img, cfg, memo
     [imageHeight, imageWidth, ~] = size(img);
     fprintf('  Using default geometry (AI will update if enabled)\n');
     initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+    rotation = 0;
     source = 'default';
 
     % NOTE: AI detection will run asynchronously after GUI displays
@@ -3010,7 +3010,12 @@ function runDeferredAIDetection(fig, cfg)
         return;
     end
 
-    if ~cfg.useAIDetection || ~strcmp(guiData.mode, 'editing')
+    if ~strcmp(guiData.mode, 'editing')
+        return;
+    end
+
+    % Validate AI detection prerequisites (allows manual detection even if auto-detection disabled)
+    if ~isfile(cfg.pythonScriptPath) || ~isfile(cfg.detectionModel)
         return;
     end
 
@@ -3145,15 +3150,10 @@ function pollDetectionStatus(fig, cfg)
         return;
     end
 
-    % Update auto-zoom state based on detection result (with race condition guard)
+    % Clear cached zoom bounds after detection (with race condition guard)
     try
-        if detectionSucceeded
-            guiData.autoZoomAvailable = true;
-            guiData.autoZoomBounds = [];
-        else
-            guiData.autoZoomAvailable = false;
-            guiData.autoZoomBounds = [];
-        end
+        % Force recalculation of zoom bounds from current polygon state
+        guiData.autoZoomBounds = [];
 
         % Save state to figure
         set(fig, 'UserData', guiData);
