@@ -61,7 +61,7 @@ DEFAULT_LEARNING_RATE_STAGE2 = 0.01  # Lower LR for fine-tuning
 # Default '0,2' selects dual RTX A6000 GPUs (skips RTX 3090 for homogeneous pairing)
 DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,2')
 DEFAULT_NUM_WORKERS = 32             # Half of 64 CPU cores for data loading
-DEFAULT_CACHE_ENABLED = False        # Cache disabled by default
+DEFAULT_CACHE_ENABLED = 'disk'       # Disk cache for deterministic training
 
 # Checkpoint configuration
 CHECKPOINT_SAVE_PERIOD = 10          # Save checkpoint every N epochs
@@ -570,8 +570,8 @@ Examples:
     # Advanced training arguments
     parser.add_argument('--workers', type=int, default=DEFAULT_NUM_WORKERS,
                        help=f'Number of dataloader workers (default: {DEFAULT_NUM_WORKERS})')
-    parser.add_argument('--cache', type=str, default='False', choices=['True', 'False', 'disk'],
-                       help='Image caching: True (RAM), False (disabled), disk (disk cache) (default: False)')
+    parser.add_argument('--cache', type=str, default=DEFAULT_CACHE_ENABLED, choices=['True', 'False', 'disk'],
+                       help=f'Image caching: True (RAM), False (disabled), disk (disk cache) (default: {DEFAULT_CACHE_ENABLED})')
     parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW', 'NAdam', 'RAdam', 'RMSProp', 'auto'],
                        help='Optimizer (default: auto - lets YOLO choose)')
     parser.add_argument('--cos-lr', action='store_true',

@@ -84,7 +84,7 @@ function cut_micropads(varargin)
     %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
-    DEFAULT_INFERENCE_SIZE = 1280;
+    DEFAULT_INFERENCE_SIZE = 960;
 
     % === ROTATION CONSTANTS ===
     ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations
