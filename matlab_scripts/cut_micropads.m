@@ -1956,8 +1956,10 @@ function clamped = clampPolygonToImage(poly, imageSize)
     clamped(:, 2) = max(1, min(height, clamped(:, 2)));
 end
 
-function alignedQuads = normalizePolygonsForDisplay(detectedQuads, totalRotation, imgSize, baseImgSize, angleTolerance)
-    % Convert YOLO detections into axis-aligned horizontal rectangles for display
+function sortedQuads = normalizePolygonsForDisplay(detectedQuads, totalRotation, imgSize, baseImgSize, angleTolerance)
+    % Sort YOLO-detected quadrilaterals by base-frame X coordinate for stable labeling
+    %
+    % IMPORTANT: Preserves actual quadrilateral geometry (no conversion to rectangles)
     %
     % Inputs:
     %   detectedQuads - YOLO output [N x 4 x 2] in currentImg (rotated frame)
@@ -1967,36 +1969,24 @@ function alignedQuads = normalizePolygonsForDisplay(detectedQuads, totalRotation
     %   angleTolerance - tolerance for rotation angle comparisons
     %
     % Outputs:
-    %   alignedQuads - [N x 4 x 2] axis-aligned horizontal rectangles
+    %   sortedQuads - [N x 4 x 2] quadrilaterals sorted left-to-right in base frame
 
     if isempty(detectedQuads)
-        alignedQuads = detectedQuads;
+        sortedQuads = detectedQuads;
         return;
     end
 
-    numQuads = size(detectedQuads, 1);
-    alignedQuads = zeros(size(detectedQuads));
+    % Compute centroids in current frame
+    centroids = squeeze(mean(detectedQuads, 2));  % [N x 2]
 
-    % Step 1: Compute axis-aligned bounding boxes directly in currentImg frame
-    for i = 1:numQuads
-        quad = squeeze(detectedQuads(i, :, :));  % [4 x 2] vertices
-        quadX = quad(:, 1);
-        quadY = quad(:, 2);
-
-        xMin = min(quadX);
-        xMax = max(quadX);
-        yMin = min(quadY);
-        yMax = max(quadY);
-
-        % Build horizontal rectangle (clockwise from TL)
-        alignedQuads(i, :, :) = [xMin, yMin; xMax, yMin; xMax, yMax; xMin, yMax];
-    end
-
-    % Step 2: Sort by base-frame X coordinate for stable left-to-right labeling
-    centroids = squeeze(mean(alignedQuads, 2));  % [N x 2]
+    % Transform centroids to base frame for stable sorting
     baseCentroids = inverseRotatePoints(centroids, imgSize, baseImgSize, totalRotation, angleTolerance);
-    [~, sortIdx] = sort(baseCentroids(:, 1));  % Sort by base-frame X
-    alignedQuads = alignedQuads(sortIdx, :, :);
+
+    % Sort by base-frame X coordinate (left-to-right ordering)
+    [~, sortIdx] = sort(baseCentroids(:, 1));
+
+    % Apply sort to preserve actual quadrilateral vertices
+    sortedQuads = detectedQuads(sortIdx, :, :);
 end
 
 function updatePolygonLabels(polygons, labelHandles)
