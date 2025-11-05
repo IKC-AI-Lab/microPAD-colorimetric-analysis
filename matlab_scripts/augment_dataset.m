@@ -74,8 +74,8 @@ function augment_dataset(varargin)
     COORDINATE_FILENAME = 'coordinates.txt';
     CONCENTRATION_PREFIX = 'con_';
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
-    JPEG_QUALITY = 95;
-    MIN_VALID_POLYGON_AREA = 100;
+    JPEG_QUALITY = 100;
+    MIN_VALID_POLYGON_AREA = 100;  % square pixels
 
     % Camera/transformation parameters
     CAMERA = struct( ...
@@ -86,7 +86,7 @@ function augment_dataset(varargin)
         'coverageCenter', 0.97, ...
         'coverageOffcenter', 0.90);
 
-    ROTATION_RANGE = [0, 360];
+    ROTATION_RANGE = [0, 360];  % degrees
 
     % Background generation parameters
     TEXTURE = struct( ...
@@ -94,51 +94,51 @@ function augment_dataset(varargin)
         'speckleLowFreq', 20, ...
         'uniformBaseRGB', [220, 218, 215], ...
         'uniformVariation', 15, ...
-        'uniformNoiseRange', [10, 25], ...
+        'uniformNoiseRange', [10, 25], ...  % uint8 intensity units
         'poolSize', 16, ...
-        'poolRefreshInterval', 25, ...
-        'poolShiftPixels', 48, ...
+        'poolRefreshInterval', 25, ...  % images before texture refresh
+        'poolShiftPixels', 48, ...  % pixels
         'poolScaleRange', [0.9, 1.1], ...
         'poolFlipProbability', 0.15);
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
-        'unitMaskSize', 64, ...          % Unit-square resolution for artifact masks
+        'unitMaskSize', 64, ...  % pixels
         'countRange', [5, 40], ...
-        'sizeRangePercent', [0.01, 0.75], ...
-        'minSizePixels', 3, ...
-        'overhangMargin', 0.5, ...
-        'lineWidthRatio', 0.02, ...
-        'lineRotationPadding', 10, ...
-        'ellipseRadiusARange', [0.4, 0.7], ...
-        'ellipseRadiusBRange', [0.3, 0.6], ...
-        'rectangleSizeRange', [0.5, 0.9], ...
-        'quadSizeRange', [0.5, 0.9], ...
-        'quadPerturbation', 0.15, ...
-        'triangleSizeRange', [0.6, 0.9], ...
-        'lineIntensityRange', [-80, -40], ...
-        'blobDarkIntensityRange', [-60, -30], ...
-        'blobLightIntensityRange', [20, 50]);
+        'sizeRangePercent', [0.01, 0.75], ...  % fraction of background dimensions
+        'minSizePixels', 3, ...  % pixels
+        'overhangMargin', 0.5, ...  % fraction of artifact size
+        'lineWidthRatio', 0.02, ...  % fraction of artifact size
+        'lineRotationPadding', 10, ...  % pixels
+        'ellipseRadiusARange', [0.4, 0.7], ...  % fraction of unitMaskSize
+        'ellipseRadiusBRange', [0.3, 0.6], ...  % fraction of unitMaskSize
+        'rectangleSizeRange', [0.5, 0.9], ...  % fraction of unitMaskSize
+        'quadSizeRange', [0.5, 0.9], ...  % fraction of unitMaskSize
+        'quadPerturbation', 0.15, ...  % fraction of quad size
+        'triangleSizeRange', [0.6, 0.9], ...  % fraction of unitMaskSize
+        'lineIntensityRange', [-80, -40], ...  % uint8 intensity units
+        'blobDarkIntensityRange', [-60, -30], ...  % uint8 intensity units
+        'blobLightIntensityRange', [20, 50]);  % uint8 intensity units
 
     % Polygon placement parameters
     PLACEMENT = struct( ...
-        'margin', 50, ...
-        'minSpacing', 30, ...
-        'maxAttempts', 50);
+        'margin', 50, ...  % pixels from edge
+        'minSpacing', 30, ...  % pixels between regions
+        'maxOverlapRetries', 5);
 
     % Distractor polygon parameters (synthetic look-alikes)
     DISTRACTOR_POLYGONS = struct( ...
         'enabled', true, ...
         'minCount', 1, ...
         'maxCount', 10, ...
-        'sizeScaleRange', [0.5, 1.5], ...            % Uniform random scale applied to each distractor
+        'sizeScaleRange', [0.5, 1.5], ...  % fraction of original polygon size
         'maxPlacementAttempts', 30, ...
-        'brightnessOffsetRange', [-20, 20], ...      % Applied in intensity space (uint8 scale)
+        'brightnessOffsetRange', [-20, 20], ...  % uint8 intensity units
         'contrastScaleRange', [0.9, 1.15], ...
-        'noiseStd', 6, ...                           % Gaussian noise strength in uint8 units
-        'typeWeights', [1, 1, 1], ...                % Sampling weights for [outline, solid, textured]
-        'outlineWidthRange', [1.5, 4.0], ...         % Outline stroke thickness in pixels
-        'textureGainRange', [0.06, 0.18], ...        % Strength of texture modulation (normalized)
+        'noiseStd', 6, ...  % uint8 intensity units
+        'typeWeights', [1, 1, 1], ...
+        'outlineWidthRange', [1.5, 4.0], ...  % pixels
+        'textureGainRange', [0.06, 0.18], ...  % normalized modulation strength
         'textureSurfaceTypes', [1, 2, 3, 4]);        % Background texture primitives to reuse
 
     %% =====================================================================
@@ -246,8 +246,7 @@ function augment_dataset(varargin)
         error('augmentDataset:missingCoords', 'Stage 2 coordinates folder not found: %s', cfg.paths.stage2Coords);
     end
     if ~isfolder(cfg.paths.ellipseCoords)
-        warning('augmentDataset:missingEllipse', ...
-                'Ellipse coordinates folder not found: %s\nEllipse processing will be skipped.', ...
+        fprintf('Note: Elliptical regions folder not found (%s) - ellipse processing will be skipped\n', ...
                 cfg.paths.ellipseCoords);
     end
 
@@ -358,7 +357,10 @@ function augment_phone(phoneName, cfg)
     stage3PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage3Output, phoneName);
     ensure_folder(stage1PhoneOut);
     ensure_folder(stage2PhoneOut);
-    ensure_folder(stage3PhoneOut);
+    % Only create stage3 output folder if we have ellipse data
+    if hasEllipses
+        ensure_folder(stage3PhoneOut);
+    end
 
     % Get unique paper names
     paperNames = keys(paperGroups);
@@ -513,7 +515,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{max(s3Count, numel(stage3Coords) * 2)} = [];
+                    stage3Coords{s3Count * 2} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -668,31 +670,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         bbox = polygonBboxes{i};
         totalPolygonArea = totalPolygonArea + (bbox.width * bbox.height);
     end
-    availableArea = (bgWidth - 2*cfg.placement.margin) * (bgHeight - 2*cfg.placement.margin);
-    densityRatio = totalPolygonArea / max(1, availableArea);
-
-    % Adaptive spacing: reduce spacing requirement for high-density scenarios
-    adaptiveSpacing = cfg.placement.minSpacing;
-    adaptiveAttempts = cfg.placement.maxAttempts;
-    if densityRatio > 0.4
-        % High density: relax spacing and increase attempts
-        adaptiveSpacing = max(5, cfg.placement.minSpacing * (1 - densityRatio));
-        adaptiveAttempts = cfg.placement.maxAttempts * 2;
-    end
-
     randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
                                                      bgWidth, bgHeight, ...
                                                      cfg.placement.margin, ...
-                                                     adaptiveSpacing, ...
-                                                     adaptiveAttempts);
-
-    if isempty(randomPositions)
-        % Placement impossible - log detailed diagnostics and skip
-        warning('augmentDataset:placementImpossible', ...
-                '  ! Placement impossible for %s aug %d: %d polygons, %.1f%% density (%.0f px² / %.0f px²). Skipping.', ...
-                paperBase, augIdx, validCount, densityRatio*100, totalPolygonArea, availableArea);
-        return;
-    end
+                                                     cfg.placement.minSpacing, ...
+                                                     cfg.placement.maxOverlapRetries);
 
     % Generate realistic background with final size
     background = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
@@ -866,7 +848,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{max(s3Count, numel(stage3Coords) * 2)} = [];
+                    stage3Coords{s3Count * 2} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -969,8 +951,6 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
     bboxHeight = maxY - minY + 1;
 
     relVerts = vertices - [minX - 1, minY - 1];
-    relVerts(:,1) = min(max(relVerts(:,1), 1), bboxWidth);
-    relVerts(:,2) = min(max(relVerts(:,2), 1), bboxHeight);
 
     mask = poly2mask(relVerts(:,1), relVerts(:,2), bboxHeight, bboxWidth);
     if ~any(mask(:))
@@ -1320,6 +1300,11 @@ end
 
 function jittered = jitter_polygon_patch(patch, distractorCfg, mask)
     % Apply lightweight photometric jitter while preserving mask boundaries.
+    %
+    % Inputs:
+    %   patch - RGB image (uint8)
+    %   distractorCfg - Configuration struct
+    %   mask - (optional) Binary mask, defaults to any(patch > 0, 3)
 
     if isempty(patch)
         jittered = patch;
@@ -1530,11 +1515,6 @@ end
 
 function bbox = ellipse_bounding_box(ellipse)
     % Compute axis-aligned bounding box for rotated ellipse
-    validateattributes(ellipse.semiMajor, {'numeric'}, {'scalar', 'positive', 'finite'}, ...
-        'ellipse_bounding_box', 'ellipse.semiMajor');
-    validateattributes(ellipse.semiMinor, {'numeric'}, {'scalar', 'positive', 'finite'}, ...
-        'ellipse_bounding_box', 'ellipse.semiMinor');
-
     theta = deg2rad(ellipse.rotation);
     a = ellipse.semiMajor;
     b = ellipse.semiMinor;
@@ -1598,6 +1578,17 @@ function texture = borrow_background_texture(surfaceType, width, height, texture
     persistent poolState
 
     if isempty(poolState) || texture_pool_config_changed(poolState, width, height, textureCfg)
+        if ~isempty(poolState)
+            oldWidth = poolState.width;
+            oldHeight = poolState.height;
+            widthDiff = abs(width - oldWidth) / max(oldWidth, 1);
+            heightDiff = abs(height - oldHeight) / max(oldHeight, 1);
+            if widthDiff > 0.01 || heightDiff > 0.01
+                warning('augment_dataset:poolDimensionChange', ...
+                    'Background dimensions changed from %dx%d to %dx%d. Texture pool reset. Run ''clear functions'' to avoid this warning.', ...
+                    oldWidth, oldHeight, width, height);
+            end
+        end
         poolState = initialize_background_texture_pool(width, height, textureCfg);
     end
 
@@ -2494,6 +2485,11 @@ function write_stage3_coordinates(coords, outputDir, filename)
     % Atomically write stage 3 coordinates (dedup by image+concentration+replicate)
     % Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
 
+    % Skip if no coordinates to write
+    if isempty(coords)
+        return;
+    end
+
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
         mkdir(coordFolder);
@@ -2691,8 +2687,8 @@ function entries = read_ellipse_coordinates(coordPath)
     end
 
     if skippedCount > 0
-        warning('augmentDataset:invalidCoords', ...
-                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
+        fprintf('  Note: Skipped %d invalid ellipse coordinate entries in %s (missing or invalid values)\n', ...
+                skippedCount, coordPath);
     end
 
     entries = entries(1:count);
@@ -2764,149 +2760,59 @@ function valid = is_valid_polygon(vertices, minArea)
     valid = area > minArea;
 end
 
-function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxAttempts)
-    % Place polygons with best-candidate sampling to maximize spacing variety.
+function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
+    % Place polygons randomly with collision avoidance.
+    % Complexity: O(numPolygons^2 * maxRetries) - acceptable for small region counts (<20)
 
     numPolygons = numel(polygonBboxes);
     positions = cell(numPolygons, 1);
-
-    % Sort by area (largest first) to reduce rejection cascades
-    areas = zeros(numPolygons, 1);
-    for i = 1:numPolygons
-        areas(i) = polygonBboxes{i}.width * polygonBboxes{i}.height;
-    end
-    [~, sortOrder] = sort(areas, 'descend');
-
-    % Spatial grid for fast neighbor lookup
-    cellSize = max(50, minSpacing);
-    gridWidth = ceil(bgWidth / cellSize);
-    gridHeight = ceil(bgHeight / cellSize);
-    grid = cell(gridHeight, gridWidth);
-
     placedBboxes = zeros(numPolygons, 4);
-    bgDiagonal = hypot(bgWidth, bgHeight);
 
-    poissonCandidates = generate_poisson_disk_points(bgWidth, bgHeight, margin, minSpacing);
-    poissonUsed = false(size(poissonCandidates, 1), 1);
-
-    for idx = 1:numPolygons
-        i = sortOrder(idx);
+    for i = 1:numPolygons
         bbox = polygonBboxes{i};
+        placed = false;
+        lastCandidate = [];
 
-        bestPos = [];
-        bestClearance = -inf;
-        bestCandidateIdx = 0;
+        for attempt = 1:maxRetries
+            [x, y] = random_top_left(bbox, margin, bgWidth, bgHeight);
 
-        attempts = 0;
-        while attempts < maxAttempts
-            attempts = attempts + 1;
-
-            [xCandidate, yCandidate, candidateIdx, fits] = choose_candidate(bbox);
-            if ~fits
+            if ~isfinite(x) || ~isfinite(y)
+                lastCandidate = [x, y];
                 continue;
             end
 
-            [canPlace, clearance] = evaluate_candidate(xCandidate, yCandidate, bbox, bgDiagonal);
-            if ~canPlace
-                continue;
-            end
+            candidateBbox = [x, y, x + bbox.width, y + bbox.height];
 
-            if clearance > bestClearance
-                bestClearance = clearance;
-                bestPos = [xCandidate, yCandidate];
-                bestCandidateIdx = candidateIdx;
-
-                % Early stop if clearance already exceeds spacing target
-                if clearance >= minSpacing
+            % Check overlap with already placed polygons
+            hasOverlap = false;
+            for j = 1:(i-1)
+                if bboxes_overlap(candidateBbox, placedBboxes(j, :), minSpacing)
+                    hasOverlap = true;
                     break;
                 end
             end
-        end
 
-        if isempty(bestPos)
-            positions = [];
-            return;
-        end
-
-        commit_candidate(bestPos(1), bestPos(2), bbox, i);
-        if bestCandidateIdx > 0
-            poissonUsed(bestCandidateIdx) = true;
-        end
-    end
-
-    function [x, y, candidateIdx, fits] = choose_candidate(bboxStruct)
-        available = find(~poissonUsed);
-        if ~isempty(available)
-            candidateIdx = available(randi(numel(available)));
-            center = poissonCandidates(candidateIdx, :);
-            [x, y, fits] = poisson_center_to_top_left(center, bboxStruct, margin, bgWidth, bgHeight);
-            if fits
-                return;
+            if ~hasOverlap
+                positions{i} = struct('x', x, 'y', y);
+                placedBboxes(i, :) = candidateBbox;
+                placed = true;
+                break;
             end
+
+            lastCandidate = [x, y];
         end
 
-        candidateIdx = 0;
-        [x, y] = random_top_left(bboxStruct, margin, bgWidth, bgHeight);
-        fits = isfinite(x) && isfinite(y);
-    end
-
-    function [canPlace, clearance] = evaluate_candidate(x, y, bboxStruct, maxClearance)
-        candidateBbox = [x, y, x + bboxStruct.width, y + bboxStruct.height];
-
-        minCellX = max(1, floor(x / cellSize));
-        maxCellX = min(gridWidth, ceil((x + bboxStruct.width) / cellSize));
-        minCellY = max(1, floor(y / cellSize));
-        maxCellY = min(gridHeight, ceil((y + bboxStruct.height) / cellSize));
-
-        cellCount = 0;
-        maxCells = (maxCellY - minCellY + 1) * (maxCellX - minCellX + 1);
-        tempCells = cell(maxCells, 1);
-
-        for cy = minCellY:maxCellY
-            for cx = minCellX:maxCellX
-                if ~isempty(grid{cy, cx})
-                    cellCount = cellCount + 1;
-                    tempCells{cellCount} = grid{cy, cx};
-                end
+        % If all retries failed, force placement anyway
+        if ~placed
+            if isempty(lastCandidate) || any(~isfinite(lastCandidate))
+                x = max(0, (bgWidth - bbox.width) / 2);
+                y = max(0, (bgHeight - bbox.height) / 2);
+            else
+                x = lastCandidate(1);
+                y = lastCandidate(2);
             end
-        end
-
-        if cellCount > 0
-            neighborIndices = [tempCells{1:cellCount}];
-            neighborIndices = unique(neighborIndices);
-        else
-            neighborIndices = [];
-        end
-
-        clearance = maxClearance;
-        for j = neighborIndices
-            if bboxes_overlap(candidateBbox, placedBboxes(j,:), minSpacing)
-                canPlace = false;
-                clearance = -inf;
-                return;
-            end
-            gap = bbox_clearance(candidateBbox, placedBboxes(j,:));
-            clearance = min(clearance, gap);
-        end
-
-        canPlace = true;
-    end
-
-    function commit_candidate(x, y, bboxStruct, index)
-        candidateBbox = [x, y, x + bboxStruct.width, y + bboxStruct.height];
-
-        positions{index} = struct('x', x, 'y', y);
-        placedBboxes(index, :) = candidateBbox;
-
-        minCellX = max(1, floor(x / cellSize));
-        maxCellX = min(gridWidth, ceil((x + bboxStruct.width) / cellSize));
-        minCellY = max(1, floor(y / cellSize));
-        maxCellY = min(gridHeight, ceil((y + bboxStruct.height) / cellSize));
-
-        for cy = minCellY:maxCellY
-            for cx = minCellX:maxCellX
-                grid{cy, cx}(end+1) = index;
-            end
+            positions{i} = struct('x', x, 'y', y);
+            placedBboxes(i, :) = [x, y, x + bbox.width, y + bbox.height];
         end
     end
 end
@@ -2927,143 +2833,6 @@ function [x, y] = random_top_left(bboxStruct, margin, widthVal, heightVal)
         y = max(0, (heightVal - bboxStruct.height) / 2);
     end
     y = min(y, heightVal - bboxStruct.height);
-end
-
-function [x, y, isValid] = poisson_center_to_top_left(centerPt, bboxStruct, marginVal, widthVal, heightVal)
-    if widthVal <= 0 || heightVal <= 0
-        isValid = false;
-        x = 0; y = 0;
-        return;
-    end
-
-    x = centerPt(1) - bboxStruct.width / 2;
-    y = centerPt(2) - bboxStruct.height / 2;
-
-    minX = marginVal;
-    maxX = widthVal - marginVal - bboxStruct.width;
-    minY = marginVal;
-    maxY = heightVal - marginVal - bboxStruct.height;
-
-    if maxX < minX || maxY < minY
-        isValid = false;
-        return;
-    end
-
-    x = max(minX, min(maxX, x));
-    y = max(minY, min(maxY, y));
-    isValid = isfinite(x) && isfinite(y);
-end
-
-function gap = bbox_clearance(bbox1, bbox2)
-    dx = max(0, max(bbox1(1) - bbox2(3), bbox2(1) - bbox1(3)));
-    dy = max(0, max(bbox1(2) - bbox2(4), bbox2(2) - bbox1(4)));
-    gap = hypot(double(dx), double(dy));
-end
-
-function points = generate_poisson_disk_points(width, height, margin, radius)
-    % Generate Poisson-disk sample points within margins
-    if radius <= 0
-        points = [];
-        return;
-    end
-
-    usableWidth = max(0, width - 2 * margin);
-    usableHeight = max(0, height - 2 * margin);
-    if usableWidth <= 0 || usableHeight <= 0
-        points = [];
-        return;
-    end
-
-    cellSize = radius / sqrt(2);
-    gridWidth = max(1, ceil(usableWidth / cellSize));
-    gridHeight = max(1, ceil(usableHeight / cellSize));
-    grid = cell(gridHeight, gridWidth);
-
-    points = zeros(0, 2);
-    active = zeros(0, 2);
-    k = 25;
-
-    initialPoint = [margin + rand() * usableWidth, margin + rand() * usableHeight];
-    points(1, :) = initialPoint;
-    active(1, :) = initialPoint;
-    [initCx, initCy] = grid_coords(initialPoint, margin, cellSize, gridWidth, gridHeight);
-    grid{initCy, initCx} = 1;
-
-    maxIterations = 10000;
-    iterCount = 0;
-
-    while ~isempty(active)
-        iterCount = iterCount + 1;
-        if iterCount > maxIterations
-            warning('augment_dataset:poissonIterLimit', ...
-                'Poisson disk sampling exceeded %d iterations. Returning %d points.', ...
-                maxIterations, size(points, 1));
-            break;
-        end
-
-        activeIdx = randi(size(active, 1));
-        anchor = active(activeIdx, :);
-        placed = false;
-
-        for attempt = 1:k
-            angle = 2 * pi * rand();
-            dist = radius * (1 + rand());
-            candidate = anchor + [cos(angle), sin(angle)] * dist;
-
-            if candidate(1) < margin || candidate(1) > width - margin || ...
-               candidate(2) < margin || candidate(2) > height - margin
-                continue;
-            end
-
-            [cx, cy] = grid_coords(candidate, margin, cellSize, gridWidth, gridHeight);
-            if cx < 1 || cy < 1 || cx > gridWidth || cy > gridHeight
-                continue;
-            end
-
-            if ~has_neighbor_conflict(candidate, cx, cy, grid, points, radius)
-                points(end+1, :) = candidate; %#ok<AGROW>
-                active(end+1, :) = candidate; %#ok<AGROW>
-                grid{cy, cx} = size(points, 1);
-                placed = true;
-                break;
-            end
-        end
-
-        if ~placed
-            active(activeIdx, :) = [];
-        end
-    end
-end
-
-function [cx, cy] = grid_coords(pt, margin, cellSize, gridWidth, gridHeight)
-    cx = floor((pt(1) - margin) / cellSize) + 1;
-    cy = floor((pt(2) - margin) / cellSize) + 1;
-    cx = min(max(cx, 1), gridWidth);
-    cy = min(max(cy, 1), gridHeight);
-end
-
-function conflict = has_neighbor_conflict(candidate, cx, cy, grid, points, radius)
-    minCx = max(1, cx - 2);
-    maxCx = min(size(grid, 2), cx + 2);
-    minCy = max(1, cy - 2);
-    maxCy = min(size(grid, 1), cy + 2);
-
-    radiusSq = radius^2;
-    conflict = false;
-    for gy = minCy:maxCy
-        for gx = minCx:maxCx
-            sampleIdx = grid{gy, gx};
-            if isempty(sampleIdx)
-                continue;
-            end
-            neighbor = points(sampleIdx, :);
-            delta = neighbor - candidate;
-            if sum(delta.^2) < radiusSq
-                conflict = true;
-                return;
-            end
-        end
-    end
 end
 
 function overlap = bboxes_overlap(bbox1, bbox2, minSpacing)

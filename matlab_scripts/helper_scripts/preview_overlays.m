@@ -57,7 +57,12 @@ function preview_overlays(varargin)
 
     validate_folder_exists(datasetRoot, 'preview_overlays:missing_dataset_folder', 'Dataset folder not found: %s\nExpected path relative to project root.', datasetRootIn);
     validate_folder_exists(coordsRoot, 'preview_overlays:missing_coords_folder', 'Coordinates folder not found: %s\nExpected path relative to project root.', coordsRootIn);
-    validate_folder_exists(ellipseRoot, 'preview_overlays:missing_ellipse_folder', 'Elliptical patch folder not found: %s\nExpected path relative to project root.', ellipseRootIn);
+
+    % Ellipse folder is optional - if missing, will skip ellipse overlays
+    if ~isfolder(ellipseRoot)
+        fprintf('Note: Elliptical regions folder not found (%s) - skipping ellipse overlays\n', ellipseRootIn);
+        ellipseRoot = '';  % Mark as unavailable
+    end
 
     % Validate that coordinates folder contains phone subdirectories
     coordPhones = dir(coordsRoot);
@@ -296,42 +301,39 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
 
     allPolygonData = allPolygonData(1:polygonIdx);
 
-    % Read ellipse coordinates (stage 3)
-    ellipseFiles = find_concentration_coordinate_files(ellipseRoot);
-    if isempty(ellipseFiles)
-        error('preview_overlays:missing_ellipse_coords', ...
-              'No coordinates.txt files found in %s. Run cut_elliptical_regions first.', ellipseRoot);
+    % Read ellipse coordinates (stage 3) - optional
+    if isempty(ellipseRoot) || ~isfolder(ellipseRoot)
+        % No ellipse data available - skip ellipse overlays
+        fprintf('  Skipping ellipse overlays (folder not found)\n');
+        ellipseFiles = {};
+    else
+        ellipseFiles = find_concentration_coordinate_files(ellipseRoot);
+        if isempty(ellipseFiles)
+            fprintf('  Note: No ellipse coordinates.txt files found in %s - skipping ellipse overlays\n', ellipseRoot);
+        end
     end
 
     ellipseTables = cell(numel(ellipseFiles), 1);
     ellipsePhones = cell(numel(ellipseFiles), 1);
     totalEllipseRows = 0;
-    for k = 1:numel(ellipseFiles)
-        efile = ellipseFiles{k};
-        [edir, ~, ~] = fileparts(efile);
-        phoneName = extract_phone_name(ellipseRoot, edir);
 
-        T = read_ellipse_coordinates_table(efile);
-        if isempty(T)
-            error('preview_overlays:empty_ellipse_table', ...
-                  'Ellipse coordinates file has no entries: %s', efile);
-        end
-        T = standardize_ellipse_coord_vars(T, efile);
-        ellipseTables{k} = T;
-        ellipsePhones{k} = phoneName;
-        totalEllipseRows = totalEllipseRows + height(T);
-    end
+    % Only process ellipse files if available
+    if ~isempty(ellipseFiles)
+        for k = 1:numel(ellipseFiles)
+            efile = ellipseFiles{k};
+            [edir, ~, ~] = fileparts(efile);
+            phoneName = extract_phone_name(ellipseRoot, edir);
 
-    % Verify all phones have ellipse data
-    ellipsePhoneSet = containers.Map('KeyType','char','ValueType','logical');
-    for k = 1:numel(ellipsePhones)
-        ellipsePhoneSet(ellipsePhones{k}) = true;
-    end
-    phonesInPlan = unique({plan.phoneName});
-    for i = 1:numel(phonesInPlan)
-        if ~isKey(ellipsePhoneSet, phonesInPlan{i})
-            error('preview_overlays:missing_phone_ellipses', ...
-                  'Elliptical coordinates missing for phone %s in %s.', phonesInPlan{i}, ellipseRoot);
+            T = read_ellipse_coordinates_table(efile);
+            if isempty(T)
+                warning('preview_overlays:empty_ellipse_table', ...
+                      'Ellipse coordinates file has no entries: %s - skipping ellipses for this phone', efile);
+                continue;
+            end
+            T = standardize_ellipse_coord_vars(T, efile);
+            ellipseTables{k} = T;
+            ellipsePhones{k} = phoneName;
+            totalEllipseRows = totalEllipseRows + height(T);
         end
     end
 
@@ -367,39 +369,34 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
 
     allEllipseData = allEllipseData(1:ellipseIdx);
 
-    % Transform ellipse coordinates from polygon space to image space
-    transformedEllipses = transform_ellipse_coordinates(allEllipseData, allPolygonData);
+    % Transform ellipse coordinates from polygon space to image space (if available)
+    if ellipseIdx > 0
+        transformedEllipses = transform_ellipse_coordinates(allEllipseData, allPolygonData);
 
-    % Build map for fast lookup
-    planMap = containers.Map();
-    for idx = 1:numel(plan)
-        baseNameForImage = standardize_base_name(plan(idx).imagePath);
-        key = sprintf('%s|%s', plan(idx).phoneName, baseNameForImage);
-        planMap(key) = idx;
-    end
-
-    % Add ellipses to plan
-    for i = 1:numel(transformedEllipses)
-        ellipse = transformedEllipses(i);
-        key = sprintf('%s|%s', ellipse.phoneName, ellipse.imageName);
-        if ~isKey(planMap, key)
-            error('preview_overlays:ellipse_no_match', ...
-                  'Ellipse entry references missing polygon: phone=%s image=%s.', ellipse.phoneName, ellipse.imageName);
-        end
-        idx = planMap(key);
-        % Store as [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
-        plan(idx).ellipses{end+1} = [ellipse.x, ellipse.y, ellipse.semiMajorAxis, ellipse.semiMinorAxis, ellipse.rotationAngle];
-    end
-
-    % Verify all images have ellipses
-    for idx = 1:numel(plan)
-        if isempty(plan(idx).ellipses)
+        % Build map for fast lookup
+        planMap = containers.Map();
+        for idx = 1:numel(plan)
             baseNameForImage = standardize_base_name(plan(idx).imagePath);
-            error('preview_overlays:missing_ellipses_for_image', ...
-                  'No elliptical patches found for %s/%s. Complete cut_elliptical_regions before preview.', ...
-                  plan(idx).phoneName, baseNameForImage);
+            key = sprintf('%s|%s', plan(idx).phoneName, baseNameForImage);
+            planMap(key) = idx;
+        end
+
+        % Add ellipses to plan
+        for i = 1:numel(transformedEllipses)
+            ellipse = transformedEllipses(i);
+            key = sprintf('%s|%s', ellipse.phoneName, ellipse.imageName);
+            if ~isKey(planMap, key)
+                warning('preview_overlays:ellipse_no_match', ...
+                      'Ellipse entry references missing polygon: phone=%s image=%s - skipping.', ellipse.phoneName, ellipse.imageName);
+                continue;
+            end
+            idx = planMap(key);
+            % Store as [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
+            plan(idx).ellipses{end+1} = [ellipse.x, ellipse.y, ellipse.semiMajorAxis, ellipse.semiMinorAxis, ellipse.rotationAngle];
         end
     end
+
+    % Note: Images without ellipse data will show polygons only (no error)
 
     % Sort by display name
     if ~isempty(plan)
