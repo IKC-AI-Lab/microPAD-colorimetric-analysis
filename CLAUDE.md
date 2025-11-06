@@ -213,9 +213,8 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 
 ### Common Parameters
 - All scripts accept name-value pairs for configuration
-- `preserveFormat`: Keep original image formats
-- `jpegQuality`: JPEG compression quality when writing
 - `saveCoordinates`: Write coordinate metadata files
+- **Output Format**: All pipeline stages (2-4) output PNG exclusively for lossless compression and colorimetric accuracy
 
 ## File Naming Conventions
 

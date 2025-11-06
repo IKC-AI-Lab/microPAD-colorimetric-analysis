@@ -74,7 +74,6 @@ function augment_dataset(varargin)
     COORDINATE_FILENAME = 'coordinates.txt';
     CONCENTRATION_PREFIX = 'con_';
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
-    JPEG_QUALITY = 100;
     MIN_VALID_POLYGON_AREA = 100;  % square pixels
 
     % Camera/transformation parameters
@@ -206,7 +205,6 @@ function augment_dataset(varargin)
     cfg.supportedFormats = SUPPORTED_FORMATS;
     cfg.camera = CAMERA;
     cfg.rotationRange = ROTATION_RANGE;
-    cfg.jpegQuality = JPEG_QUALITY;
     cfg.minValidPolygonArea = MIN_VALID_POLYGON_AREA;
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
@@ -388,7 +386,7 @@ function augment_phone(phoneName, cfg)
             stage1Img = repmat(stage1Img, [1, 1, 3]);
         end
 
-        [~, ~, imgExt] = fileparts(imgPath);
+        imgExt = '.png';
 
         % Get all polygons from this paper
         polygons = paperGroups(paperBase);
@@ -417,7 +415,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
                                  stage3PhoneOut, cfg)
     % Generate aug_000 assets by reusing original captures without augmentation
 
-    [~, ~, imgExt] = fileparts(imgPath);
+    imgExt = '.png';
     if cfg.useScenePrefix
         baseSceneId = sprintf('%s_%s', cfg.scenePrefix, paperBase);
     else
@@ -429,22 +427,12 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     % Save to phone directory
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
 
-    % Copy original capture. If copy fails, re-encode image.
-    [copied, msg, msgid] = copyfile(imgPath, sceneOutPath, 'f');
-    if ~copied
-        warning('augmentDataset:passthroughCopy', ...
-                'Copy failed for %s -> %s (%s: %s). Re-encoding.', ...
-                imgPath, sceneOutPath, msgid, msg);
-        try
-            if any(strcmpi(imgExt, {'.jpg', '.jpeg'}))
-                imwrite(stage1Img, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
-            else
-                imwrite(stage1Img, sceneOutPath);
-            end
-        catch writeErr
-            error('augmentDataset:passthroughSceneWrite', ...
-                  'Cannot emit passthrough scene %s: %s', sceneOutPath, writeErr.message);
-        end
+    % Always re-encode to PNG format (cannot copy JPEG bytes with .png extension)
+    try
+        imwrite(stage1Img, sceneOutPath);
+    catch writeErr
+        error('augmentDataset:passthroughSceneWrite', ...
+              'Cannot emit passthrough scene %s: %s', sceneOutPath, writeErr.message);
     end
 
     stage2Coords = cell(numel(polygons), 1);
@@ -897,9 +885,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     end
 
     % Save synthetic scene (stage 1 output)
-    sceneFileName = sprintf('%s%s', sceneName, '.jpg');
+    sceneFileName = sprintf('%s%s', sceneName, '.png');
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
-    imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
+    imwrite(background, sceneOutPath);
 
     % Trim coordinate arrays to actual size
     stage2Coords = stage2Coords(1:s2Count);

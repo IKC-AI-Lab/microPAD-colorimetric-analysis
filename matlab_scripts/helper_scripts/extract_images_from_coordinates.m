@@ -21,13 +21,11 @@ function extract_images_from_coordinates(varargin)
     % - inputFolder    : folder for originals (default '1_dataset')
 % - polygonFolder  : folder for polygon crops (default '2_micropads')
 % - patchFolder    : folder for elliptical patches (default '3_elliptical_regions')
-    % - preserveFormat : logical (default true) - keep source extension when saving
-    % - jpegQuality    : integer 0-100 (default 95) for JPEG writes when not preserving
     % - concFolderPrefix: prefix for concentration folders (default 'con_')
     %
     % File handling
     % - Coordinate files are named 'coordinates.txt' in respective stage folders.
-    % - Output format preservation and JPEG quality settings configurable.
+    % - Output format: PNG exclusively (lossless, no EXIF issues).
     %
     % Performance optimizations
     % - Image file cache: Avoids repeated dir() calls when locating source images
@@ -53,26 +51,29 @@ function extract_images_from_coordinates(varargin)
     % Usage examples (from repo root):
     %   addpath('matlab_scripts'); addpath('matlab_scripts/helper_scripts');
     %   extract_images_from_coordinates();
-    %   extract_images_from_coordinates('jpegQuality', 90);
     %
 % See also: cut_micropads, cut_elliptical_regions
 
 % ----------------------
+    % Error handling for deprecated format parameters
+    if ~isempty(varargin) && (any(strcmpi(varargin(1:2:end), 'preserveFormat')) || any(strcmpi(varargin(1:2:end), 'jpegQuality')))
+        error('micropad:deprecated_parameter', ...
+              ['JPEG format no longer supported. Pipeline outputs PNG exclusively.\n' ...
+               'Remove ''preserveFormat'' and ''jpegQuality'' parameters from function call.']);
+    end
+
     % Parse inputs and create configuration
     % ----------------------
     parser = inputParser;
     addParameter(parser, 'inputFolder', '1_dataset', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     addParameter(parser, 'polygonFolder', '2_micropads', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     addParameter(parser, 'patchFolder', '3_elliptical_regions', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
-    addParameter(parser, 'preserveFormat', true, @(b) ((islogical(b) && isscalar(b)) || (isnumeric(b) && isscalar(b))));
-    addParameter(parser, 'jpegQuality', 100, @(n) (isnumeric(n) && isscalar(n) && n>=0 && n<=100));
     addParameter(parser, 'concFolderPrefix', 'con_', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     parse(parser, varargin{:});
 
     % Create configuration using standard pattern
     cfg = createConfiguration(char(parser.Results.inputFolder), ...
                               char(parser.Results.polygonFolder), char(parser.Results.patchFolder), ...
-                              logical(parser.Results.preserveFormat), parser.Results.jpegQuality, ...
                               char(parser.Results.concFolderPrefix));
 
     % Validate base inputs folder
@@ -163,15 +164,13 @@ function extract_images_from_coordinates(varargin)
     fprintf('\nReconstruction complete.\n');
 end
 
-function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, preserveFormat, jpegQuality, concFolderPrefix)
+function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, concFolderPrefix)
     % Create configuration with validation and path resolution
 
     % Validate inputs
     validateattributes(inputFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'inputFolder');
     validateattributes(polygonFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'polygonFolder');
     validateattributes(patchFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'patchFolder');
-    validateattributes(preserveFormat, {'logical'}, {'scalar'}, 'createConfiguration', 'preserveFormat');
-    validateattributes(jpegQuality, {'numeric'}, {'scalar','>=',0,'<=',100}, 'createConfiguration', 'jpegQuality');
     validateattributes(concFolderPrefix, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'concFolderPrefix');
 
     repoRoot = findProjectRoot(char(inputFolder));
@@ -185,9 +184,7 @@ function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, pres
     cfg = struct();
     cfg.projectRoot = repoRoot;
     cfg.paths = struct('input', inputRoot, 'polygon', polyRoot, 'patch', patchRoot);
-    cfg.output = struct('preserveFormat', preserveFormat, ...
-                        'jpegQuality', jpegQuality, ...
-                        'supportedFormats', {{'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}});
+    cfg.output = struct('supportedFormats', {{'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}});
     cfg.allowedImageExtensions = {'*.jpg','*.jpeg','*.png','*.bmp','*.tif','*.tiff'};
     cfg.coordinateFileName = 'coordinates.txt';
     cfg.concFolderPrefix = char(concFolderPrefix);
@@ -242,8 +239,7 @@ function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
         % No image warp applied - coordinates already match original frame
 
         cropped = crop_with_polygon(img, row.polygon);
-        [~, ~, extOrig] = fileparts(srcPath);
-        outExt = determine_output_extension(lower(extOrig), cfg.output.supportedFormats, cfg.output.preserveFormat);
+        outExt = '.png';
         outPath = fullfile(concDir, sprintf('%s_%s%d%s', row.imageBase, cfg.concFolderPrefix, row.concentration, outExt));
         save_image_with_format(cropped, outPath, outExt, cfg);
     end
@@ -277,8 +273,7 @@ function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
         % No image warp applied - coordinates already match original frame
 
         cropped = crop_with_polygon(img, row.polygon);
-        [~, ~, extOrig] = fileparts(srcPath);
-        outExt = determine_output_extension(lower(extOrig), cfg.output.supportedFormats, cfg.output.preserveFormat);
+        outExt = '.png';
         % Mirror cut_micropads layout: con_* folders containing base_con_<idx>.ext
         concFolder = fullfile(polyGroupDir, sprintf('%s%d', cfg.concFolderPrefix, row.concentration));
         ensure_folder(concFolder);
@@ -399,8 +394,8 @@ function extract_elliptical_patches(coordPath, polygonInputDir, patchOutputBase,
             patchRegion(~mask) = 0;
         end
 
-        [~, nameNoExt, extOnDisk] = fileparts(srcPath);
-        outExt = determine_output_extension(lower(extOnDisk), cfg.output.supportedFormats, cfg.output.preserveFormat);
+        [~, nameNoExt, ~] = fileparts(srcPath);
+        outExt = '.png';
         % Choose target folder: if patchOutputBase already is a con_* folder, use it;
         % otherwise (phone-level), create/use con_%d subfolder.
         [~, leaf] = fileparts(patchOutputBase);
@@ -563,37 +558,9 @@ function save_image_with_format(img, outPath, outExt, cfg)
     ensure_folder(fileparts(outPath));
     ext = lower(outExt);
     try
-        if ismember(ext, {'.jpg','.jpeg'})
-            % MATLAB's JPEG writer has 65500-pixel dimension limit (both width and height).
-            % While pipeline elliptical patches are typically <1000×1000 pixels (well below
-            % this limit), this check ensures robustness for edge cases like very large
-            % rectangular crops or polygon regions processed by this helper function.
-            [h, w, ~] = size(img);
-            m = max(h, w);
-            if m > cfg.limits.maxJpegDimension
-                scale = cfg.limits.maxJpegDimension / double(m);
-                img = imresize(img, scale, 'bilinear');
-            end
-            imwrite(img, outPath, 'JPEG', 'Quality', cfg.output.jpegQuality);
-        elseif strcmp(ext, '.png')
-            imwrite(img, outPath, 'PNG');
-        elseif strcmp(ext, '.bmp')
-            imwrite(img, outPath, 'BMP');
-        elseif ismember(ext, {'.tif','.tiff'})
-            imwrite(img, outPath, 'TIFF');
-        else
-            imwrite(img, outPath);
-        end
+        imwrite(img, outPath);
     catch ME
         error('extract:imwrite_failed', 'Failed to write %s: %s', outPath, ME.message);
-    end
-end
-
-function outExt = determine_output_extension(origExt, supported, preserve)
-    if preserve && any(strcmpi(origExt, supported))
-        outExt = origExt;
-    else
-        outExt = '.jpeg';
     end
 end
 

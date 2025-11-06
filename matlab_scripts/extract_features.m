@@ -3155,7 +3155,7 @@ function files = getImageFiles(path)
 
         % Extract extensions and filter for valid image types
         % Use lowercase comparison for case-insensitive matching
-        validExts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'};
+        validExts = {'.png'};
         [~, ~, fileExts] = cellfun(@fileparts, {allItems.name}, 'UniformOutput', false);
         fileExtsLower = lower(fileExts);
 

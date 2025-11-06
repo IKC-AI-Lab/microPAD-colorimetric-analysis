@@ -4,12 +4,10 @@ function cut_elliptical_regions(varargin)
     %% Author: Veysel Y. Yilmaz
     %
     % Inputs (Name-Value pairs):
-    % - 'preserveFormat' (logical): keep input image extension (default true)
-    % - 'jpegQuality' (1..100): quality when saving JPEGs (default 100)
     % - 'saveCoordinates' (logical): write coordinates.txt entries (default true)
     %
     % Outputs/Side effects:
-    % - Writes elliptical patches to 3_elliptical_regions/[phone]/con_*/
+    % - Writes PNG elliptical patches to 3_elliptical_regions/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level with format:
     %   image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
     %   where rotationAngle is in degrees (-180 to 180, clockwise from horizontal major axis)
@@ -25,6 +23,15 @@ function cut_elliptical_regions(varargin)
     % Behavior:
     % - Reads single-concentration polygon crops from 2_micropads/[phone]/con_*/
     % - Captures elliptical ROI masks for each replicate and logs coordinates to phone-level file
+
+%% ========================================================================
+
+    % Error handling for deprecated format parameters
+    if ~isempty(varargin) && (any(strcmpi(varargin(1:2:end), 'preserveFormat')) || any(strcmpi(varargin(1:2:end), 'jpegQuality')))
+        error('micropad:deprecated_parameter', ...
+              ['JPEG format no longer supported. Pipeline outputs PNG exclusively.\n' ...
+               'Remove ''preserveFormat'' and ''jpegQuality'' parameters from function call.']);
+    end
 
 %% ========================================================================
     %% EXPERIMENT CONFIGURATION CONSTANTS - Modify here for different setups
@@ -49,8 +56,6 @@ function cut_elliptical_regions(varargin)
     MAX_PROJECT_ROOT_SEARCH_LEVELS = 5;                 % Up-search depth for project root
 
     % === OUTPUT FORMATTING ===
-    PRESERVE_FORMAT = true;                             % Keep original image format when saving
-    JPEG_QUALITY   = 100;                               % JPEG quality when writing JPEGs
     SAVE_COORDINATES = true;                            % Save ellipse coordinates to coordinates.txt
     SUPPORTED_FORMATS = {'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}; % Formats to preserve when enabled
 
@@ -102,7 +107,7 @@ function cut_elliptical_regions(varargin)
                               MIN_AXIS_PERCENT, SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ROTATION_DEFAULT_ANGLE, ...
                               CONC_FOLDER_PREFIX, ...
                               COORDINATE_FILENAME, PATCH_FILENAME_FORMAT, ...
-                              ALLOWED_IMAGE_EXTENSIONS, MAX_PROJECT_ROOT_SEARCH_LEVELS, PRESERVE_FORMAT, JPEG_QUALITY, SAVE_COORDINATES, SUPPORTED_FORMATS, varargin{:});
+                              ALLOWED_IMAGE_EXTENSIONS, MAX_PROJECT_ROOT_SEARCH_LEVELS, SAVE_COORDINATES, SUPPORTED_FORMATS, varargin{:});
 
     % Apply UI constants (separate from functionality constants)
     cfg.ui = createUIConfiguration(UI_CONST);
@@ -126,7 +131,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
                              minAxisPercent, semiMajorDefaultRatio, semiMinorDefaultRatio, rotationDefaultAngle, ...
                              concFolderPrefix, ...
                              coordinateFileName, patchFilenameFormat, imageExtensions, ...
-                             maxProjectRootSearchLevels, preserveFormat, jpegQuality, saveCoordinates, supportedFormats, varargin)
+                             maxProjectRootSearchLevels, saveCoordinates, supportedFormats, varargin)
     %% Create configuration with validation and calculated defaults from centralized constants
     % Validate core numeric parameters
     validateattributes(replicatesPerConcentration, {'numeric'},{'scalar','integer','>=',1},mfilename,'replicatesPerConcentration');
@@ -138,10 +143,8 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
     validateattributes(semiMajorDefaultRatio, {'numeric'},{'scalar','>=',0,'<=',1},mfilename,'semiMajorDefaultRatio');
     validateattributes(semiMinorDefaultRatio, {'numeric'},{'scalar','>=',0,'<=',1},mfilename,'semiMinorDefaultRatio');
     validateattributes(rotationDefaultAngle, {'numeric'},{'scalar','>=',-180,'<=',180},mfilename,'rotationDefaultAngle');
-    
+
     parser = inputParser;
-    parser.addParameter('preserveFormat', preserveFormat, @(x) islogical(x));
-    parser.addParameter('jpegQuality', jpegQuality, @(x) validateattributes(x, {'numeric'}, {'scalar','>=',1,'<=',100}));
     parser.addParameter('saveCoordinates', saveCoordinates, @(x) islogical(x));
     parser.parse(varargin{:});
 
@@ -149,12 +152,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
     if ~parser.Results.saveCoordinates
         warning('cutEllipticalPatches:NoCoordinates', ...
                 'saveCoordinates=false will prevent feature extraction in subsequent pipeline stages.');
-    end
-
-    if ~parser.Results.preserveFormat && parser.Results.jpegQuality < 95
-        warning('cutEllipticalPatches:QualityLoss', ...
-                'Low JPEG quality (%d) may degrade downstream feature extraction accuracy.', ...
-                parser.Results.jpegQuality);
     end
 
     cfg.replicatesPerConcentration = replicatesPerConcentration;
@@ -189,8 +186,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
     cfg.patchFilenameFormat = patchFilenameFormat;
     % Output behavior
     cfg.output = struct();
-    cfg.output.preserveFormat = parser.Results.preserveFormat;
-    cfg.output.jpegQuality = parser.Results.jpegQuality;
     cfg.output.saveCoordinates = parser.Results.saveCoordinates;
     cfg.output.supportedFormats = supportedFormats;
     
@@ -1193,14 +1188,12 @@ end
 
 function saveCutPatchesToConcentrationFolders(img, imageName, concIdx, coords, outputDir, cfg)
     % Save individual elliptical patch images in concentration-based folders
-    [~, nameNoExt, extOrig] = fileparts(imageName);
-    extOrig = lower(extOrig);
-    supported = cfg.output.supportedFormats;
+    [~, nameNoExt, ~] = fileparts(imageName);
 
     fprintf('  Saving elliptical patches to concentration folders...\n');
 
     % Pre-determine output extension once (constant across all patches)
-    outExt = determineOutputExtension(extOrig, supported, cfg.output.preserveFormat);
+    outExt = '.png';
 
     % Create concentration folder
     concFolder = fullfile(outputDir, sprintf('%s%d', cfg.concFolderPrefix, concIdx));
@@ -1538,22 +1531,8 @@ function projectRoot = findProjectRoot(inputFolder, maxLevels)
 end
 
 %% Output formatting helpers
-function saveImageWithFormat(img, outPath, outExt, cfg)
-    % Save image with appropriate format and quality settings
-    if any(strcmp(outExt, {'.jpg','.jpeg'}))
-        imwrite(img, outPath, 'JPEG', 'Quality', cfg.output.jpegQuality);
-    else
-        imwrite(img, outPath);
-    end
-end
-
-function outExt = determineOutputExtension(extOrig, supported, preserveFormat)
-    % Decide output extension given original ext and configuration
-    if preserveFormat && any(strcmp(extOrig, supported))
-        outExt = extOrig;
-    else
-        outExt = '.jpeg';
-    end
+function saveImageWithFormat(img, outPath, ~, ~)
+    imwrite(img, outPath);
 end
 
 %% -------------------------------------------------------------------------

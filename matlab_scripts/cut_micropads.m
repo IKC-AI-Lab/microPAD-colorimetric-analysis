@@ -20,7 +20,7 @@ function cut_micropads(varargin)
     % - 'coverage': fraction of image width to fill (default: 0.80)
     % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.19)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
-    % - 'preserveFormat' | 'jpegQuality' | 'saveCoordinates': output behavior
+    % - 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
     % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11m_micropad_pose.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
@@ -28,7 +28,7 @@ function cut_micropads(varargin)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
-    % - Writes polygon crops to 2_micropads/[phone]/con_*/
+    % - Writes PNG polygon crops to 2_micropads/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level (atomic, no duplicate rows per image)
     %
     % ROTATION SEMANTICS:
@@ -58,13 +58,18 @@ function cut_micropads(varargin)
         error('cut_micropads:invalid_args', 'Parameters must be provided as name-value pairs');
     end
 
+    % Error handling for deprecated format parameters
+    if ~isempty(varargin) && (any(strcmpi(varargin(1:2:end), 'preserveFormat')) || any(strcmpi(varargin(1:2:end), 'jpegQuality')))
+        error('micropad:deprecated_parameter', ...
+              ['JPEG format no longer supported. Pipeline outputs PNG exclusively.\n' ...
+               'Remove ''preserveFormat'' and ''jpegQuality'' parameters from function call.']);
+    end
+
     % === DATASET AND FOLDER STRUCTURE ===
     INPUT_FOLDER = '1_dataset';
     OUTPUT_FOLDER = '2_micropads';
 
     % === OUTPUT FORMATTING ===
-    PRESERVE_FORMAT = true;
-    JPEG_QUALITY = 100;
     SAVE_COORDINATES = true;
 
     % === DEFAULT GEOMETRY / SELECTION ===
@@ -160,7 +165,7 @@ function cut_micropads(varargin)
         'defaultValue', 0);
 
     %% Build configuration
-    cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, PRESERVE_FORMAT, JPEG_QUALITY, SAVE_COORDINATES, ...
+    cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
@@ -178,7 +183,7 @@ end
 %% Configuration
 %% -------------------------------------------------------------------------
 
-function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jpegQuality, saveCoordinates, ...
+function cfg = createConfiguration(inputFolder, outputFolder, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
                                    rotationAngleTolerance, ...
@@ -189,8 +194,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
     validateFolder = @(s) validateattributes(s, {'char', 'string'}, {'nonempty', 'scalartext'});
     parser.addParameter('inputFolder', inputFolder, validateFolder);
     parser.addParameter('outputFolder', outputFolder, validateFolder);
-    parser.addParameter('preserveFormat', preserveFormat, @(x) islogical(x));
-    parser.addParameter('jpegQuality', jpegQuality, @(x) validateattributes(x, {'numeric'}, {'scalar','>=',1,'<=',100}));
     parser.addParameter('saveCoordinates', saveCoordinates, @(x) islogical(x));
 
     parser.addParameter('aspectRatio', defaultAspectRatio, @(x) validateattributes(x, {'numeric'}, {'scalar','>',0}));
@@ -220,8 +223,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, preserveFormat, jp
 
     cfg = addPathConfiguration(cfg, parser.Results.inputFolder, parser.Results.outputFolder);
 
-    cfg.output.preserveFormat = parser.Results.preserveFormat;
-    cfg.output.jpegQuality = parser.Results.jpegQuality;
     cfg.output.saveCoordinates = parser.Results.saveCoordinates;
     cfg.output.supportedFormats = supportedFormats;
     cfg.allowedImageExtensions = allowedImageExtensions;
@@ -2331,8 +2332,7 @@ end
 
 function saveCroppedRegions(img, imageName, polygons, outputDir, cfg, rotation)
     [~, baseName, ~] = fileparts(imageName);
-    [~, extOrig] = fileparts(imageName);
-    outExt = determineOutputExtension(extOrig, cfg.output.supportedFormats, cfg.output.preserveFormat);
+    outExt = '.png';
 
     numRegions = size(polygons, 1);
 
@@ -2571,20 +2571,8 @@ function [img, isValid] = loadImage(imageName)
     end
 end
 
-function saveImageWithFormat(img, outPath, outExt, cfg)
-    if strcmpi(outExt, '.jpg') || strcmpi(outExt, '.jpeg')
-        imwrite(img, outPath, 'jpg', 'Quality', cfg.output.jpegQuality);
-    else
-        imwrite(img, outPath);
-    end
-end
-
-function outExt = determineOutputExtension(extOrig, supported, preserveFormat)
-    if preserveFormat && any(strcmpi(extOrig, supported))
-        outExt = lower(extOrig);
-    else
-        outExt = '.jpg';
-    end
+function saveImageWithFormat(img, outPath, ~, ~)
+    imwrite(img, outPath);
 end
 
 function outputDir = createOutputDirectory(basePath, phoneName, numConcentrations, concFolderPrefix)
@@ -2708,8 +2696,8 @@ function [quads, confidences, outputFile, imgPath] = detectQuadsYOLO(img, cfg, v
     % Save image to temporary file
     tmpDir = tempdir;
     [~, tmpName] = fileparts(tempname);
-    tmpImgPath = fullfile(tmpDir, sprintf('%s_micropad_detect.jpg', tmpName));
-    imwrite(img, tmpImgPath, 'JPEG', 'Quality', 95);
+    tmpImgPath = fullfile(tmpDir, sprintf('%s_micropad_detect.png', tmpName));
+    imwrite(img, tmpImgPath);
 
     % Ensure cleanup even if error occurs (only in blocking mode)
     if ~asyncMode
