@@ -34,6 +34,10 @@ from pathlib import Path
 from typing import Tuple, List
 import numpy as np
 
+# Constants
+DIVISION_SAFETY_EPSILON = 1e-6  # Minimum denominator to prevent division by zero
+DEFAULT_DIMENSION_FALLBACK = 1.0  # Fallback for empty dimension arrays
+
 
 def parse_args():
     """Parse command line arguments.
@@ -96,6 +100,47 @@ def order_corners_clockwise(quad: np.ndarray) -> np.ndarray:
     return quad_ordered
 
 
+def sort_quads_by_layout(quads: List[np.ndarray], confidences: List[float]) -> Tuple[List[np.ndarray], List[float]]:
+    """Sort detections from low->high concentration along the dominant strip axis."""
+    if len(quads) <= 1:
+        return quads, confidences
+
+    quad_array = np.stack(quads).astype(np.float64)
+
+    centroids = quad_array.mean(axis=1)
+    min_xy = quad_array.min(axis=1)
+    max_xy = quad_array.max(axis=1)
+
+    widths = max_xy[:, 0] - min_xy[:, 0]
+    heights = max_xy[:, 1] - min_xy[:, 1]
+
+    width_ref = float(np.median(widths[widths > 0])) if np.any(widths > 0) else DEFAULT_DIMENSION_FALLBACK
+    height_ref = float(np.median(heights[heights > 0])) if np.any(heights > 0) else DEFAULT_DIMENSION_FALLBACK
+
+    range_x = float(max_xy[:, 0].max() - min_xy[:, 0].min())
+    range_y = float(max_xy[:, 1].max() - min_xy[:, 1].min())
+
+    count_x = range_x / max(width_ref, DIVISION_SAFETY_EPSILON)
+    count_y = range_y / max(height_ref, DIVISION_SAFETY_EPSILON)
+
+    if not np.isfinite(count_x):
+        count_x = 0.0
+    if not np.isfinite(count_y):
+        count_y = 0.0
+
+    if count_x >= count_y:
+        primary = centroids[:, 0]
+        secondary = -centroids[:, 1]
+    else:
+        primary = -centroids[:, 1]
+        secondary = centroids[:, 0]
+
+    order = np.lexsort((secondary, primary))
+    quads_sorted = [quads[i] for i in order]
+    confidences_sorted = [confidences[i] for i in order]
+    return quads_sorted, confidences_sorted
+
+
 def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 960) -> Tuple[List[np.ndarray], List[float]]:
     """Run YOLOv11m-pose inference and extract concentration zone keypoint coordinates.
 
@@ -115,8 +160,9 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
         - confidences: List of detection confidence scores [0, 1]
 
     Note:
-        Optimal performance when imgsz=960 (training resolution).
-        Expected output: 7 detections per microPAD strip at conf=0.6.
+        Detections are sorted along the dominant strip axis (left->right or bottom->top)
+        so con_ labels remain ordered from low to high concentration even without MATLAB memory.
+        Optimal performance when imgsz=960 (training resolution) with ~7 detections per strip.
     """
     from ultralytics import YOLO
 
@@ -124,12 +170,12 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
     model = YOLO(model_path)
 
     # Run inference with optimized settings
+    # YOLO automatically detects and uses available GPU
     results = model.predict(
         image_path,
         imgsz=imgsz,
         conf=conf_threshold,
-        verbose=False,
-        device='cuda' if model.device.type == 'cuda' else 'cpu'  # Auto-detect GPU
+        verbose=False
     )
 
     result = results[0]
@@ -161,7 +207,7 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
         quads.append(ordered_kpts.astype(np.float64))
         confidences.append(float(conf))
 
-    return quads, confidences
+    return sort_quads_by_layout(quads, confidences)
 
 
 def main():
@@ -214,9 +260,12 @@ def main():
             coords = ' '.join([f"{x:.6f} {y:.6f}" for x, y in quad])
             print(f"{coords} {conf:.6f}")
 
-    except Exception as e:
+    except (RuntimeError, ValueError, OSError, IOError) as e:
         print(f"ERROR: {str(e)}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":
