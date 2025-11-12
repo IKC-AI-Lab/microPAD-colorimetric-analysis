@@ -2448,13 +2448,25 @@ function croppedImg = cropImageWithPolygon(img, polygonVertices)
     minY = floor(min(y));
     maxY = ceil(max(y));
 
-    [imgH, imgW, ~] = size(img);
+    [imgH, imgW, numChannels] = size(img);
     minX = max(1, minX);
     maxX = min(imgW, maxX);
     minY = max(1, minY);
     maxY = min(imgH, maxY);
 
-    croppedImg = img(minY:maxY, minX:maxX, :);
+    % Create binary mask for the polygon
+    mask = poly2mask(x, y, imgH, imgW);
+
+    % Apply mask to each color channel (black out pixels outside polygon)
+    maskedImg = img;
+    for ch = 1:numChannels
+        channel = maskedImg(:, :, ch);
+        channel(~mask) = 0;
+        maskedImg(:, :, ch) = channel;
+    end
+
+    % Crop to bounding box
+    croppedImg = maskedImg(minY:maxY, minX:maxX, :);
 end
 
 function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, cfg, rotation)
