@@ -672,9 +672,11 @@ function clearAllUIElements(fig, guiData)
     if ~isempty(guiData) && isstruct(guiData)
         if isfield(guiData, 'aiTimer')
             safeStopTimer(guiData.aiTimer);
+            guiData.aiTimer = [];
         end
         if isfield(guiData, 'aiBreathingTimer')
-            stopAIBreathingTimer(guiData);
+            guiData = stopAIBreathingTimer(guiData);
+            guiData.aiBreathingTimer = [];
         end
     end
 
@@ -957,7 +959,7 @@ function polygons = createPolygons(initialPolygons, cfg, ~)
         setappdata(polygons{i}, 'ListenerHandle', listenerHandle);
 
         % Add listener for label updates when user drags vertices
-        labelUpdateListener = addlistener(polygons{i}, 'ROIMoved', @(~,~) updatePolygonLabelsCallback(polygons{i}));
+        labelUpdateListener = addlistener(polygons{i}, 'ROIMoved', @(src, evt) updatePolygonLabelsCallback(src, evt));
         setappdata(polygons{i}, 'LabelUpdateListener', labelUpdateListener);
     end
 end
@@ -2008,22 +2010,26 @@ function updatePolygonLabels(polygons, labelHandles)
     end
 end
 
-function updatePolygonLabelsCallback(polygon, ~)
-    % Callback for ROIMoved event to update ALL labels
-    % Note: Updates all labels for simplicity (performance impact negligible for ~7 polygons)
+function updatePolygonLabelsCallback(polygon, varargin)
+    % Callback for ROIMoved event to keep labels/colors ordered along dominant axis
     fig = ancestor(polygon, 'figure');
-    if isempty(fig)
+    if isempty(fig) || ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
         return;
     end
+
     guiData = get(fig, 'UserData');
-    if isfield(guiData, 'polygons') && isfield(guiData, 'polygonLabels')
-        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+    if isempty(guiData) || ~isstruct(guiData)
+        return;
     end
+
+    guiData = enforceConcentrationOrdering(guiData);
+    set(fig, 'UserData', guiData);
 end
 
 function [polygons, order] = assignPolygonLabels(polygons)
-    % Reorder drawpolygon handles so con0..conN map left-to-right, bottom-to-top
-    % con_0 (blue) at BOTTOM (large Y), con_max (red) at TOP (small Y)
+    % Reorder drawpolygon handles so con_0..con_N follow low→high concentration order.
+    % Ordering direction matches the dominant layout axis: horizontal strips
+    % sort left→right, vertical strips sort bottom→top.
     order = [];
 
     if isempty(polygons) || ~iscell(polygons)
@@ -2031,29 +2037,136 @@ function [polygons, order] = assignPolygonLabels(polygons)
     end
 
     numPolygons = numel(polygons);
-    centroids = zeros(numPolygons, 2);
+    centroids = nan(numPolygons, 2);
+    minXs = nan(numPolygons, 1);
+    maxXs = nan(numPolygons, 1);
+    minYs = nan(numPolygons, 1);
+    maxYs = nan(numPolygons, 1);
     validMask = false(numPolygons, 1);
 
     for i = 1:numPolygons
-        if isvalid(polygons{i})
-            pos = polygons{i}.Position;
-            centroids(i, 1) = mean(pos(:, 1));
-            centroids(i, 2) = mean(pos(:, 2));
-            validMask(i) = true;
-        else
-            centroids(i, :) = inf;
+        if ~isvalid(polygons{i})
+            continue;
         end
+
+        pos = polygons{i}.Position;
+        centroids(i, 1) = mean(pos(:, 1));
+        centroids(i, 2) = mean(pos(:, 2));
+        minXs(i) = min(pos(:, 1));
+        maxXs(i) = max(pos(:, 1));
+        minYs(i) = min(pos(:, 2));
+        maxYs(i) = max(pos(:, 2));
+        validMask(i) = true;
     end
 
     if ~any(validMask)
         return;
     end
 
-    % Sort by Y DESCENDING (bottom→top, primary), then X ascending (left→right, secondary)
-    % This puts bottom row first (large Y), sorted left-to-right
-    sortKey = [-centroids(:, 2), centroids(:, 1)];
+    widths = maxXs(validMask) - minXs(validMask);
+    heights = maxYs(validMask) - minYs(validMask);
+
+    validWidths = widths(widths > 0);
+    if isempty(validWidths)
+        widthRef = 1;
+    else
+        widthRef = median(validWidths);
+    end
+
+    validHeights = heights(heights > 0);
+    if isempty(validHeights)
+        heightRef = 1;
+    else
+        heightRef = median(validHeights);
+    end
+
+    rangeX = max(maxXs(validMask)) - min(minXs(validMask));
+    rangeY = max(maxYs(validMask)) - min(minYs(validMask));
+
+    if ~isfinite(rangeX) || rangeX < 0
+        rangeX = 0;
+    end
+    if ~isfinite(rangeY) || rangeY < 0
+        rangeY = 0;
+    end
+
+    widthDen = max(widthRef, 1e-6);
+    heightDen = max(heightRef, 1e-6);
+
+    countX = rangeX / widthDen;
+    countY = rangeY / heightDen;
+
+    if ~isfinite(countX)
+        countX = 0;
+    end
+    if ~isfinite(countY)
+        countY = 0;
+    end
+
+    sortKey = inf(numPolygons, 2);
+    if countX >= countY
+        % Horizontal dominance: prioritize left→right, break ties bottom→top
+        sortKey(validMask, 1) = centroids(validMask, 1);
+        sortKey(validMask, 2) = -centroids(validMask, 2);
+    else
+        % Vertical dominance: prioritize bottom→top, break ties left→right
+        sortKey(validMask, 1) = -centroids(validMask, 2);
+        sortKey(validMask, 2) = centroids(validMask, 1);
+    end
+
     [~, order] = sortrows(sortKey);
     polygons = polygons(order);
+end
+
+function guiData = enforceConcentrationOrdering(guiData)
+    % Ensure drawpolygon handles, colors, and labels follow the dominant axis ordering
+    if nargin < 1 || isempty(guiData) || ~isstruct(guiData)
+        return;
+    end
+    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons) || isempty(guiData.polygons)
+        return;
+    end
+
+    [sortedPolygons, order] = assignPolygonLabels(guiData.polygons);
+    numPolygons = numel(guiData.polygons);
+    needsReindex = ~isempty(order) && numel(order) == numPolygons && ...
+                   ~isequal(order(:).', 1:numPolygons);
+    if needsReindex
+        guiData.polygons = sortedPolygons;
+    end
+
+    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels) && ...
+                ~isempty(guiData.polygonLabels);
+    if hasLabels
+        labelCount = numel(guiData.polygonLabels);
+        if needsReindex && labelCount >= numPolygons
+            guiData.polygonLabels = guiData.polygonLabels(order);
+        end
+
+        for idx = 1:min(numPolygons, labelCount)
+            labelHandle = guiData.polygonLabels{idx};
+            if isvalid(labelHandle)
+                set(labelHandle, 'String', sprintf('con_%d', idx - 1));
+            end
+        end
+
+        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+    end
+
+    if needsReindex
+        totalForColor = max(numPolygons, 1);
+        for idx = 1:numPolygons
+            polyHandle = guiData.polygons{idx};
+            if isvalid(polyHandle)
+                gradColor = getConcentrationColor(idx - 1, totalForColor);
+                setPolygonColor(polyHandle, gradColor, 0.25);
+            end
+        end
+    end
+
+    if needsReindex || ~isfield(guiData, 'aiBaseColors') || isempty(guiData.aiBaseColors)
+        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+    end
 end
 
 function sortedPolygons = sortPolygonArrayByX(polygons)
@@ -2122,6 +2235,13 @@ function sortedPolygons = sortPolygonArrayByX(polygons)
 
     rangeX = max(maxXs(validMask)) - min(minXs(validMask));
     rangeY = max(maxYs(validMask)) - min(minYs(validMask));
+
+    if ~isfinite(rangeX) || rangeX < 0
+        rangeX = 0;
+    end
+    if ~isfinite(rangeY) || rangeY < 0
+        rangeY = 0;
+    end
 
     widthDen = max(widthRef, 1e-6);
     heightDen = max(heightRef, 1e-6);
@@ -2235,6 +2355,8 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                     rotation = guiData.savedRotation;
                 end
             elseif strcmp(guiData.mode, 'editing')
+                guiData = enforceConcentrationOrdering(guiData);
+                set(fig, 'UserData', guiData);
                 polygonParams = extractPolygonParameters(guiData);
                 if isempty(polygonParams)
                     action = 'skip';
@@ -2248,15 +2370,44 @@ end
 
 function polygonParams = extractPolygonParameters(guiData)
     polygonParams = [];
-    if isfield(guiData, 'polygons') && iscell(guiData.polygons)
-        numPolygons = numel(guiData.polygons);
-        polygonParams = zeros(numPolygons, 4, 2);
-        for i = 1:numPolygons
-            if isvalid(guiData.polygons{i})
-                polygonParams(i,:,:) = guiData.polygons{i}.Position;
-            end
-        end
+
+    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons)
+        return;
     end
+
+    validMask = cellfun(@isvalid, guiData.polygons);
+    if ~any(validMask)
+        return;
+    end
+
+    validPolygons = guiData.polygons(validMask);
+    keptPositions = cell(1, numel(validPolygons));
+
+    keepIdx = 0;
+    for i = 1:numel(validPolygons)
+        pos = validPolygons{i}.Position;
+
+        if isempty(pos) || size(pos, 1) < 4
+            warning('cut_micropads:invalid_polygon', ...
+                    'Polygon %d is missing vertices. Ignoring this polygon for extraction.', i);
+            continue;
+        end
+
+        keepIdx = keepIdx + 1;
+        keptPositions{keepIdx} = pos(1:4, :);
+    end
+
+    if keepIdx == 0
+        polygonParams = [];
+        return;
+    end
+
+    polygonParams = zeros(keepIdx, 4, 2);
+    for i = 1:keepIdx
+        polygonParams(i, :, :) = keptPositions{i};
+    end
+
+    polygonParams = sortPolygonArrayByX(polygonParams);
 end
 
 %% -------------------------------------------------------------------------
@@ -2401,6 +2552,18 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
             end
 
             existingNums = nums;
+
+            % Validate numeric content (skip rotation column for NaN check)
+            coordCols = 2:9;  % x1, y1, x2, y2, x3, y3, x4, y4
+            invalidRows = any(~isfinite(existingNums(:, coordCols)), 2);
+            if any(invalidRows)
+                warning('cut_micropads:corrupt_coords', ...
+                    'Found %d rows with invalid coordinates in %s. Skipping corrupted entries.', ...
+                    sum(invalidRows), coordPath);
+                validMask = ~invalidRows;
+                existingNames = existingNames(validMask);
+                existingNums = existingNums(validMask, :);
+            end
         end
     end
 
@@ -2851,16 +3014,8 @@ function [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWi
     quads = quads(validMask, :, :);
     confidences = confidences(validMask);
 
-    % Sort by centroid X coordinate for consistent left-to-right ordering
-    if ~isempty(quads)
-        centroids = squeeze(mean(quads, 2));
-        if isvector(centroids)
-            centroids = centroids(:).';
-        end
-        [~, order] = sort(centroids(:, 1), 'ascend');
-        quads = quads(order, :, :);
-        confidences = confidences(order);
-    end
+    % NOTE: Polygon ordering is handled by sortPolygonArrayByX in caller
+    % (adaptive orientation-aware sorting for horizontal vs vertical strips)
 end
 
 function safeStopTimer(timerObj)
@@ -3352,6 +3507,7 @@ function cleanupAndClose(fig)
     % This allows waitForUserAction to read the 'stop' action we just set
     if strcmp(get(fig, 'waitstatus'), 'waiting')
         uiresume(fig);
+        pause(0.01);  % Allow event loop to process resume
     end
 
     % Delete figure
