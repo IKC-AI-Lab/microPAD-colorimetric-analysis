@@ -56,12 +56,11 @@ function augment_dataset(varargin)
     % - 'enableDistractorPolygons' (logical, default true): add synthetic look-alike distractors
     % - 'distractorMultiplier' (numeric, default 0.6): scale factor for distractor count
     % - 'distractorMaxCount' (integer, default 6): maximum distractors per scene
-    % - 'paperDamageProbability' (0-1, default 0.5): fraction of samples with physical defects
+    % - 'paperDamageProbability' (0-1, default 0.5): fraction of polygons with physical defects
     % - 'damageSeed' (numeric, optional): RNG seed for reproducible damage patterns
     % - 'damageProfileWeights' (struct, optional): custom damage profile probabilities
     %     Default: struct('minimalWarp',0.30, 'cornerChew',0.45, 'sideCollapse',0.25)
-    % - 'ellipseGuardMargin' (pixels, default 12): protected zone around ellipses
-    % - 'maxAreaRemovalFraction' (0-1, default 0.40): maximum removable polygon area
+    % - 'maxAreaRemovalFraction' (0-1, default 0.40): max removable fraction (per ellipse or micropad fallback)
     %
     % PAPER DAMAGE AUGMENTATION:
     %   Simulates realistic paper defects from storage, handling, and environmental factors.
@@ -77,16 +76,16 @@ function augment_dataset(varargin)
     %     Phase 3: Edge wear & thickness (wave noise, fraying, shadows)
     %
     %   Protected regions (never damaged):
-    %     - Ellipse measurement zones + guard margin (default 12px)
+    %     - Inner ellipse cores sized by (1 - maxAreaRemovalFraction) when labels exist
     %     - Bridge paths connecting ellipses to polygon centroid (prevent islands)
-    %     - Core polygon region (60% inner area by default, enforces maxAreaRemoval)
+    %     - Core polygon fallback when ellipses are missing (same area fraction)
     %
     % Examples:
     %   augment_dataset('numAugmentations', 5, 'rngSeed', 42)
     %   augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
     %   augment_dataset('paperDamageProbability', 0.7, 'damageSeed', 42)
     %   augment_dataset('damageProfileWeights', struct('minimalWarp',0.5,'cornerChew',0.3,'sideCollapse',0.2))
-    %   augment_dataset('ellipseGuardMargin', 20, 'maxAreaRemovalFraction', 0.3)
+    %   augment_dataset('maxAreaRemovalFraction', 0.3)
 
     %% =====================================================================
     %% CONFIGURATION CONSTANTS
@@ -174,7 +173,7 @@ function augment_dataset(varargin)
 
     % Paper damage augmentation parameters
     PAPER_DAMAGE = struct( ...
-        'probability', 0.3, ...  % Fraction of samples with damage
+        'probability', 0.3, ...  % Fraction of polygons with damage
         'profileWeights', struct('minimalWarp', 0.30, 'cornerChew', 0.45, 'sideCollapse', 0.25), ...
         'cornerClipRange', [0.06, 0.22], ...  % Fraction of shorter side
         'sideBiteRange', [0.08, 0.28], ...  % Fraction of side length
@@ -182,8 +181,7 @@ function augment_dataset(varargin)
         'edgeWaveAmplitudeRange', [0.01, 0.05], ...  % Fraction of min dimension
         'edgeWaveFrequencyRange', [1.5, 3.0], ...  % Cycles along perimeter
         'maxOperations', 3, ...  % Max destructive ops per polygon
-        'ellipseGuardMargin', 12, ...  % Pixels to protect around ellipses
-        'maxAreaRemovalFraction', 0.30);  % Maximum removable area & defines untouched core size
+        'maxAreaRemovalFraction', 0.40);  % Fraction allowed to be removed per ellipse (or micropad fallback)
 
     %% =====================================================================
     %% INPUT PARSING
@@ -209,7 +207,6 @@ function augment_dataset(varargin)
     addParameter(parser, 'paperDamageProbability', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
     addParameter(parser, 'damageSeed', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && isfinite(n)));
     addParameter(parser, 'damageProfileWeights', [], @(s) isempty(s) || isstruct(s));
-    addParameter(parser, 'ellipseGuardMargin', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0));
     addParameter(parser, 'maxAreaRemovalFraction', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
 
     parse(parser, varargin{:});
@@ -276,9 +273,6 @@ function augment_dataset(varargin)
     cfg.damage = PAPER_DAMAGE;
     if ~isempty(opts.paperDamageProbability)
         cfg.damage.probability = opts.paperDamageProbability;
-    end
-    if ~isempty(opts.ellipseGuardMargin)
-        cfg.damage.ellipseGuardMargin = opts.ellipseGuardMargin;
     end
     if ~isempty(opts.maxAreaRemovalFraction)
         cfg.damage.maxAreaRemovalFraction = opts.maxAreaRemovalFraction;
@@ -524,7 +518,7 @@ function augment_phone(phoneName, cfg)
 
     % Paper damage summary logging
     if cfg.damage.probability > 0
-        fprintf('  Paper damage applied with %.0f%% probability\n', cfg.damage.probability * 100);
+        fprintf('  Paper damage applied per polygon with %.0f%% probability\n', cfg.damage.probability * 100);
     end
 
 end
@@ -693,22 +687,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     s2Count = 0;
     s3Count = 0;
 
-    % Cache deterministic hashes for damage RNG offsets
+    % Cache deterministic hashes for reproducible per-polygon damage sampling
     phoneHash = stable_string_hash(phoneName);
     paperHash = stable_string_hash(paperBase);
-
-    % Decide once per augmented sample whether paper damage should be applied
-    damageSample = struct('apply', false, 'seed', []);
-    if cfg.damage.probability > 0
-        if isempty(cfg.damage.rngSeed)
-            damageSample.apply = rand() <= cfg.damage.probability;
-        else
-            sampleSeed = cfg.damage.rngSeed + phoneHash + paperHash + ...
-                         paperIdx * 10000 + augIdx;
-            damageSample.seed = sampleSeed;
-            damageSample.apply = deterministic_rand01(sampleSeed) <= cfg.damage.probability;
-        end
-    end
 
     % Temporary storage for transformed polygon crops and their properties
     transformedRegions = cell(numel(polygons), 1);
@@ -765,8 +746,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 tformIndepRot, rotAngle + independentRotAngle);
         end
 
-        % Apply paper damage augmentation if this scene was flagged for defects
-        if damageSample.apply
+        % Apply paper damage augmentation per polygon using configured probability
+        if cfg.damage.probability > 0
             % Extract alpha mask from transformed polygon
             polygonAlpha = any(augPolygonImg > 0, 3);  % Non-zero in any channel
 
@@ -779,11 +760,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                             paperIdx * 10000 + concentration * 100 + augIdx;
             end
 
-            damageCfgSample = cfg.damage;
-            damageCfgSample.probability = 1;  % Scene-level decision already made
-
             [damagedRGB, ~, ~, ~, damageCornersCrop] = apply_paper_damage( ...
-                augPolygonImg, polygonAlpha, augVerticesCrop, ellipseAugList, damageCfgSample, damageRng);
+                augPolygonImg, polygonAlpha, augVerticesCrop, ellipseAugList, cfg.damage, damageRng);
 
             % Replace augPolygonImg and propagate updated quadrilateral vertices
             augPolygonImg = damagedRGB;
@@ -1780,7 +1758,7 @@ function texture = borrow_background_texture(surfaceType, width, height, texture
             widthDiff = abs(width - oldWidth) / max(oldWidth, 1);
             heightDiff = abs(height - oldHeight) / max(oldHeight, 1);
             if widthDiff > 0.01 || heightDiff > 0.01
-                warning('augment_dataset:poolDimensionChange', ...
+                warning('augmentDataset:poolDimensionChange', ...
                     'Background dimensions changed from %dx%d to %dx%d. Texture pool reset. Run ''clear functions'' to avoid this warning.', ...
                     oldWidth, oldHeight, width, height);
             end
@@ -2461,19 +2439,6 @@ function hashVal = stable_string_hash(strInput)
     hashVal = double(hash);
 end
 
-function value = deterministic_rand01(seed)
-    % Generate deterministic uniform(0,1) draw without disturbing global RNG
-    if ~isfinite(seed)
-        value = 0;
-        return;
-    end
-
-    prevState = rng();
-    rng(seed, 'twister');
-    value = rand();
-    rng(prevState);
-end
-
 function ellipseOut = transform_ellipse(ellipseIn, tform)
     conic = ellipse_to_conic(ellipseIn);
 
@@ -2626,7 +2591,7 @@ end
 
 function angleDeg = normalize_to_angle(value, range, maxAngle)
     if numel(range) ~= 2
-        error('augment_dataset:invalidRange', ...
+        error('augmentDataset:invalidRange', ...
             'Range parameter must have exactly 2 elements. Got %d.', numel(range));
     end
 
@@ -3249,6 +3214,7 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
     % Initialize outputs
     damagedRGB = polygonRGB;
     damagedAlpha = polygonAlpha;
+    damageCorners = double(quadCorners);
 
     % Check if damage should be applied
     if rand() > damageCfg.probability
@@ -3272,22 +3238,33 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
     [H, W, ~] = size(polygonRGB);
     maskPolygon = damagedAlpha;
     maskProtected = false(H, W);
-    damageCorners = double(quadCorners);
     maskPreCuts = damagedAlpha;
     hasEllipses = ~isempty(ellipseList) && numel(ellipseList) > 0;
     originalArea = sum(maskPolygon(:));
 
     guardCenters = zeros(max(1, numel(ellipseList)), 2);
     guardCenterCount = 0;
+    ellipseProtectionActive = false;
+
+    maxRemovalFraction = [];
+    if isfield(damageCfg, 'maxAreaRemovalFraction') && ~isempty(damageCfg.maxAreaRemovalFraction)
+        maxRemovalFraction = min(max(damageCfg.maxAreaRemovalFraction, 0), 1);
+    end
 
     if hasEllipses
         % Compute bounding box for all ellipses to minimize meshgrid size
-        ellipseBBox = compute_ellipse_bbox_union(ellipseList, W, H, damageCfg.ellipseGuardMargin);
+        ellipseBBox = compute_ellipse_bbox_union(ellipseList, W, H);
         
         if ~isempty(ellipseBBox)
             % Create meshgrid only for ROI containing all ellipses
             [xx, yy] = meshgrid(ellipseBBox.xMin:ellipseBBox.xMax, ellipseBBox.yMin:ellipseBBox.yMax);
 
+            keepFraction = 1;
+            if ~isempty(maxRemovalFraction)
+                keepFraction = max(0, 1 - maxRemovalFraction);
+            end
+            ellipseAxisScale = sqrt(keepFraction);
+            
             for eIdx = 1:numel(ellipseList)
                 ellipse = ellipseList(eIdx);
 
@@ -3302,6 +3279,10 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
                 b = ellipse.semiMinor;
                 theta = ellipse.rotation * pi / 180;
 
+                if a <= 0 || b <= 0
+                    continue;
+                end
+
                 if cx < 1 || cx > W || cy < 1 || cy > H
                     continue;
                 end
@@ -3313,26 +3294,31 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
                 xx_rot = (xx - cx) * cos(theta) + (yy - cy) * sin(theta);
                 yy_rot = -(xx - cx) * sin(theta) + (yy - cy) * cos(theta);
 
-                ellipseMask = (xx_rot .^ 2) / (a ^ 2) + (yy_rot .^ 2) / (b ^ 2) <= 1;
-
-                if damageCfg.ellipseGuardMargin > 0
-                    se = strel('disk', round(damageCfg.ellipseGuardMargin), 0);
-                    ellipseMask = imdilate(ellipseMask, se);
+                ellipseCoreMask = false(size(xx_rot));
+                if keepFraction > 0 && ellipseAxisScale > 0
+                    coreA = a * ellipseAxisScale;
+                    coreB = b * ellipseAxisScale;
+                    if coreA > 0 && coreB > 0
+                        ellipseCoreMask = (xx_rot .^ 2) / (coreA ^ 2) + (yy_rot .^ 2) / (coreB ^ 2) <= 1;
+                    end
                 end
 
                 % Map ROI mask back to full image coordinates
                 if isempty(maskProtected) || ~any(maskProtected(:))
                     maskProtected = false(H, W);
                 end
-                maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) = ...
-                    maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) | ellipseMask;
+                if any(ellipseCoreMask(:))
+                    maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) = ...
+                        maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) | ellipseCoreMask;
+                    ellipseProtectionActive = true;
+                end
             end
 
             maskProtected = maskProtected & maskPolygon;
         end
     end
 
-    if guardCenterCount > 0
+    if guardCenterCount > 0 && ellipseProtectionActive
         guardCenters = guardCenters(1:guardCenterCount, :);
         bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, damageCorners);
         if ~isempty(bridgeMask)
@@ -3340,22 +3326,15 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         end
     end
 
-    coreGuardScale = [];
-    maxRemovalFraction = [];
-    if isfield(damageCfg, 'maxAreaRemovalFraction') && ~isempty(damageCfg.maxAreaRemovalFraction)
-        maxRemovalFraction = min(max(damageCfg.maxAreaRemovalFraction, 0), 1);
-        coreGuardScale = 1 - maxRemovalFraction;
-    end
-
-    if ~isempty(coreGuardScale) && coreGuardScale > 0
-        coreMask = build_core_guard_mask(damageCorners, H, W, coreGuardScale);
-        if ~isempty(coreMask)
-            maskProtected = maskProtected | (coreMask & maskPolygon);
-        end
-    end
-
     minAllowedAreaPixels = [];
-    if ~isempty(maxRemovalFraction)
+    if ~hasEllipses && ~isempty(maxRemovalFraction)
+        coreGuardScale = 1 - maxRemovalFraction;
+        if coreGuardScale > 0
+            coreMask = build_core_guard_mask(damageCorners, H, W, coreGuardScale);
+            if ~isempty(coreMask)
+                maskProtected = maskProtected | (coreMask & maskPolygon);
+            end
+        end
         minAllowedAreaPixels = originalArea * (1 - maxRemovalFraction);
     end
 
@@ -3629,13 +3608,12 @@ function coreMask = build_core_guard_mask(quadCorners, height, width, scaleFacto
     coreMask = poly2mask(scaledCorners(:, 1), scaledCorners(:, 2), height, width);
 end
 
-function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height, guardMargin)
+function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height)
     % Compute tight bounding box containing all ellipses for ROI-based processing
     %
     % INPUTS:
     %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
     %   width, height - image dimensions
-    %   guardMargin - additional margin around ellipses (pixels)
     %
     % OUTPUT:
     %   ellipseBBox - struct with xMin, xMax, yMin, yMax (empty if no valid ellipses)
@@ -3672,6 +3650,9 @@ function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height, gu
         theta = ellipse.rotation * pi / 180;
         a = ellipse.semiMajor;
         b = ellipse.semiMinor;
+        if a <= 0 || b <= 0
+            continue;
+        end
         dx = sqrt((a * cos(theta))^2 + (b * sin(theta))^2);
         dy = sqrt((a * sin(theta))^2 + (b * cos(theta))^2);
         
@@ -3687,17 +3668,16 @@ function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height, gu
         return;
     end
     
-    % Compute union bounding box with guard margin
     xMins = xMins(1:validCount);
     xMaxs = xMaxs(1:validCount);
     yMins = yMins(1:validCount);
     yMaxs = yMaxs(1:validCount);
     
     ellipseBBox = struct();
-    ellipseBBox.xMin = max(1, floor(min(xMins) - guardMargin));
-    ellipseBBox.xMax = min(width, ceil(max(xMaxs) + guardMargin));
-    ellipseBBox.yMin = max(1, floor(min(yMins) - guardMargin));
-    ellipseBBox.yMax = min(height, ceil(max(yMaxs) + guardMargin));
+    ellipseBBox.xMin = max(1, floor(min(xMins)));
+    ellipseBBox.xMax = min(width, ceil(max(xMaxs)));
+    ellipseBBox.yMin = max(1, floor(min(yMins)));
+    ellipseBBox.yMax = min(height, ceil(max(yMaxs)));
 end
 
 function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCorners)
@@ -4276,10 +4256,10 @@ function mask = apply_edge_fray(mask, maskProtected)
     selectedPoints = selectedPoints(1:pointCount, :);
 
     frayMask = false(H, W);
+    [xx, yy] = meshgrid(1:W, 1:H);
     for i = 1:size(selectedPoints, 1)
         radius = randi([1, 3]);
 
-        [xx, yy] = meshgrid(1:W, 1:H);
         distFromPoint = sqrt((xx - selectedPoints(i, 1)).^2 + (yy - selectedPoints(i, 2)).^2);
         blob = distFromPoint <= radius;
 
@@ -4307,8 +4287,6 @@ function img = apply_thickness_shadows(img, damagedMask, originalMask)
     %
     % OUTPUT:
     %   img - [H×W×3] uint8 RGB image with thickness shadows
-
-    [~, ~, ~] = size(img);
 
     % Compute removed region (original minus damaged)
     removedRegion = originalMask & ~damagedMask;

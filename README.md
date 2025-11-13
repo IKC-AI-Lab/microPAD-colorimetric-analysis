@@ -381,7 +381,6 @@ augment_dataset('numAugmentations', 5, ...
 weights = struct('minimalWarp', 0.60, 'cornerChew', 0.30, 'sideCollapse', 0.10);
 augment_dataset('numAugmentations', 5, ...
                 'damageProfileWeights', weights, ...
-                'ellipseGuardMargin', 20, ...
                 'maxAreaRemovalFraction', 0.30)
 
 % Fast mode: disable expensive features
@@ -410,10 +409,7 @@ augment_dataset('paperDamageProbability', 0.7)  % 70% of samples damaged
 weights = struct('minimalWarp', 0.60, 'cornerChew', 0.30, 'sideCollapse', 0.10);
 augment_dataset('damageProfileWeights', weights)
 
-% Increase ellipse protection zone
-augment_dataset('ellipseGuardMargin', 20)  % 20px margin instead of 12px
-
-% Allow more aggressive cuts (up to 50% area removal)
+% Allow more aggressive cuts (up to 50% removal per ellipse/micropad)
 augment_dataset('maxAreaRemovalFraction', 0.50)
 
 % Deterministic damage for ablation studies
@@ -424,10 +420,9 @@ augment_dataset('damageSeed', 42)
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `paperDamageProbability` | 0.5 | 0-1 | Fraction of samples with damage |
+| `paperDamageProbability` | 0.5 | 0-1 | Fraction of polygons with damage |
 | `damageProfileWeights` | See below | Sums to 1.0 | Profile selection probabilities |
-| `ellipseGuardMargin` | 12 | ≥0 pixels | Protected zone around ellipses |
-| `maxAreaRemovalFraction` | 0.40 | 0-1 | Maximum removable polygon area |
+| `maxAreaRemovalFraction` | 0.40 | 0-1 | Max removable fraction (per ellipse or per micropad fallback) |
 | `damageSeed` | (random) | Any integer | RNG seed for reproducible damage |
 
 **Default Profile Weights:**
