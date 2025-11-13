@@ -56,10 +56,37 @@ function augment_dataset(varargin)
     % - 'enableDistractorPolygons' (logical, default true): add synthetic look-alike distractors
     % - 'distractorMultiplier' (numeric, default 0.6): scale factor for distractor count
     % - 'distractorMaxCount' (integer, default 6): maximum distractors per scene
+    % - 'paperDamageProbability' (0-1, default 0.5): fraction of samples with physical defects
+    % - 'damageSeed' (numeric, optional): RNG seed for reproducible damage patterns
+    % - 'damageProfileWeights' (struct, optional): custom damage profile probabilities
+    %     Default: struct('minimalWarp',0.30, 'cornerChew',0.45, 'sideCollapse',0.25)
+    % - 'ellipseGuardMargin' (pixels, default 12): protected zone around ellipses
+    % - 'maxAreaRemovalFraction' (0-1, default 0.40): maximum removable polygon area
+    %
+    % PAPER DAMAGE AUGMENTATION:
+    %   Simulates realistic paper defects from storage, handling, and environmental factors.
+    %   Three damage profiles with different severity levels:
+    %     - minimalWarp (30%):   Subtle projective jitter + edge bending only
+    %     - cornerChew (45%):    Corner clips/tears + edge cuts + surface wear
+    %     - sideCollapse (25%):  Heavy side damage (bites dominate over corners)
+    %
+    %   Three-phase pipeline:
+    %     Phase 0: Prepare ellipse guard masks and core protection zone
+    %     Phase 1: Base warp & shear (projective jitter, nonlinear edge bending)
+    %     Phase 2: Structural cuts (corner clips, tears, side bites, tapered edges)
+    %     Phase 3: Edge wear & thickness (wave noise, fraying, shadows)
+    %
+    %   Protected regions (never damaged):
+    %     - Ellipse measurement zones + guard margin (default 12px)
+    %     - Bridge paths connecting ellipses to polygon centroid (prevent islands)
+    %     - Core polygon region (60% inner area by default, enforces maxAreaRemoval)
     %
     % Examples:
     %   augment_dataset('numAugmentations', 5, 'rngSeed', 42)
     %   augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
+    %   augment_dataset('paperDamageProbability', 0.7, 'damageSeed', 42)
+    %   augment_dataset('damageProfileWeights', struct('minimalWarp',0.5,'cornerChew',0.3,'sideCollapse',0.2))
+    %   augment_dataset('ellipseGuardMargin', 20, 'maxAreaRemovalFraction', 0.3)
 
     %% =====================================================================
     %% CONFIGURATION CONSTANTS
@@ -145,6 +172,19 @@ function augment_dataset(varargin)
         'textureGainRange', [0.06, 0.18], ...  % normalized modulation strength
         'textureSurfaceTypes', [1, 2, 3, 4]);        % Background texture primitives to reuse
 
+    % Paper damage augmentation parameters
+    PAPER_DAMAGE = struct( ...
+        'probability', 0.3, ...  % Fraction of samples with damage
+        'profileWeights', struct('minimalWarp', 0.30, 'cornerChew', 0.45, 'sideCollapse', 0.25), ...
+        'cornerClipRange', [0.06, 0.22], ...  % Fraction of shorter side
+        'sideBiteRange', [0.08, 0.28], ...  % Fraction of side length
+        'taperStrengthRange', [0.10, 0.30], ...  % Fraction of perpendicular dimension
+        'edgeWaveAmplitudeRange', [0.01, 0.05], ...  % Fraction of min dimension
+        'edgeWaveFrequencyRange', [1.5, 3.0], ...  % Cycles along perimeter
+        'maxOperations', 3, ...  % Max destructive ops per polygon
+        'ellipseGuardMargin', 12, ...  % Pixels to protect around ellipses
+        'maxAreaRemovalFraction', 0.30);  % Maximum removable area & defines untouched core size
+
     %% =====================================================================
     %% INPUT PARSING
     %% =====================================================================
@@ -166,6 +206,11 @@ function augment_dataset(varargin)
     addParameter(parser, 'enableDistractorPolygons', true, @islogical);
     addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
     addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
+    addParameter(parser, 'paperDamageProbability', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
+    addParameter(parser, 'damageSeed', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && isfinite(n)));
+    addParameter(parser, 'damageProfileWeights', [], @(s) isempty(s) || isstruct(s));
+    addParameter(parser, 'ellipseGuardMargin', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0));
+    addParameter(parser, 'maxAreaRemovalFraction', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -226,6 +271,71 @@ function augment_dataset(varargin)
     else
         cfg.distractors.minCount = 0;
     end
+
+    % Paper damage configuration with precomputed profile sampling
+    cfg.damage = PAPER_DAMAGE;
+    if ~isempty(opts.paperDamageProbability)
+        cfg.damage.probability = opts.paperDamageProbability;
+    end
+    if ~isempty(opts.ellipseGuardMargin)
+        cfg.damage.ellipseGuardMargin = opts.ellipseGuardMargin;
+    end
+    if ~isempty(opts.maxAreaRemovalFraction)
+        cfg.damage.maxAreaRemovalFraction = opts.maxAreaRemovalFraction;
+    end
+    if ~isempty(opts.damageProfileWeights)
+        % Validate custom weights sum to ~1.0
+        customWeights = opts.damageProfileWeights;
+        expectedFields = {'minimalWarp', 'cornerChew', 'sideCollapse'};
+        actualFields = fieldnames(customWeights);
+        if ~isequal(sort(actualFields), sort(expectedFields))
+            error('augmentDataset:invalidWeights', ...
+                  'Custom damage profile weights must contain exactly these fields: %s', ...
+                  strjoin(expectedFields, ', '));
+        end
+        fieldNames = fieldnames(customWeights);
+        weightSum = 0;
+        for i = 1:numel(fieldNames)
+            fieldVal = customWeights.(fieldNames{i});
+            if fieldVal < 0
+                error('augmentDataset:invalidWeights', ...
+                      'Damage profile weight "%s" must be non-negative (got %.4f)', ...
+                      fieldNames{i}, fieldVal);
+            end
+            weightSum = weightSum + fieldVal;
+        end
+        if abs(weightSum - 1.0) > 1e-6
+            error('augmentDataset:invalidWeights', ...
+                  'Custom damage profile weights must sum to 1.0 (got %.4f)', weightSum);
+        end
+        cfg.damage.profileWeights = customWeights;
+    end
+    
+    % Precompute profile sampling arrays for performance
+    cfg.damage.profileNames = fieldnames(cfg.damage.profileWeights);
+    profileWeightValues = zeros(numel(cfg.damage.profileNames), 1);
+    for i = 1:numel(cfg.damage.profileNames)
+        profileWeightValues(i) = cfg.damage.profileWeights.(cfg.damage.profileNames{i});
+    end
+    cfg.damage.profileCumWeights = cumsum(profileWeightValues);
+    
+    % Validate range bounds
+    if cfg.damage.cornerClipRange(2) <= cfg.damage.cornerClipRange(1)
+        error('augmentDataset:invalidRange', 'cornerClipRange upper bound must exceed lower bound');
+    end
+    if cfg.damage.sideBiteRange(2) <= cfg.damage.sideBiteRange(1)
+        error('augmentDataset:invalidRange', 'sideBiteRange upper bound must exceed lower bound');
+    end
+    if cfg.damage.taperStrengthRange(2) <= cfg.damage.taperStrengthRange(1)
+        error('augmentDataset:invalidRange', 'taperStrengthRange upper bound must exceed lower bound');
+    end
+    if cfg.damage.edgeWaveAmplitudeRange(2) <= cfg.damage.edgeWaveAmplitudeRange(1)
+        error('augmentDataset:invalidRange', 'edgeWaveAmplitudeRange upper bound must exceed lower bound');
+    end
+    if cfg.damage.edgeWaveFrequencyRange(2) <= cfg.damage.edgeWaveFrequencyRange(1)
+        error('augmentDataset:invalidRange', 'edgeWaveFrequencyRange upper bound must exceed lower bound');
+    end
+    cfg.damage.rngSeed = opts.damageSeed;
 
     % Resolve paths
     projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
@@ -408,8 +518,13 @@ function augment_phone(phoneName, cfg)
         for augIdx = 1:cfg.numAugmentations
             augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
                                  hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
-                                 stage3PhoneOut, cfg);
+                                 stage3PhoneOut, paperIdx, phoneName, cfg);
         end
+    end
+
+    % Paper damage summary logging
+    if cfg.damage.probability > 0
+        fprintf('  Paper damage applied with %.0f%% probability\n', cfg.damage.probability * 100);
     end
 
 end
@@ -441,7 +556,9 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
     end
 
     stage2Coords = cell(numel(polygons), 1);
-    stage3Coords = cell(max(1, numel(polygons) * 3), 1);
+    % Pre-allocate for 3 ellipses per polygon (experimental design)
+    maxEllipsesPerPolygon = 3;
+    stage3Coords = cell(max(1, numel(polygons) * maxEllipsesPerPolygon), 1);
     polyCount = 0;
     s2Count = 0;
     s3Count = 0;
@@ -508,7 +625,7 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords = [stage3Coords; cell(s3Count, 1)];
+                    stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -546,7 +663,7 @@ end
 %% -------------------------------------------------------------------------
 function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
                                hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
-                               stage3PhoneOut, cfg)
+                               stage3PhoneOut, paperIdx, phoneName, cfg)
     % Generate one augmented version of a paper with all its concentration regions
 
     [origHeight, origWidth, ~] = size(stage1Img);
@@ -568,14 +685,30 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
     % Pre-allocate coordinate accumulators
     % Stage 2: one entry per polygon (upper bound = validCount after validation)
-    % Stage 3: multiple entries per polygon (ellipses)
+    % Stage 3: 3 ellipses per polygon (experimental design)
     maxPolygons = numel(polygons);
+    maxEllipsesPerPolygon = 3;
     stage2Coords = cell(maxPolygons, 1);
-    % Pre-allocate based on expected ellipses per polygon (3 ellipses × 2 safety factor)
-    avgEllipsesPerPolygon = 3;
-    stage3Coords = cell(maxPolygons * avgEllipsesPerPolygon * 2, 1);
+    stage3Coords = cell(maxPolygons * maxEllipsesPerPolygon, 1);
     s2Count = 0;
     s3Count = 0;
+
+    % Cache deterministic hashes for damage RNG offsets
+    phoneHash = stable_string_hash(phoneName);
+    paperHash = stable_string_hash(paperBase);
+
+    % Decide once per augmented sample whether paper damage should be applied
+    damageSample = struct('apply', false, 'seed', []);
+    if cfg.damage.probability > 0
+        if isempty(cfg.damage.rngSeed)
+            damageSample.apply = rand() <= cfg.damage.probability;
+        else
+            sampleSeed = cfg.damage.rngSeed + phoneHash + paperHash + ...
+                         paperIdx * 10000 + augIdx;
+            damageSample.seed = sampleSeed;
+            damageSample.apply = deterministic_rand01(sampleSeed) <= cfg.damage.probability;
+        end
+    end
 
     % Temporary storage for transformed polygon crops and their properties
     transformedRegions = cell(numel(polygons), 1);
@@ -595,10 +728,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         if cfg.independentRotation
             independentRotAngle = rand_range(cfg.rotationRange);
             tformIndepRot = centered_rotation_tform(size(stage1Img), independentRotAngle);
-            augVertices = transform_polygon(augVertices, tformIndepRot);
         else
             independentRotAngle = 0;
+            tformIndepRot = affine2d(eye(3));
         end
+        augVertices = transform_polygon(augVertices, tformIndepRot);
 
         % Validate transformed polygon
         if ~is_valid_polygon(augVertices, cfg.minValidPolygonArea)
@@ -615,6 +749,47 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         augPolygonImg = transform_polygon_content(polygonContent, ...
                                                   origVertices, augVertices, contentBbox);
 
+        % Convert augmented vertices to cropped coordinate space (shared by damage + ellipse transforms)
+        minXCrop = min(augVertices(:,1));
+        minYCrop = min(augVertices(:,2));
+        augVerticesCrop = augVertices - [minXCrop, minYCrop];
+
+        % Transform ellipse annotations into the augmented crop frame (guard bands + stage 3)
+        ellipseAugList = [];
+        ellipseKey = sprintf('%s#%d', paperBase, concentration);
+        if hasEllipses && isKey(ellipseMap, ellipseKey)
+            rawEllipseList = ellipseMap(ellipseKey);
+            ellipseAugList = transform_region_ellipses( ...
+                rawEllipseList, paperBase, concentration, origVertices, contentBbox, ...
+                augVertices, minXCrop, minYCrop, tformPersp, tformRot, ...
+                tformIndepRot, rotAngle + independentRotAngle);
+        end
+
+        % Apply paper damage augmentation if this scene was flagged for defects
+        if damageSample.apply
+            % Extract alpha mask from transformed polygon
+            polygonAlpha = any(augPolygonImg > 0, 3);  % Non-zero in any channel
+
+            % Apply damage (with deterministic RNG if seed provided)
+            damageRng = [];
+            if ~isempty(cfg.damage.rngSeed)
+                % Create deterministic seed combining global seed + paper + concentration + augmentation
+                % Multipliers ensure no collisions: 10000 papers × 100 concentrations × 100 augmentations
+                damageRng = cfg.damage.rngSeed + phoneHash + paperHash + ...
+                            paperIdx * 10000 + concentration * 100 + augIdx;
+            end
+
+            damageCfgSample = cfg.damage;
+            damageCfgSample.probability = 1;  % Scene-level decision already made
+
+            [damagedRGB, ~, ~, ~, damageCornersCrop] = apply_paper_damage( ...
+                augPolygonImg, polygonAlpha, augVerticesCrop, ellipseAugList, damageCfgSample, damageRng);
+
+            % Replace augPolygonImg and propagate updated quadrilateral vertices
+            augPolygonImg = damagedRGB;
+            augVertices = damageCornersCrop + [minXCrop, minYCrop];
+        end
+
         % Store transformed region for later composition
         validCount = validCount + 1;
         transformedRegions{validCount} = struct( ...
@@ -624,7 +799,8 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             'contentBbox', contentBbox, ...
             'origVertices', origVertices, ...
             'independentRotAngle', independentRotAngle, ...
-            'originalRotation', polyEntry.rotation);
+            'originalRotation', polyEntry.rotation, ...
+            'augEllipses', ellipseAugList);
     end
 
     % Trim to valid regions
@@ -739,96 +915,18 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         scenePolygons{polygonIdx} = sceneVertices;
 
         % Process ellipses for this concentration (stage 3)
-        ellipseKey = sprintf('%s#%d', paperBase, concentration);
-        if hasEllipses && isKey(ellipseMap, ellipseKey)
-            ellipseList = ellipseMap(ellipseKey);
-
-            for eIdx = 1:numel(ellipseList)
-                ellipseIn = ellipseList(eIdx);
-
-                % Map ellipse from crop space to image space
-                ellipseInImageSpace = map_ellipse_crop_to_image(ellipseIn, region.contentBbox);
-
-                % Validate ellipse is inside original polygon (before transforms)
-                if ~inpolygon(ellipseInImageSpace.center(1), ellipseInImageSpace.center(2), ...
-                              region.origVertices(:,1), region.origVertices(:,2))
-                    warning('augmentDataset:ellipseOutsideOriginal', ...
-                            '  ! Ellipse %s con %d rep %d outside original polygon. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
-                    continue;
-                end
-
-                % Transform ellipse with same transforms as the parent polygon
-                ellipseAug = transform_ellipse(ellipseInImageSpace, tformPersp);
-                if ~ellipseAug.valid
-                    warning('augmentDataset:ellipseInvalid1', ...
-                            '  ! Ellipse %s con %d rep %d invalid after perspective. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
-                    continue;
-                end
-
-                ellipseAug = transform_ellipse(ellipseAug, tformRot);
-                if ~ellipseAug.valid
-                    warning('augmentDataset:ellipseInvalid2', ...
-                            '  ! Ellipse %s con %d rep %d invalid after shared rotation. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
-                    continue;
-                end
-
-                % Apply same independent rotation as the parent polygon
-                tformIndepRot = centered_rotation_tform(size(stage1Img), region.independentRotAngle);
-                ellipseAug = transform_ellipse(ellipseAug, tformIndepRot);
-                if ~ellipseAug.valid
-                    warning('augmentDataset:ellipseInvalid3', ...
-                            '  ! Ellipse %s con %d rep %d invalid after independent rotation. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
-                    continue;
-                end
-
-                % Validate ellipse is inside the transformed polygon (pre-translation)
-                if ~inpolygon(ellipseAug.center(1), ellipseAug.center(2), ...
-                              augVertices(:,1), augVertices(:,2))
-                    warning('augmentDataset:ellipseOutside', ...
-                            '  ! Ellipse %s con %d rep %d outside transformed polygon. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
-                    continue;
-                end
-
-                % Convert ellipse to polygon-crop coordinate space
-                minXCrop = min(augVertices(:,1));
-                minYCrop = min(augVertices(:,2));
-                ellipseCrop = ellipseAug;
-                ellipseCrop.center = ellipseAug.center - [minXCrop, minYCrop];
-
-                % Validate and normalize ellipse geometry
-                if ~isfinite(ellipseCrop.semiMajor) || ~isfinite(ellipseCrop.semiMinor) || ...
-                   ellipseCrop.semiMajor <= 0 || ellipseCrop.semiMinor <= 0
-                    warning('augmentDataset:invalidAxes', ...
-                            '  ! Ellipse %s con %d rep %d has invalid axes (major=%.4f, minor=%.4f). Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate, ...
-                            ellipseCrop.semiMajor, ellipseCrop.semiMinor);
-                    continue;
-                end
-
-                % Enforce semiMajor >= semiMinor convention
-                if ellipseCrop.semiMajor < ellipseCrop.semiMinor
-                    tmp = ellipseCrop.semiMajor;
-                    ellipseCrop.semiMajor = ellipseCrop.semiMinor;
-                    ellipseCrop.semiMinor = tmp;
-                    ellipseCrop.rotation = ellipseCrop.rotation + 90;
-                end
-
-                % Adjust ellipse rotation to account for augmentation transforms
-                % Total applied rotation cancels out, leaving corrective angle
-                totalAppliedRotation = rotAngle + region.independentRotAngle;
-                ellipseCrop.rotation = normalizeAngle(ellipseCrop.rotation - totalAppliedRotation);
+        ellipseCropList = region.augEllipses;
+        if hasEllipses && ~isempty(ellipseCropList)
+            for eIdx = 1:numel(ellipseCropList)
+                ellipseCrop = ellipseCropList(eIdx);
+                replicateId = ellipseCrop.replicate;
 
                 % Extract ellipse patch
                 [patchImg, patchValid] = crop_ellipse_patch(augPolygonImg, ellipseCrop);
                 if ~patchValid
                     warning('augmentDataset:patchInvalid', ...
                             '  ! Ellipse patch %s con %d rep %d invalid. Skipping.', ...
-                            paperBase, concentration, ellipseIn.replicate);
+                            paperBase, concentration, replicateId);
                     continue;
                 end
 
@@ -836,25 +934,26 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 ellipseConcDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
                 ensure_folder(ellipseConcDir);
                 patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
-                                        concentration, ellipseIn.replicate, imgExt);
+                                        concentration, replicateId, imgExt);
                 patchOutPath = fullfile(ellipseConcDir, patchFileName);
                 imwrite(patchImg, patchOutPath);
 
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords = [stage3Coords; cell(s3Count, 1)];
+                    stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
                     'concentration', concentration, ...
-                    'replicate', ellipseIn.replicate, ...
+                    'replicate', replicateId, ...
                     'center', ellipseCrop.center, ...
                     'semiMajor', ellipseCrop.semiMajor, ...
                     'semiMinor', ellipseCrop.semiMinor, ...
                     'rotation', ellipseCrop.rotation);
             end
         end
+
     end
 
     % Trim scenePolygons to actual size
@@ -984,6 +1083,111 @@ function augImg = transform_polygon_content(content, origVerts, augVerts, bbox)
     % Apply transformation
     augImg = imwarp(content, tform, 'OutputView', outRef, ...
                     'InterpolationMethod', 'linear', 'FillValues', 0);
+end
+
+function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, concentration, ...
+                                                     origVertices, contentBbox, augVertices, ...
+                                                     minXCrop, minYCrop, tformPersp, tformRot, ...
+                                                     tformIndepRot, totalAppliedRotation)
+    % Transform ellipse annotations into the augmented crop coordinate frame
+
+    if isempty(ellipseList)
+        ellipseCropList = struct('replicate', {}, 'center', {}, ...
+                                 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
+        return;
+    end
+
+    % Pre-allocate for all ellipses (trim to actual count after loop)
+    maxEllipses = numel(ellipseList);
+    ellipseCropList = repmat(struct('replicate', [], 'center', [], ...
+                                    'semiMajor', [], 'semiMinor', [], 'rotation', []), ...
+                             maxEllipses, 1);
+    validCount = 0;
+
+    for idx = 1:numel(ellipseList)
+        ellipseIn = ellipseList(idx);
+
+        % Map ellipse from crop space to original image coordinates
+        ellipseInImageSpace = map_ellipse_crop_to_image(ellipseIn, contentBbox);
+
+        % Validate ellipse lies inside the original polygon before augmentations
+        if ~inpolygon(ellipseInImageSpace.center(1), ellipseInImageSpace.center(2), ...
+                      origVertices(:,1), origVertices(:,2))
+            warning('augmentDataset:ellipseOutsideOriginal', ...
+                    '  ! Ellipse %s con %d rep %d outside original polygon. Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate);
+            continue;
+        end
+
+        % Apply shared perspective + rotation + independent rotation transforms
+        ellipseAug = transform_ellipse(ellipseInImageSpace, tformPersp);
+        if ~ellipseAug.valid
+            warning('augmentDataset:ellipseInvalid1', ...
+                    '  ! Ellipse %s con %d rep %d invalid after perspective. Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate);
+            continue;
+        end
+
+        ellipseAug = transform_ellipse(ellipseAug, tformRot);
+        if ~ellipseAug.valid
+            warning('augmentDataset:ellipseInvalid2', ...
+                    '  ! Ellipse %s con %d rep %d invalid after shared rotation. Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate);
+            continue;
+        end
+
+        ellipseAug = transform_ellipse(ellipseAug, tformIndepRot);
+        if ~ellipseAug.valid
+            warning('augmentDataset:ellipseInvalid3', ...
+                    '  ! Ellipse %s con %d rep %d invalid after independent rotation. Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate);
+            continue;
+        end
+
+        % Ensure ellipse stays inside the augmented polygon footprint
+        if ~inpolygon(ellipseAug.center(1), ellipseAug.center(2), ...
+                      augVertices(:,1), augVertices(:,2))
+            warning('augmentDataset:ellipseOutside', ...
+                    '  ! Ellipse %s con %d rep %d outside transformed polygon. Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate);
+            continue;
+        end
+
+        % Convert to polygon-crop coordinates
+        ellipseCrop = ellipseAug;
+        ellipseCrop.center = ellipseAug.center - [minXCrop, minYCrop];
+
+        if ~isfinite(ellipseCrop.semiMajor) || ~isfinite(ellipseCrop.semiMinor) || ...
+           ellipseCrop.semiMajor <= 0 || ellipseCrop.semiMinor <= 0
+            warning('augmentDataset:invalidAxes', ...
+                    '  ! Ellipse %s con %d rep %d has invalid axes (major=%.4f, minor=%.4f). Skipping.', ...
+                    paperBase, concentration, ellipseIn.replicate, ...
+                    ellipseCrop.semiMajor, ellipseCrop.semiMinor);
+            continue;
+        end
+
+        % Enforce semiMajor >= semiMinor convention
+        if ellipseCrop.semiMajor < ellipseCrop.semiMinor
+            tmp = ellipseCrop.semiMajor;
+            ellipseCrop.semiMajor = ellipseCrop.semiMinor;
+            ellipseCrop.semiMinor = tmp;
+            ellipseCrop.rotation = ellipseCrop.rotation + 90;
+        end
+
+        % Adjust rotation relative to the augmented patch reference frame
+        ellipseCrop.rotation = normalizeAngle(ellipseCrop.rotation - totalAppliedRotation);
+
+        validCount = validCount + 1;
+        ellipseCropList(validCount) = struct( ...
+            'replicate', ellipseIn.replicate, ...
+            'center', ellipseCrop.center, ...
+            'semiMajor', ellipseCrop.semiMajor, ...
+            'semiMinor', ellipseCrop.semiMinor, ...
+            'rotation', ellipseCrop.rotation);
+    end
+
+    % Trim to actual valid ellipse count
+    ellipseCropList = ellipseCropList(1:validCount);
 end
 
 function bg = composite_to_background(bg, polygonImg, sceneVerts)
@@ -2224,6 +2428,52 @@ function polygonOut = transform_polygon(vertices, tform)
     polygonOut = [x, y];
 end
 
+function hashVal = stable_string_hash(strInput)
+    % Deterministic uint32 hash for reproducible RNG offsets
+
+    if nargin == 0 || isempty(strInput)
+        hashVal = 0;
+        return;
+    end
+
+    if isstring(strInput)
+        strData = strjoin(cellstr(strInput), '#');
+    elseif iscellstr(strInput)
+        strData = strjoin(strInput, '#');
+    else
+        strData = char(strInput);
+    end
+
+    if isempty(strData)
+        hashVal = 0;
+        return;
+    end
+
+    chars = uint32(strData(:).');
+    hash = uint32(2166136261);
+    prime = uint32(16777619);
+
+    for idx = 1:numel(chars)
+        hash = bitxor(hash, chars(idx));
+        hash = hash * prime;
+    end
+
+    hashVal = double(hash);
+end
+
+function value = deterministic_rand01(seed)
+    % Generate deterministic uniform(0,1) draw without disturbing global RNG
+    if ~isfinite(seed)
+        value = 0;
+        return;
+    end
+
+    prevState = rng();
+    rng(seed, 'twister');
+    value = rand();
+    rng(prevState);
+end
+
 function ellipseOut = transform_ellipse(ellipseIn, tform)
     conic = ellipse_to_conic(ellipseIn);
 
@@ -2582,7 +2832,7 @@ function lines = read_coordinate_file_lines(coordPath)
         if ~isempty(trimmed)
             lineCount = lineCount + 1;
             if lineCount > length(lines)
-                lines = [lines; cell(1000, 1)];  % Grow in 1000-line chunks
+                lines = [lines; cell(1000, 1)]; %#ok<AGROW> % Intentional chunked growth (1000-line batches)
             end
             lines{lineCount} = trimmed;
         end
@@ -2967,5 +3217,1123 @@ function projectRoot = find_project_root(inputFolder)
     warning('augmentDataset:pathResolution', ...
             'Could not find input folder "%s". Using current directory.', inputFolder);
     projectRoot = currentDir;
+end
+
+%% -------------------------------------------------------------------------
+function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] = apply_paper_damage(polygonRGB, polygonAlpha, quadCorners, ellipseList, damageCfg, rngState)
+    % Apply paper defect augmentation pipeline to polygon patch
+    %
+    % INPUTS:
+    %   polygonRGB - [H x W x 3] uint8 color content
+    %   polygonAlpha - [H x W] logical mask
+    %   quadCorners - [4 x 2] vertex coordinates
+    %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
+    %   damageCfg - cfg.damage struct
+    %   rngState - RNG state for reproducibility
+    %
+    % OUTPUTS:
+%   damagedRGB - [H x W x 3] uint8 damaged color content
+%   damagedAlpha - [H x W] logical damaged mask
+%   maskEditable - [H x W] logical editable mask
+%   maskProtected - [H x W] logical protected mask
+%   damageCorners - [4 x 2] polygon vertices after warp/shear (crop space)
+
+    % Save/restore RNG only when determinism is requested so random draws do
+    % not replay for every polygon.
+    savedRngState = [];
+    if ~isempty(rngState)
+        savedRngState = rng();
+        rng(rngState);
+    end
+
+    % Initialize outputs
+    damagedRGB = polygonRGB;
+    damagedAlpha = polygonAlpha;
+
+    % Check if damage should be applied
+    if rand() > damageCfg.probability
+        maskEditable = false(size(polygonAlpha));
+        maskProtected = false(size(polygonAlpha));
+        if ~isempty(savedRngState)
+            rng(savedRngState);
+        end
+        return;
+    end
+
+    % Sample damage profile using precomputed cumulative weights
+    rVal = rand();
+    profileIdx = find(rVal <= damageCfg.profileCumWeights, 1, 'first');
+    if isempty(profileIdx)
+        profileIdx = numel(damageCfg.profileNames);
+    end
+    selectedProfile = damageCfg.profileNames{profileIdx};
+
+    % Phase 0: Prepare masks for damage operations
+    [H, W, ~] = size(polygonRGB);
+    maskPolygon = damagedAlpha;
+    maskProtected = false(H, W);
+    damageCorners = double(quadCorners);
+    maskPreCuts = damagedAlpha;
+    hasEllipses = ~isempty(ellipseList) && numel(ellipseList) > 0;
+    originalArea = sum(maskPolygon(:));
+
+    guardCenters = zeros(max(1, numel(ellipseList)), 2);
+    guardCenterCount = 0;
+
+    if hasEllipses
+        % Compute bounding box for all ellipses to minimize meshgrid size
+        ellipseBBox = compute_ellipse_bbox_union(ellipseList, W, H, damageCfg.ellipseGuardMargin);
+        
+        if ~isempty(ellipseBBox)
+            % Create meshgrid only for ROI containing all ellipses
+            [xx, yy] = meshgrid(ellipseBBox.xMin:ellipseBBox.xMax, ellipseBBox.yMin:ellipseBBox.yMax);
+
+            for eIdx = 1:numel(ellipseList)
+                ellipse = ellipseList(eIdx);
+
+                if ~isfield(ellipse, 'center') || ~isfield(ellipse, 'semiMajor') || ...
+                   ~isfield(ellipse, 'semiMinor') || ~isfield(ellipse, 'rotation')
+                    continue;
+                end
+
+                cx = ellipse.center(1);
+                cy = ellipse.center(2);
+                a = ellipse.semiMajor;
+                b = ellipse.semiMinor;
+                theta = ellipse.rotation * pi / 180;
+
+                if cx < 1 || cx > W || cy < 1 || cy > H
+                    continue;
+                end
+
+                guardCenterCount = guardCenterCount + 1;
+                guardCenters(guardCenterCount, :) = [cx, cy];
+
+                % Compute ellipse mask in ROI coordinates
+                xx_rot = (xx - cx) * cos(theta) + (yy - cy) * sin(theta);
+                yy_rot = -(xx - cx) * sin(theta) + (yy - cy) * cos(theta);
+
+                ellipseMask = (xx_rot .^ 2) / (a ^ 2) + (yy_rot .^ 2) / (b ^ 2) <= 1;
+
+                if damageCfg.ellipseGuardMargin > 0
+                    se = strel('disk', round(damageCfg.ellipseGuardMargin), 0);
+                    ellipseMask = imdilate(ellipseMask, se);
+                end
+
+                % Map ROI mask back to full image coordinates
+                if isempty(maskProtected) || ~any(maskProtected(:))
+                    maskProtected = false(H, W);
+                end
+                maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) = ...
+                    maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) | ellipseMask;
+            end
+
+            maskProtected = maskProtected & maskPolygon;
+        end
+    end
+
+    if guardCenterCount > 0
+        guardCenters = guardCenters(1:guardCenterCount, :);
+        bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, damageCorners);
+        if ~isempty(bridgeMask)
+            maskProtected = maskProtected | bridgeMask;
+        end
+    end
+
+    coreGuardScale = [];
+    maxRemovalFraction = [];
+    if isfield(damageCfg, 'maxAreaRemovalFraction') && ~isempty(damageCfg.maxAreaRemovalFraction)
+        maxRemovalFraction = min(max(damageCfg.maxAreaRemovalFraction, 0), 1);
+        coreGuardScale = 1 - maxRemovalFraction;
+    end
+
+    if ~isempty(coreGuardScale) && coreGuardScale > 0
+        coreMask = build_core_guard_mask(damageCorners, H, W, coreGuardScale);
+        if ~isempty(coreMask)
+            maskProtected = maskProtected | (coreMask & maskPolygon);
+        end
+    end
+
+    minAllowedAreaPixels = [];
+    if ~isempty(maxRemovalFraction)
+        minAllowedAreaPixels = originalArea * (1 - maxRemovalFraction);
+    end
+
+    maskEditable = maskPolygon & ~maskProtected;
+    hasProtectedRegions = any(maskProtected(:));
+
+    if sum(maskEditable(:)) == 0
+        maskEditable = false(size(maskProtected));
+        if ~isempty(savedRngState)
+            rng(savedRngState);
+        end
+        return;
+    end
+
+    % Phase 1: Base Warp & Shear
+
+    % 1.1 Projective jitter (all profiles)
+    imgCorners = [1, 1; W, 1; W, H; 1, H];  % TL, TR, BR, BL
+    jitterScale = 0.03;
+    rotJitter = 2.0 * pi / 180;
+
+    jitteredCorners = imgCorners;
+    for i = 1:4
+        % Translation jitter: +/- 3% of image dimensions
+        jitteredCorners(i, 1) = imgCorners(i, 1) + (rand() * 2 - 1) * jitterScale * W;
+        jitteredCorners(i, 2) = imgCorners(i, 2) + (rand() * 2 - 1) * jitterScale * H;
+
+        % Rotation jitter: +/- 2° around corner
+        angle = (rand() * 2 - 1) * rotJitter;
+        cx = imgCorners(i, 1);
+        cy = imgCorners(i, 2);
+        dx = jitteredCorners(i, 1) - cx;
+        dy = jitteredCorners(i, 2) - cy;
+        jitteredCorners(i, 1) = cx + dx * cos(angle) - dy * sin(angle);
+        jitteredCorners(i, 2) = cy + dx * sin(angle) + dy * cos(angle);
+    end
+
+    % Clamp to image bounds
+    jitteredCorners(:, 1) = max(1, min(W, jitteredCorners(:, 1)));
+    jitteredCorners(:, 2) = max(1, min(H, jitteredCorners(:, 2)));
+
+    try
+        tform = fitgeotrans(imgCorners, jitteredCorners, 'projective');
+        outputView = imref2d([H, W]);
+
+        damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
+                           'InterpolationMethod', 'linear', 'FillValues', 0);
+
+        alphaDouble = double(damagedAlpha);
+        warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
+                            'InterpolationMethod', 'linear', 'FillValues', 0);
+        damagedAlphaCand = warpedAlpha > 0.5;
+
+        if hasProtectedRegions
+            maskProtectedDouble = double(maskProtected);
+            warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
+                                    'InterpolationMethod', 'nearest', 'FillValues', 0);
+            maskProtected = warpedProtected > 0.5;
+            hasProtectedRegions = any(maskProtected(:));
+        end
+
+        if hasProtectedRegions
+            damagedAlpha = damagedAlphaCand | maskProtected;
+            maskEditable = damagedAlpha & ~maskProtected;
+        else
+            damagedAlpha = damagedAlphaCand;
+            maskEditable = damagedAlphaCand;
+        end
+        [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
+        maskPreCuts = damagedAlpha;
+    catch
+    end
+
+    % 1.2 Nonlinear edge bending (minimalWarp and sideCollapse only)
+    % Skip for small polygons where warp overhead exceeds benefit
+    minDim = min(H, W);
+    applyNonlinearWarp = minDim > 200;
+    
+    if applyNonlinearWarp && (strcmp(selectedProfile, 'minimalWarp') || strcmp(selectedProfile, 'sideCollapse'))
+        % Control points at edge midpoints
+        controlPoints = [
+            W/2, 1;      % Top edge midpoint
+            W, H/2;      % Right edge midpoint
+            W/2, H;      % Bottom edge midpoint
+            1, H/2       % Left edge midpoint
+        ];
+
+        % Add corners as fixed anchor points
+        movingPts = [controlPoints; [1, 1; W, 1; W, H; 1, H]];
+        fixedPts = movingPts;
+
+        % Offset edge midpoints perpendicular to edge
+        ampRange = damageCfg.edgeWaveAmplitudeRange * minDim;
+        for i = 1:4
+            offset = ampRange(1) + rand() * (ampRange(2) - ampRange(1));
+            offset = offset * (2 * (rand() > 0.5) - 1);  % Random sign
+
+            if i == 1  % Top edge
+                fixedPts(i, 2) = fixedPts(i, 2) + offset;
+            elseif i == 2  % Right edge
+                fixedPts(i, 1) = fixedPts(i, 1) + offset;
+            elseif i == 3  % Bottom edge
+                fixedPts(i, 2) = fixedPts(i, 2) + offset;
+            else  % Left edge
+                fixedPts(i, 1) = fixedPts(i, 1) + offset;
+            end
+        end
+
+        % Clamp to valid region
+        fixedPts(:, 1) = max(1, min(W, fixedPts(:, 1)));
+        fixedPts(:, 2) = max(1, min(H, fixedPts(:, 2)));
+
+        try
+            tform = fitgeotrans(movingPts, fixedPts, 'lwm', 8);
+            outputView = imref2d([H, W]);
+
+            damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
+                               'InterpolationMethod', 'linear', 'FillValues', 0);
+
+            alphaDouble = double(damagedAlpha);
+            warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
+                                'InterpolationMethod', 'linear', 'FillValues', 0);
+            damagedAlphaCand = warpedAlpha > 0.5;
+
+            if hasProtectedRegions
+                maskProtectedDouble = double(maskProtected);
+                warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
+                                        'InterpolationMethod', 'nearest', 'FillValues', 0);
+                maskProtected = warpedProtected > 0.5;
+                hasProtectedRegions = any(maskProtected(:));
+            end
+
+            damagedAlpha = damagedAlphaCand;
+            if hasProtectedRegions
+                damagedAlpha = damagedAlpha | maskProtected;
+                maskEditable = damagedAlpha & ~maskProtected;
+            else
+                maskEditable = damagedAlpha;
+            end
+            [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
+            maskPreCuts = damagedAlpha;
+        catch
+        end
+    end
+
+    % Phase 2: Structural Cuts (Material Removal)
+    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
+        if strcmp(selectedProfile, 'cornerChew')
+            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
+            operationWeights = [0.35, 0.25, 0.25, 0.15];
+        else
+            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
+            operationWeights = [0.10, 0.10, 0.50, 0.30];
+        end
+
+        numOps = randi([1, damageCfg.maxOperations]);
+
+        prevOp = '';
+        for opIdx = 1:numOps
+            weights = operationWeights;
+            if ~isempty(prevOp)
+                weights(strcmp(operationPool, prevOp)) = 0;
+            end
+            if sum(weights) == 0
+                weights = operationWeights;
+            end
+            weights = weights / sum(weights);
+            cumWeights = cumsum(weights);
+            opType = operationPool{find(rand() <= cumWeights, 1, 'first')};
+
+            maskBeforeOp = maskEditable;
+            switch opType
+                case 'cornerClip'
+                    maskEditable = apply_corner_clip(maskEditable, damageCorners, damageCfg);
+                case 'cornerTear'
+                    maskEditable = apply_corner_tear(maskEditable, damageCorners, damageCfg);
+                case 'sideBite'
+                    maskEditable = apply_side_bite(maskEditable, damageCorners, damageCfg, maskProtected, hasProtectedRegions);
+                case 'taperedSide'
+                    maskEditable = apply_tapered_side(maskEditable, damageCorners, damageCfg);
+            end
+
+            currentArea = sum(maskEditable(:)) + sum(maskProtected(:));
+            if ~isempty(minAllowedAreaPixels) && currentArea < minAllowedAreaPixels
+                maskEditable = maskBeforeOp;
+                break;
+            end
+
+            prevOp = opType;
+        end
+
+        damagedAlpha = maskEditable;
+        if hasProtectedRegions
+            damagedAlpha = damagedAlpha | maskProtected;
+        end
+
+        for c = 1:3
+            channel = damagedRGB(:,:,c);
+            channel(~damagedAlpha) = 0;
+            damagedRGB(:,:,c) = channel;
+        end
+    end
+
+    maskEditablePreWear = maskEditable;
+    damagedAlphaPreWear = damagedAlpha;
+    damagedRGBPreWear = damagedRGB;
+
+    % Phase 3: Edge Wear & Thickness Cues
+    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
+        maskEditable = apply_edge_wave_noise(maskEditable, damageCfg);
+
+        if rand() < 0.5
+            maskEditable = apply_edge_fray(maskEditable, maskProtected);
+        end
+
+        damagedAlpha = maskEditable;
+        if hasProtectedRegions
+            damagedAlpha = damagedAlpha | maskProtected;
+        end
+
+        damagedRGB = apply_thickness_shadows(damagedRGB, damagedAlpha, maskPreCuts);
+
+        for c = 1:3
+            channel = damagedRGB(:,:,c);
+            channel(~damagedAlpha) = 0;
+            damagedRGB(:,:,c) = channel;
+        end
+    elseif strcmp(selectedProfile, 'minimalWarp')
+        damagedAlpha = maskEditable;
+        if hasProtectedRegions
+            damagedAlpha = damagedAlpha | maskProtected;
+        end
+
+        for c = 1:3
+            channel = damagedRGB(:,:,c);
+            channel(~damagedAlpha) = 0;
+            damagedRGB(:,:,c) = channel;
+        end
+    end
+
+    if ~isempty(minAllowedAreaPixels)
+        finalArea = sum(maskEditable(:)) + sum(maskProtected(:));
+        if finalArea < minAllowedAreaPixels
+            maskEditable = maskEditablePreWear;
+            damagedAlpha = damagedAlphaPreWear;
+            damagedRGB = damagedRGBPreWear;
+        end
+    end
+
+    if ~isempty(savedRngState)
+        rng(savedRngState);
+    end
+end
+
+function coreMask = build_core_guard_mask(quadCorners, height, width, scaleFactor)
+    % Construct a scaled version of the polygon that remains untouched
+    if isempty(quadCorners) || size(quadCorners, 2) ~= 2 || scaleFactor <= 0
+        coreMask = [];
+        return;
+    end
+
+    scaleFactor = min(scaleFactor, 1);
+
+    centroid = mean(quadCorners, 1, 'omitnan');
+    if any(isnan(centroid))
+        coreMask = [];
+        return;
+    end
+
+    scaledCorners = (quadCorners - centroid) * scaleFactor + centroid;
+    coreMask = poly2mask(scaledCorners(:, 1), scaledCorners(:, 2), height, width);
+end
+
+function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height, guardMargin)
+    % Compute tight bounding box containing all ellipses for ROI-based processing
+    %
+    % INPUTS:
+    %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
+    %   width, height - image dimensions
+    %   guardMargin - additional margin around ellipses (pixels)
+    %
+    % OUTPUT:
+    %   ellipseBBox - struct with xMin, xMax, yMin, yMax (empty if no valid ellipses)
+    
+    if isempty(ellipseList)
+        ellipseBBox = [];
+        return;
+    end
+    
+    % Collect all ellipse bounding boxes
+    numEllipses = numel(ellipseList);
+    xMins = zeros(numEllipses, 1);
+    xMaxs = zeros(numEllipses, 1);
+    yMins = zeros(numEllipses, 1);
+    yMaxs = zeros(numEllipses, 1);
+    validCount = 0;
+    
+    for i = 1:numEllipses
+        ellipse = ellipseList(i);
+        
+        if ~isfield(ellipse, 'center') || ~isfield(ellipse, 'semiMajor') || ...
+           ~isfield(ellipse, 'semiMinor') || ~isfield(ellipse, 'rotation')
+            continue;
+        end
+        
+        cx = ellipse.center(1);
+        cy = ellipse.center(2);
+        
+        if cx < 1 || cx > width || cy < 1 || cy > height
+            continue;
+        end
+        
+        % Compute axis-aligned bounding box for rotated ellipse
+        theta = ellipse.rotation * pi / 180;
+        a = ellipse.semiMajor;
+        b = ellipse.semiMinor;
+        dx = sqrt((a * cos(theta))^2 + (b * sin(theta))^2);
+        dy = sqrt((a * sin(theta))^2 + (b * cos(theta))^2);
+        
+        validCount = validCount + 1;
+        xMins(validCount) = cx - dx;
+        xMaxs(validCount) = cx + dx;
+        yMins(validCount) = cy - dy;
+        yMaxs(validCount) = cy + dy;
+    end
+    
+    if validCount == 0
+        ellipseBBox = [];
+        return;
+    end
+    
+    % Compute union bounding box with guard margin
+    xMins = xMins(1:validCount);
+    xMaxs = xMaxs(1:validCount);
+    yMins = yMins(1:validCount);
+    yMaxs = yMaxs(1:validCount);
+    
+    ellipseBBox = struct();
+    ellipseBBox.xMin = max(1, floor(min(xMins) - guardMargin));
+    ellipseBBox.xMax = min(width, ceil(max(xMaxs) + guardMargin));
+    ellipseBBox.yMin = max(1, floor(min(yMins) - guardMargin));
+    ellipseBBox.yMax = min(height, ceil(max(yMaxs) + guardMargin));
+end
+
+function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCorners)
+    % Add protected connectors so guarded ellipses remain attached to the strip
+
+    bridgeMask = false(size(maskPolygon));
+    if isempty(guardCenters)
+        return;
+    end
+
+    centroid = mean(quadCorners, 1, 'omitnan');
+    if any(~isfinite(centroid))
+        return;
+    end
+
+    [height, width] = size(maskPolygon);
+    centroid(1) = max(1, min(width, centroid(1)));
+    centroid(2) = max(1, min(height, centroid(2)));
+
+    valid = all(isfinite(guardCenters), 2);
+    guardCenters = guardCenters(valid, :);
+    if isempty(guardCenters)
+        return;
+    end
+
+    for idx = 1:size(guardCenters, 1)
+        startPt = guardCenters(idx, :);
+        delta = abs(startPt - centroid);
+        numSteps = max(delta);
+        numSteps = max(ceil(numSteps), 1);
+        xLine = round(linspace(startPt(1), centroid(1), numSteps));
+        yLine = round(linspace(startPt(2), centroid(2), numSteps));
+        keep = xLine >= 1 & xLine <= width & yLine >= 1 & yLine <= height;
+        xLine = xLine(keep);
+        yLine = yLine(keep);
+        ind = sub2ind([height, width], yLine, xLine);
+        bridgeMask(ind) = true;
+    end
+
+    se = strel('disk', 2, 0);
+    bridgeMask = imdilate(bridgeMask, se) & maskPolygon;
+end
+
+%% -------------------------------------------------------------------------
+%% Phase 2 Helper Functions (Structural Cuts)
+%% -------------------------------------------------------------------------
+
+function edgeInfo = get_polygon_edges(quadCorners)
+    % Extract edge geometry from polygon corners for edge-aware damage operations
+    %
+    % INPUTS:
+    %   quadCorners - [4 x 2] vertex coordinates in clockwise order [TL, TR, BR, BL]
+    %
+    % OUTPUTS:
+    %   edgeInfo - struct with fields:
+    %     .corners - [4 x 2] original corners
+    %     .edges - [4 x 2 x 2] array where edges(i,:,:) = [startPt; endPt]
+    %     .midpoints - [4 x 2] midpoint of each edge
+    %     .normals - [4 x 2] inward-pointing unit normals
+    %     .lengths - [4 x 1] edge lengths
+    %     .directions - [4 x 2] unit direction vectors along edges
+
+    edgeInfo = struct();
+    edgeInfo.corners = quadCorners;
+
+    % Compute edges (clockwise order: top, right, bottom, left)
+    edgeInfo.edges = zeros(4, 2, 2);
+    for i = 1:4
+        nextIdx = mod(i, 4) + 1;
+        edgeInfo.edges(i, :, :) = [quadCorners(i, :); quadCorners(nextIdx, :)];
+    end
+
+    % Compute edge midpoints, lengths, directions
+    edgeInfo.midpoints = zeros(4, 2);
+    edgeInfo.lengths = zeros(4, 1);
+    edgeInfo.directions = zeros(4, 2);
+    edgeInfo.normals = zeros(4, 2);
+
+    for i = 1:4
+        startPt = squeeze(edgeInfo.edges(i, 1, :))';
+        endPt = squeeze(edgeInfo.edges(i, 2, :))';
+
+        % Midpoint
+        edgeInfo.midpoints(i, :) = (startPt + endPt) / 2;
+
+        % Direction vector and length
+        edgeVec = endPt - startPt;
+        edgeInfo.lengths(i) = norm(edgeVec);
+        edgeInfo.directions(i, :) = edgeVec / edgeInfo.lengths(i);
+
+        % Inward normal (rotate direction 90 deg clockwise: [x,y] -> [y,-x])
+        edgeInfo.normals(i, :) = [edgeVec(2), -edgeVec(1)] / edgeInfo.lengths(i);
+    end
+
+    % Verify normals point inward (toward polygon centroid)
+    centroid = mean(quadCorners, 1);
+    for i = 1:4
+        toCenter = centroid - edgeInfo.midpoints(i, :);
+        if dot(edgeInfo.normals(i, :), toCenter) < 0
+            % Normal points outward, flip it
+            edgeInfo.normals(i, :) = -edgeInfo.normals(i, :);
+        end
+    end
+end
+
+%% -------------------------------------------------------------------------
+function mask = apply_corner_clip(mask, quadCorners, damageCfg)
+    % Remove triangular section from 1-3 corners with straight cuts
+    %
+    % ALGORITHM:
+    %   1. Sample number of corners (1-3, weighted 30/50/20)
+    %   2. For adjacent corners (70% of 2-corner clips), create trapezoid look
+    %   3. Compute clip depth from reference dimension (mean edge length)
+    %   4. Create triangle vertices using edge directions from polygon geometry
+    %   5. Rasterize and subtract from mask
+    %
+    % INPUTS:
+    %   mask - [H×W] logical editable mask
+    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
+    %
+    % OUTPUT:
+    %   mask - [H×W] logical mask with clips subtracted
+    %
+    % Uses actual polygon corners for geometry-aware clipping
+
+    [H, W] = size(mask);
+    edgeInfo = get_polygon_edges(quadCorners);
+
+    % Reference dimension for depth calculation (use mean edge length)
+    refDim = mean(edgeInfo.lengths);
+
+    % Sample number of corners to clip (1-3, weighted toward 2)
+    % Sample corner count without Statistics Toolbox
+    cornerWeights = [0.3, 0.5, 0.2];
+    rVal = rand();
+    if rVal < cornerWeights(1)
+        numCorners = 1;
+    elseif rVal < cornerWeights(1) + cornerWeights(2)
+        numCorners = 2;
+    else
+        numCorners = 3;
+    end
+
+    % Sample which corners (prefer adjacent for trapezoid look)
+    if numCorners == 1
+        selectedCorners = randi([1, 4], 1);
+    elseif numCorners == 2
+        % 70% chance of adjacent corners
+        if rand() < 0.7
+            startCorner = randi([1, 4]);
+            selectedCorners = [startCorner, mod(startCorner, 4) + 1];
+        else
+            perm = randperm(4);
+            selectedCorners = perm(1:2);
+        end
+    else  % 3 corners
+        perm = randperm(4);
+        selectedCorners = perm(1:3);
+    end
+
+    % Apply clips using actual corner geometry
+    for i = 1:numel(selectedCorners)
+        cornerIdx = selectedCorners(i);
+        cornerPt = edgeInfo.corners(cornerIdx, :);
+
+        % Sample clip depth (fraction of reference dimension)
+        depthFrac = damageCfg.cornerClipRange(1) + ...
+                    rand() * (damageCfg.cornerClipRange(2) - damageCfg.cornerClipRange(1));
+        depth = depthFrac * refDim;
+
+        % Get edge directions for this corner
+        % Previous edge: from previous corner to this corner
+        prevCornerIdx = mod(cornerIdx - 2, 4) + 1;
+        prevDir = edgeInfo.directions(prevCornerIdx, :);  % Direction toward this corner
+
+        % Next edge: from this corner to next corner
+        nextDir = edgeInfo.directions(cornerIdx, :);  % Direction away from this corner
+
+        % Create triangle vertices for clip
+        pt1 = cornerPt - prevDir * depth;  % Point along incoming edge
+        pt2 = cornerPt;                    % Corner itself
+        pt3 = cornerPt + nextDir * depth;  % Point along outgoing edge
+
+        % Rasterize triangle and subtract from mask
+        triMask = poly2mask([pt1(1), pt2(1), pt3(1)], ...
+                           [pt1(2), pt2(2), pt3(2)], H, W);
+        mask = mask & ~triMask;
+    end
+end
+
+%% -------------------------------------------------------------------------
+function mask = apply_corner_tear(mask, quadCorners, damageCfg)
+    % Remove irregular jagged section from one corner
+    %
+    % ALGORITHM:
+    %   1. Select one corner randomly
+    %   2. Generate 4-6 vertices along adjacent edges with perpendicular jitter
+    %   3. Rasterize tear polygon using poly2mask
+    %   4. Optionally apply morphological dilation for roughness (50% chance)
+    %
+    % INPUTS:
+    %   mask - [H×W] logical editable mask
+    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
+    %
+    % OUTPUT:
+    %   mask - [H×W] logical mask with tear subtracted
+    %
+    % Uses actual polygon corners for geometry-aware tearing
+
+    [H, W] = size(mask);
+    edgeInfo = get_polygon_edges(quadCorners);
+
+    % Reference dimension for depth calculation
+    refDim = mean(edgeInfo.lengths);
+
+    % Select one corner randomly
+    cornerIdx = randi([1, 4]);
+    cornerPt = edgeInfo.corners(cornerIdx, :);
+
+    % Sample tear depth (similar range to clips)
+    depthFrac = damageCfg.cornerClipRange(1) + ...
+                rand() * (damageCfg.cornerClipRange(2) - damageCfg.cornerClipRange(1));
+    depth = depthFrac * refDim;
+
+    % Generate 4-6 vertices along edges with jitter
+    numVerts = randi([4, 6]);
+    tearVerts = zeros(numVerts, 2);
+
+    % Get edge directions for this corner
+    prevCornerIdx = mod(cornerIdx - 2, 4) + 1;
+    prevDir = edgeInfo.directions(prevCornerIdx, :);  % Incoming edge direction
+    nextDir = edgeInfo.directions(cornerIdx, :);      % Outgoing edge direction
+
+    % Place vertices along edges with random jitter
+    for i = 1:numVerts
+        t = (i - 1) / (numVerts - 1);  % 0 to 1
+        if t < 0.5
+            % Along incoming edge
+            dir = -prevDir;  % Direction away from corner
+            offset = t * 2 * depth;
+        else
+            % Along outgoing edge
+            dir = nextDir;   % Direction away from corner
+            offset = (t - 0.5) * 2 * depth;
+        end
+
+        % Add perpendicular jitter
+        perpDir = [-dir(2), dir(1)];  % 90° rotation
+        jitter = (rand() - 0.5) * depth * 0.3;
+
+        tearVerts(i, :) = cornerPt + dir * offset + perpDir * jitter;
+    end
+
+    % Rasterize tear polygon
+    tearMask = poly2mask(tearVerts(:, 1), tearVerts(:, 2), H, W);
+
+    % Add roughness via morphological operations
+    if rand() < 0.5
+        se = strel('disk', 2);
+        tearMask = imdilate(tearMask, se);
+    end
+
+    % Subtract from mask
+    mask = mask & ~tearMask;
+end
+
+%% -------------------------------------------------------------------------
+function mask = apply_side_bite(mask, quadCorners, damageCfg, maskProtected, hasProtectedRegions)
+    % Remove concave circular bite from one edge
+    %
+    % ALGORITHM:
+    %   1. Select random edge and position along edge (30-70% of length)
+    %   2. Compute bite radius from edge length (8-28% fraction)
+    %   3. Place circle center along inward normal direction
+    %   4. Rasterize circle and subtract from mask
+    %   5. Optionally add second bite (40% chance) with collision check
+    %
+    % INPUTS:
+    %   mask - [H×W] logical editable mask
+    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   damageCfg.sideBiteRange - [2×1] depth fraction range [0.08, 0.28]
+    %   maskProtected - [H×W] logical protected region mask
+    %   hasProtectedRegions - logical flag
+    %
+    % OUTPUT:
+    %   mask - [H×W] logical mask with bite(s) subtracted
+
+    [H, W] = size(mask);
+    edgeInfo = get_polygon_edges(quadCorners);
+
+    edgeIdx = randi([1, 4]);
+    edgePos = 0.3 + rand() * 0.4;
+    depthFrac = damageCfg.sideBiteRange(1) + ...
+                rand() * (damageCfg.sideBiteRange(2) - damageCfg.sideBiteRange(1));
+
+    edgeLength = edgeInfo.lengths(edgeIdx);
+    edgeMidpoint = edgeInfo.midpoints(edgeIdx, :);
+    edgeDirection = edgeInfo.directions(edgeIdx, :);
+    edgeNormal = edgeInfo.normals(edgeIdx, :);
+
+    tParam = (edgePos - 0.5) * 2;
+    biteCenterOnEdge = edgeMidpoint + tParam * edgeDirection * (edgeLength / 2);
+    radius = depthFrac * edgeLength;
+    circleCenter = biteCenterOnEdge + edgeNormal * radius;
+
+    [xx, yy] = meshgrid(1:W, 1:H);
+    biteMask = ((xx - circleCenter(1)).^2 + (yy - circleCenter(2)).^2) <= radius^2;
+
+    mask = mask & ~biteMask;
+
+    if rand() < 0.4
+        offsetSign = (rand() < 0.5) * 2 - 1;
+        edgePos2 = edgePos + offsetSign * (0.2 + rand() * 0.2);
+        edgePos2 = max(0.1, min(0.9, edgePos2));
+
+        tParam2 = (edgePos2 - 0.5) * 2;
+        biteCenterOnEdge2 = edgeMidpoint + tParam2 * edgeDirection * (edgeLength / 2);
+        
+        depthFrac2 = depthFrac * (0.5 + rand() * 0.2);
+        radius2 = depthFrac2 * edgeLength;
+        circleCenter2 = biteCenterOnEdge2 + edgeNormal * radius2;
+
+        centerDist = norm(circleCenter2 - circleCenter);
+        minSpacing = (radius + radius2) * 0.7;
+        
+        if centerDist >= minSpacing
+            biteMask2 = ((xx - circleCenter2(1)).^2 + (yy - circleCenter2(2)).^2) <= radius2^2;
+            
+            if hasProtectedRegions && any(biteMask2(:) & maskProtected(:))
+                return;
+            end
+            
+            mask = mask & ~biteMask2;
+        end
+    end
+end
+
+%% -------------------------------------------------------------------------
+function mask = apply_tapered_side(mask, quadCorners, damageCfg)
+    % Create diagonal cut making one side shorter
+    %
+    % ALGORITHM:
+    %   1. Select random edge
+    %   2. Compute taper strength (10-30% of edge length)
+    %   3. Create gradient mask: removal increases linearly from edge start (0%) to end (max%)
+    %   4. Use signed distance from edge line to create smooth taper
+    %
+    % INPUTS:
+    %   mask - [H×W] logical editable mask
+    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   damageCfg.taperStrengthRange - [2×1] taper fraction range [0.10, 0.30]
+    %
+    % OUTPUT:
+    %   mask - [H×W] logical mask with tapered edge
+    %
+    % Uses actual polygon edges for geometry-aware tapering
+
+    [H, W] = size(mask);
+    edgeInfo = get_polygon_edges(quadCorners);
+
+    % Choose edge randomly
+    edgeIdx = randi([1, 4]);
+
+    % Sample taper strength (fraction of edge length to remove at max)
+    taperStrength = damageCfg.taperStrengthRange(1) + ...
+                    rand() * (damageCfg.taperStrengthRange(2) - damageCfg.taperStrengthRange(1));
+
+    % Get edge geometry
+    edgeStart = squeeze(edgeInfo.edges(edgeIdx, 1, :))';  % Start point
+    edgeEnd = squeeze(edgeInfo.edges(edgeIdx, 2, :))';    % End point
+    edgeNormal = edgeInfo.normals(edgeIdx, :);            % Inward normal
+    edgeLength = edgeInfo.lengths(edgeIdx);
+
+    % Create coordinate grid
+    [xx, yy] = meshgrid(1:W, 1:H);
+
+    % Compute signed distance from each pixel to the edge line
+    % Edge parameterized as: P(t) = edgeStart + t * (edgeEnd - edgeStart), t ∈ [0,1]
+    edgeVec = edgeEnd - edgeStart;
+
+    % For each pixel, find projection onto edge line
+    % Project vector from edgeStart to pixel onto edge direction
+    px = xx(:) - edgeStart(1);
+    py = yy(:) - edgeStart(2);
+    t = (px * edgeVec(1) + py * edgeVec(2)) / (edgeVec(1)^2 + edgeVec(2)^2);
+    t = reshape(t, H, W);
+    t = max(0, min(1, t));  % Clamp to [0,1]
+
+    % Compute taper threshold that varies linearly along edge
+    % At edge start (t=0): no removal, at edge end (t=1): maximum removal
+    taperDepth = taperStrength * edgeLength * t;
+
+    % Compute signed distance to edge (positive = inward, negative = outward)
+    % Distance = dot product of (pixel - pointOnEdge) with inward normal
+    pointOnEdgeX = edgeStart(1) + t * edgeVec(1);
+    pointOnEdgeY = edgeStart(2) + t * edgeVec(2);
+    signedDist = (xx - pointOnEdgeX) * edgeNormal(1) + (yy - pointOnEdgeY) * edgeNormal(2);
+
+    % Keep pixels where signed distance > -taperDepth
+    % (pixels removed if they're beyond the tapered boundary)
+    gradientMask = signedDist > -taperDepth;
+
+    % Apply taper
+    mask = mask & gradientMask;
+end
+
+%% -------------------------------------------------------------------------
+%% Phase 3 Helper Functions (Edge Wear & Thickness)
+%% -------------------------------------------------------------------------
+
+function mask = apply_edge_wave_noise(mask, damageCfg)
+    % Add sinusoidal wave pattern to edges to prevent straight lines
+    %
+    % ALGORITHM:
+    %   1. Compute approximate signed distance transform
+    %   2. Generate sinusoidal wave pattern + Gaussian noise
+    %   3. Modulate distance field and rethreshold to create wavy edges
+    %
+    % PERFORMANCE: Skips processing for small masks (<150px) where wave effect is negligible
+
+    [H, W] = size(mask);
+    minDim = min(H, W);
+    originalMask = mask;
+    
+    % Skip for small polygons where wave effect is negligible
+    if minDim < 150
+        return;
+    end
+
+    % Extract perimeter
+    perim = bwperim(mask);
+    if ~any(perim(:))
+        return;
+    end
+
+    % Compute approximate signed distance (faster than full bwdist for small distances)
+    maxWaveDist = damageCfg.edgeWaveAmplitudeRange(2) * minDim * 2;
+    signedDist = fast_signed_distance(mask, ceil(maxWaveDist));
+
+    % Sample wave frequency from config
+    freq = damageCfg.edgeWaveFrequencyRange(1) + ...
+           rand() * (damageCfg.edgeWaveFrequencyRange(2) - damageCfg.edgeWaveFrequencyRange(1));
+
+    % Sample wave amplitude from config
+    amp = damageCfg.edgeWaveAmplitudeRange(1) + ...
+          rand() * (damageCfg.edgeWaveAmplitudeRange(2) - damageCfg.edgeWaveAmplitudeRange(1));
+    amp = amp * minDim;
+
+    % Create coordinate grid for wave pattern
+    [xx, yy] = meshgrid(1:W, 1:H);
+
+    % Compute angle from image center for sinusoidal modulation
+    cx = W / 2;
+    cy = H / 2;
+    theta = atan2(yy - cy, xx - cx);
+
+    % Sinusoidal wave + low-frequency Gaussian noise
+    wavePattern = amp * sin(freq * theta);
+
+    % Add low-pass filtered Gaussian noise
+    noiseAmp = amp * 0.3;
+    noise = randn(H, W) * noiseAmp;
+    noise = imgaussfilt(noise, 3);
+
+    % Combined modulation
+    modulation = wavePattern + noise;
+
+    % Apply wave modulation to signed distance
+    modulatedDist = signedDist + modulation;
+
+    % New mask: pixels with non-negative signed distance remain, but never add material
+    mask = (modulatedDist >= 0) & originalMask;
+end
+
+function signedDist = fast_signed_distance(mask, maxDist)
+    % Fast approximate signed distance transform for small distances
+    %
+    % ALGORITHM:
+    %   Uses morphological erosion/dilation instead of Euclidean distance.
+    %   Much faster for maxDist < 20 pixels (typical for edge wave noise).
+    %
+    % INPUTS:
+    %   mask - [H×W] logical binary mask
+    %   maxDist - maximum distance to compute (pixels)
+    %
+    % OUTPUT:
+    %   signedDist - [H×W] approximate signed distance (positive inside, negative outside)
+    
+    if maxDist > 20
+        % Fall back to accurate method for large distances
+        D_out = bwdist(~mask);
+        D_in = bwdist(mask);
+        signedDist = D_out - D_in;
+        return;
+    end
+    
+    % Approximate using iterative erosion/dilation
+    [H, W] = size(mask);
+    signedDist = zeros(H, W);
+    
+    % Compute distance inside mask (positive)
+    se = strel('disk', 1, 0);
+    tempMask = mask;
+    for d = 1:maxDist
+        tempMask = imerode(tempMask, se);
+        if ~any(tempMask(:))
+            break;
+        end
+        signedDist = signedDist + double(tempMask);
+    end
+    
+    % Compute distance outside mask (negative)
+    tempMask = ~mask;
+    for d = 1:maxDist
+        tempMask = imerode(tempMask, se);
+        if ~any(tempMask(:))
+            break;
+        end
+        signedDist = signedDist - double(tempMask);
+    end
+end
+
+%% -------------------------------------------------------------------------
+function mask = apply_edge_fray(mask, maskProtected)
+    % Add micro-chipping along edges simulating paper fiber fraying
+    %
+    % ALGORITHM:
+    %   1. Extract perimeter pixels
+    %   2. Select 3-N fray points with minimum spacing (10px)
+    %   3. Create small circular blobs (radius 1-3px) at fray points
+    %   4. Subtract from mask while respecting protected regions
+    %
+    % INPUTS:
+    %   mask - [H×W] logical editable mask
+    %   maskProtected - [H×W] logical protected region mask
+    %
+    % OUTPUT:
+    %   mask - [H×W] logical mask with fray damage subtracted
+
+    [H, W] = size(mask);
+
+    perim = bwperim(mask);
+    [py, px] = find(perim);
+
+    if isempty(px)
+        return;
+    end
+
+    numPerimPixels = numel(px);
+    numFrayPoints = max(3, round(numPerimPixels / 100 * rand() * 3));
+
+    minSpacing = 10;
+    selectedPoints = zeros(numFrayPoints, 2);
+    pointCount = 0;
+    attempts = 0;
+    maxAttempts = numFrayPoints * 10;
+
+    while pointCount < numFrayPoints && attempts < maxAttempts
+        idx = randi(numPerimPixels);
+        candidate = [px(idx), py(idx)];
+
+        if pointCount == 0
+            pointCount = 1;
+            selectedPoints(pointCount, :) = candidate;
+        else
+            dists = sqrt(sum((selectedPoints(1:pointCount, :) - candidate).^2, 2));
+            if all(dists >= minSpacing)
+                pointCount = pointCount + 1;
+                selectedPoints(pointCount, :) = candidate;
+            end
+        end
+        attempts = attempts + 1;
+    end
+    selectedPoints = selectedPoints(1:pointCount, :);
+
+    frayMask = false(H, W);
+    for i = 1:size(selectedPoints, 1)
+        radius = randi([1, 3]);
+
+        [xx, yy] = meshgrid(1:W, 1:H);
+        distFromPoint = sqrt((xx - selectedPoints(i, 1)).^2 + (yy - selectedPoints(i, 2)).^2);
+        blob = distFromPoint <= radius;
+
+        blob = blob & ~maskProtected;
+        frayMask = frayMask | blob;
+    end
+
+    mask = mask & ~frayMask;
+end
+
+%% -------------------------------------------------------------------------
+function img = apply_thickness_shadows(img, damagedMask, originalMask)
+    % Darken edges where material was removed to create depth cues
+    %
+    % ALGORITHM:
+    %   1. Compute removed region (original minus damaged)
+    %   2. Calculate distance from removed boundary
+    %   3. Create shadow ramp (15% darkening at boundary, fading over 8px)
+    %   4. Apply multiplicative darkening to all channels
+    %
+    % INPUTS:
+    %   img - [H×W×3] uint8 RGB image
+    %   damagedMask - [H×W] logical mask after damage
+    %   originalMask - [H×W] logical mask before damage
+    %
+    % OUTPUT:
+    %   img - [H×W×3] uint8 RGB image with thickness shadows
+
+    [~, ~, ~] = size(img);
+
+    % Compute removed region (original minus damaged)
+    removedRegion = originalMask & ~damagedMask;
+
+    if ~any(removedRegion(:))
+        return;  % No material removed, skip shadowing
+    end
+
+    % Compute distance from removed region
+    distFromRemoved = bwdist(removedRegion);
+
+    % Create shadow ramp (darken pixels near removed regions)
+    shadowWidth = 8;  % pixels
+    shadowRamp = max(0, 1 - distFromRemoved / shadowWidth);
+    shadowRamp = shadowRamp .* double(damagedMask);  % Only shadow remaining material
+
+    % Darken by 15% at removed boundary, fading over shadowWidth pixels
+    shadowStrength = 0.15;
+    darkening = 1 - shadowStrength * shadowRamp;
+
+    % Apply to all channels
+    for c = 1:3
+        channel = double(img(:,:,c));
+        channel = channel .* darkening;
+        img(:,:,c) = uint8(channel);
+    end
 end
 

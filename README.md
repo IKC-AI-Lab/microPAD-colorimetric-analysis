@@ -325,6 +325,34 @@ The final Android application will use AI-based **auto-detection** to locate tes
 - **Gaussian blur** - Focus variation (25% probability, sigma 0.25-0.65px)
 - **Thin occlusions** - Hair/strap-like artifacts across test zones (disabled by default)
 
+**Paper Damage Augmentation (Physical Defects)**
+- **Damage probability** - 50% of samples show realistic paper wear
+- **Three damage profiles:**
+  - `minimalWarp` (30%): Subtle warping from handling (projective jitter + edge bending)
+  - `cornerChew` (45%): Corner clips, tears, and edge fraying
+  - `sideCollapse` (25%): Heavy side damage (bites, tapered edges)
+- **Protected regions** - Ellipse measurement zones are never damaged
+- **Three-phase pipeline:**
+  - Phase 1: Base warp & shear (projective jitter, nonlinear edge bending)
+  - Phase 2: Structural cuts (corner clips, tears, side bites, tapered edges)
+  - Phase 3: Edge wear & thickness (wave noise, fraying, shadows)
+- **Realistic effects:**
+  - **Corner clips** - Triangular cuts from 1-3 corners (6-22% of edge length)
+  - **Corner tears** - Jagged irregular cuts with 4-6 vertices and random jitter
+  - **Side bites** - Circular concave cuts from folding/mishandling (8-28% of edge)
+  - **Tapered edges** - Diagonal cuts creating trapezoid shapes (10-30% taper)
+  - **Edge wave noise** - Sinusoidal perimeter distortion (1.5-3 cycles, 1-5% amplitude)
+  - **Fiber fraying** - Micro-chipping along cut edges (1-3px blobs)
+  - **Thickness shadows** - Depth cues at removal boundaries (15% darkening, 8px fade)
+- **Guard mechanisms:**
+  - Ellipse zones + 12px margin protected by dilation
+  - Bridge paths connecting ellipses to centroid (prevent isolated regions)
+  - Core polygon region (60% inner area) enforces maxAreaRemoval limit
+- **Purpose**: Train AI to handle real-world paper degradation from storage, handling, and environmental factors
+
+![Damaged microPAD Example](demo_images/damaged_micropad_cornerchew.png)
+*Example: cornerChew profile with corner tear + side bite preserving ellipse regions*
+
 ---
 
 ### **Usage Examples**
@@ -344,6 +372,18 @@ augment_dataset('numAugmentations', 5, ...
                 'occlusionProbability', 0.15, ...
                 'independentRotation', true)
 
+% Enable paper damage with higher probability
+augment_dataset('numAugmentations', 5, ...
+                'paperDamageProbability', 0.7, ...
+                'damageSeed', 42)
+
+% Customize damage profile weights (prefer minimal damage)
+weights = struct('minimalWarp', 0.60, 'cornerChew', 0.30, 'sideCollapse', 0.10);
+augment_dataset('numAugmentations', 5, ...
+                'damageProfileWeights', weights, ...
+                'ellipseGuardMargin', 20, ...
+                'maxAreaRemovalFraction', 0.30)
+
 % Fast mode: disable expensive features
 augment_dataset('numAugmentations', 3, ...
                 'photometricAugmentation', false, ...
@@ -358,12 +398,68 @@ augment_dataset('numAugmentations', 5, 'exportCornerLabels', true)
 
 ---
 
+### **Advanced: Paper Damage Configuration**
+
+Fine-tune damage realism by overriding default parameters:
+
+```matlab
+% Increase damage frequency
+augment_dataset('paperDamageProbability', 0.7)  % 70% of samples damaged
+
+% Prefer minimal damage (subtle warping only)
+weights = struct('minimalWarp', 0.60, 'cornerChew', 0.30, 'sideCollapse', 0.10);
+augment_dataset('damageProfileWeights', weights)
+
+% Increase ellipse protection zone
+augment_dataset('ellipseGuardMargin', 20)  % 20px margin instead of 12px
+
+% Allow more aggressive cuts (up to 50% area removal)
+augment_dataset('maxAreaRemovalFraction', 0.50)
+
+% Deterministic damage for ablation studies
+augment_dataset('damageSeed', 42)
+```
+
+**Damage Parameters:**
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `paperDamageProbability` | 0.5 | 0-1 | Fraction of samples with damage |
+| `damageProfileWeights` | See below | Sums to 1.0 | Profile selection probabilities |
+| `ellipseGuardMargin` | 12 | ≥0 pixels | Protected zone around ellipses |
+| `maxAreaRemovalFraction` | 0.40 | 0-1 | Maximum removable polygon area |
+| `damageSeed` | (random) | Any integer | RNG seed for reproducible damage |
+
+**Default Profile Weights:**
+- `minimalWarp`: 30% (subtle handling distortion only)
+- `cornerChew`: 45% (corner damage + cuts + wear)
+- `sideCollapse`: 25% (heavy side damage, bites dominate)
+
+**Damage Operation Ranges (Advanced):**
+
+These internal constants control damage severity and can be found in `PAPER_DAMAGE` struct (lines 130-141):
+
+| Operation | Parameter | Default Range | Effect |
+|-----------|-----------|---------------|--------|
+| Corner clips | `cornerClipRange` | [0.06, 0.22] | Fraction of shorter edge |
+| Side bites | `sideBiteRange` | [0.08, 0.28] | Fraction of side length |
+| Tapered edges | `taperStrengthRange` | [0.10, 0.30] | Fraction of perpendicular dim |
+| Edge waves | `edgeWaveAmplitudeRange` | [0.01, 0.05] | Fraction of min dimension |
+| Edge waves | `edgeWaveFrequencyRange` | [1.5, 3.0] | Cycles along perimeter |
+| Max operations | `maxOperations` | 3 | Max structural cuts per polygon |
+
+---
+
 ### **Performance**
 
 **Speed**: ~1.0 second per augmented image (3x faster than v1)
 - Grid-based spatial acceleration (O(1) collision detection vs O(n^2))
 - Simplified polygon warping (nearest-neighbor vs bilinear)
 - Background texture pooling (reuses 4 procedural types with cached surfaces instead of regenerating each frame)
+- ROI-based meshgrid allocation for ellipse protection (5-10× memory reduction)
+- Fast approximate signed distance for edge noise (3-5× faster than bwdist)
+- Precomputed profile sampling arrays (eliminates fieldnames() overhead)
+- Size-based bypass for small polygons (<200px, <150px for edge noise)
 
 **Memory**: Low overhead
 - Processes one paper at a time

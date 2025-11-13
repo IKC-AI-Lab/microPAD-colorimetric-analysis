@@ -10,7 +10,7 @@ function cut_micropads(varargin)
     %
     % Features:
     %   - Interactive rotation adjustment with memory
-    %   - AI-powered polygon detection (YOLOv11m-pose)
+    %   - AI-powered polygon detection (YOLOv11s-pose)
     %   - Manual polygon editing and refinement
     %   - Saves polygon coordinates with rotation angle
     %
