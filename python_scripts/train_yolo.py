@@ -37,10 +37,12 @@ except ImportError:
 # ============================================================================
 #
 # ZERO-CONFIGURATION TRAINING:
-# These defaults are optimized for dual RTX A6000 workstation (96 GB VRAM total).
+# These defaults are optimized for dual RTX A6000 workstation (96 GB VRAM total)
+# with large input images (~13MP: 4032x3024 → resized to 1280x1280).
 # Simply run: python train_yolo.py
 # No command-line arguments required for optimal performance!
 #
+# Batch size is conservative (24) to handle large input images safely.
 # To customize: Override any parameter via CLI flags (see --help)
 # ============================================================================
 
@@ -49,12 +51,15 @@ DEFAULT_MODEL = 'yolo11s-pose.pt'
 DEFAULT_IMAGE_SIZE = 1280
 
 # Training hyperparameters (optimized for dual A6000 workstation)
-DEFAULT_BATCH_SIZE = 32              # 16 per GPU on dual A6000 setup
+# NOTE: Batch size conservative due to large input images (~13MP: 4032x3024)
+DEFAULT_BATCH_SIZE = 24              # 12 per GPU - safe for large images at 1280 resolution
 DEFAULT_EPOCHS_STAGE1 = 200          # Extended training for better convergence
 DEFAULT_EPOCHS_STAGE2 = 150          # Extended fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
 DEFAULT_PATIENCE_STAGE2 = 15
-DEFAULT_LEARNING_RATE_STAGE2 = 0.01  # Lower LR for fine-tuning
+DEFAULT_LEARNING_RATE_STAGE1 = 0.001 # Learning rate for AdamW optimizer (stage 1)
+DEFAULT_LEARNING_RATE_STAGE2 = 0.0005 # Lower LR for fine-tuning
+DEFAULT_OPTIMIZER = 'AdamW'          # AdamW optimizer for pose estimation
 
 # Hardware configuration (optimized for 64-core CPU + dual RTX A6000)
 # GPU device selection: Use CUDA_VISIBLE_DEVICES environment variable or default
@@ -140,6 +145,8 @@ class YOLOTrainer:
         patience: int = DEFAULT_PATIENCE_STAGE1,
         workers: int = DEFAULT_NUM_WORKERS,
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
+        optimizer: str = DEFAULT_OPTIMIZER,
+        lr0: float = DEFAULT_LEARNING_RATE_STAGE1,
         name: str = 'yolo11s_pose_1280',
         **kwargs
     ) -> Dict[str, Any]:
@@ -155,6 +162,8 @@ class YOLOTrainer:
             patience: Early stopping patience
             workers: Number of dataloader workers
             cache: Cache images in RAM/disk for faster training (True, False, or 'disk')
+            optimizer: Optimizer type (default: AdamW)
+            lr0: Initial learning rate (default: 0.001 for AdamW)
             name: Experiment name
             **kwargs: Additional training arguments passed to YOLO
 
@@ -182,6 +191,8 @@ class YOLOTrainer:
         print(f"  Epochs: {epochs}")
         print(f"  Image size: {imgsz}")
         print(f"  Batch size: {batch}" + (f" ({batch_per_device} per GPU)" if num_devices > 1 else ""))
+        print(f"  Optimizer: {optimizer}")
+        print(f"  Learning rate: {lr0}")
         print(f"  Workers: {workers}")
         print(f"  Cache: {cache}")
         print(f"  Device(s): {device}")
@@ -209,6 +220,14 @@ class YOLOTrainer:
             'save_period': CHECKPOINT_SAVE_PERIOD,
             'verbose': True,
             'plots': True,
+            # Optimizer configuration
+            'optimizer': optimizer,
+            'lr0': lr0,
+            'cos_lr': True,  # Cosine learning rate scheduler
+            'amp': True,  # Automatic Mixed Precision for faster training
+            # Pose-specific loss weights (optimized for keypoint detection)
+            'pose': 12.0,  # Pose loss weight
+            'kobj': 2.0,   # Keypoint objectness loss weight
             # Augmentation configuration
             'hsv_h': AUG_HSV_HUE,
             'hsv_s': AUG_HSV_SATURATION,
@@ -249,6 +268,7 @@ class YOLOTrainer:
         patience: int = DEFAULT_PATIENCE_STAGE2,
         workers: int = DEFAULT_NUM_WORKERS,
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
+        optimizer: str = DEFAULT_OPTIMIZER,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
         name: str = 'yolo11s_pose_1280_stage2',
         **kwargs
@@ -265,7 +285,8 @@ class YOLOTrainer:
             patience: Early stopping patience
             workers: Number of dataloader workers
             cache: Cache images in RAM/disk for faster training (True, False, or 'disk')
-            lr0: Initial learning rate for fine-tuning
+            optimizer: Optimizer type (default: AdamW)
+            lr0: Initial learning rate for fine-tuning (default: 0.0005 for AdamW)
             name: Experiment name
             **kwargs: Additional training arguments
 
@@ -299,6 +320,7 @@ class YOLOTrainer:
         print(f"  Data: {data_path}")
         print(f"  Epochs: {epochs}")
         print(f"  Batch size: {batch}")
+        print(f"  Optimizer: {optimizer}")
         print(f"  Learning rate: {lr0}")
         print(f"  Device(s): {device}")
 
@@ -318,11 +340,18 @@ class YOLOTrainer:
             'project': str(self.results_dir),
             'name': name,
             'patience': patience,
-            'lr0': lr0,
             'save': True,
             'save_period': CHECKPOINT_SAVE_PERIOD,
             'verbose': True,
             'plots': True,
+            # Optimizer configuration
+            'optimizer': optimizer,
+            'lr0': lr0,
+            'cos_lr': True,  # Cosine learning rate scheduler
+            'amp': True,  # Automatic Mixed Precision
+            # Pose-specific loss weights
+            'pose': 12.0,
+            'kobj': 2.0,
         }
 
         # Merge additional kwargs
@@ -513,9 +542,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Train Stage 1 (synthetic data pretraining) - default mode
+  # ZERO-CONFIG TRAINING (recommended - uses optimized defaults)
   python train_yolo.py
-  python train_yolo.py --stage 1  # Explicit stage 1
+  # Default: yolo11s-pose, 1280 resolution, batch=48, AdamW optimizer, dual A6000 GPUs
+
+  # Train Stage 1 (synthetic data pretraining) - explicit
+  python train_yolo.py --stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
   python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
@@ -532,11 +564,26 @@ Examples:
   # Export with INT8 quantization
   python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --int8
 
-  # Custom training parameters (adjust batch size, workers, cache strategy)
-  python train_yolo.py --stage 1 --epochs 200 --batch 128 --workers 16 --cache disk
+  # Override defaults (if needed)
+  python train_yolo.py --stage 1 --batch 64 --epochs 300 --lr0 0.0005
 
-  # Advanced: custom optimizer and learning rate scheduler
-  python train_yolo.py --stage 1 --optimizer AdamW --cos-lr
+  # Use different optimizer
+  python train_yolo.py --stage 1 --optimizer SGD --lr0 0.01
+
+Optimized Defaults (for dual RTX A6000 + large images):
+  Model: yolo11s-pose.pt
+  Resolution: 1280x1280
+  Batch size: 24 (12 per GPU) - safe for ~13MP input images
+  Optimizer: AdamW
+  Learning rate: 0.001 (stage 1), 0.0005 (stage 2)
+  Cosine LR scheduler: Enabled
+  Mixed precision (AMP): Enabled
+  Pose loss weights: pose=12.0, kobj=2.0
+  GPUs: 0,2 (dual A6000, homogeneous pairing)
+
+  To increase batch size (monitor GPU memory):
+    python train_yolo.py --batch 32  # moderate (16 per GPU)
+    python train_yolo.py --batch 40  # aggressive (20 per GPU)
         """
     )
 
@@ -565,17 +612,17 @@ Examples:
     parser.add_argument('--patience', type=int,
                        help=f'Early stopping patience (default: {DEFAULT_PATIENCE_STAGE1} for stage 1, {DEFAULT_PATIENCE_STAGE2} for stage 2)')
     parser.add_argument('--lr0', type=float,
-                       help=f'Initial learning rate (default: {DEFAULT_LEARNING_RATE_STAGE2} for stage 2)')
+                       help=f'Initial learning rate (default: {DEFAULT_LEARNING_RATE_STAGE1} for stage 1, {DEFAULT_LEARNING_RATE_STAGE2} for stage 2)')
 
     # Advanced training arguments
     parser.add_argument('--workers', type=int, default=DEFAULT_NUM_WORKERS,
                        help=f'Number of dataloader workers (default: {DEFAULT_NUM_WORKERS})')
     parser.add_argument('--cache', type=str, default=DEFAULT_CACHE_ENABLED, choices=['True', 'False', 'disk'],
                        help=f'Image caching: True (RAM), False (disabled), disk (disk cache) (default: {DEFAULT_CACHE_ENABLED})')
-    parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW', 'NAdam', 'RAdam', 'RMSProp', 'auto'],
-                       help='Optimizer (default: auto - lets YOLO choose)')
-    parser.add_argument('--cos-lr', action='store_true',
-                       help='Enable cosine learning rate scheduler')
+    parser.add_argument('--optimizer', type=str, default=DEFAULT_OPTIMIZER, choices=['SGD', 'Adam', 'AdamW', 'NAdam', 'RAdam', 'RMSProp', 'auto'],
+                       help=f'Optimizer (default: {DEFAULT_OPTIMIZER})')
+    parser.add_argument('--cos-lr', action='store_true', default=True,
+                       help='Enable cosine learning rate scheduler (default: enabled)')
 
     # Export arguments
     parser.add_argument('--formats', nargs='+', default=['tflite'],
@@ -614,11 +661,14 @@ Examples:
                 train_kwargs['batch'] = args.batch
             if args.patience:
                 train_kwargs['patience'] = args.patience
+            if args.lr0:
+                train_kwargs['lr0'] = args.lr0
             if args.data:
                 train_kwargs['data'] = args.data
 
             # Advanced options
             train_kwargs['workers'] = args.workers
+            train_kwargs['optimizer'] = args.optimizer
             # Convert cache string to appropriate type
             if args.cache == 'True':
                 train_kwargs['cache'] = True
@@ -627,10 +677,9 @@ Examples:
             else:
                 train_kwargs['cache'] = args.cache  # 'disk'
 
-            if args.optimizer:
-                train_kwargs['optimizer'] = args.optimizer
-            if args.cos_lr:
-                train_kwargs['cos_lr'] = True
+            # cos_lr is already enabled by default in train_args, but can be overridden
+            if not args.cos_lr:
+                train_kwargs['cos_lr'] = False
 
             trainer.train_stage1(
                 device=args.device,
@@ -659,6 +708,7 @@ Examples:
 
             # Advanced options
             train_kwargs['workers'] = args.workers
+            train_kwargs['optimizer'] = args.optimizer
             # Convert cache string to appropriate type
             if args.cache == 'True':
                 train_kwargs['cache'] = True
@@ -667,10 +717,9 @@ Examples:
             else:
                 train_kwargs['cache'] = args.cache  # 'disk'
 
-            if args.optimizer:
-                train_kwargs['optimizer'] = args.optimizer
-            if args.cos_lr:
-                train_kwargs['cos_lr'] = True
+            # cos_lr is already enabled by default in train_args, but can be overridden
+            if not args.cos_lr:
+                train_kwargs['cos_lr'] = False
 
             trainer.train_stage2(
                 weights=args.weights,
