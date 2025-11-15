@@ -565,7 +565,7 @@ def print_summary(
     print("   python python_scripts/train_yolo.py --stage 1")
     print("   (YOLO scales images to 1280x1280 at runtime)")
     print("   Or customize resolution:")
-    print("   python python_scripts/train_yolo.py --stage 1 --imgsz 1280 --batch 24")
+    print("   python python_scripts/train_yolo.py --stage 1 --imgsz 1280 --batch 32")
     print("="*60)
 
 

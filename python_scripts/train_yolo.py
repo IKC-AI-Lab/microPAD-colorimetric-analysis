@@ -52,7 +52,7 @@ DEFAULT_IMAGE_SIZE = 1280
 
 # Training hyperparameters (optimized for dual A6000 workstation)
 # NOTE: Batch size conservative due to large input images (~13MP: 4032x3024)
-DEFAULT_BATCH_SIZE = 24              # 12 per GPU - safe for large images at 1280 resolution
+DEFAULT_BATCH_SIZE = 32              # 16 per GPU - safe for large images at 1280 resolution
 DEFAULT_EPOCHS_STAGE1 = 200          # Extended training for better convergence
 DEFAULT_EPOCHS_STAGE2 = 150          # Extended fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
@@ -573,7 +573,7 @@ Examples:
 Optimized Defaults (for dual RTX A6000 + large images):
   Model: yolo11s-pose.pt
   Resolution: 1280x1280
-  Batch size: 24 (12 per GPU) - safe for ~13MP input images
+  Batch size: 32 (16 per GPU) - safe for ~13MP input images
   Optimizer: AdamW
   Learning rate: 0.001 (stage 1), 0.0005 (stage 2)
   Cosine LR scheduler: Enabled
@@ -582,8 +582,8 @@ Optimized Defaults (for dual RTX A6000 + large images):
   GPUs: 0,2 (dual A6000, homogeneous pairing)
 
   To increase batch size (monitor GPU memory):
-    python train_yolo.py --batch 32  # moderate (16 per GPU)
-    python train_yolo.py --batch 40  # aggressive (20 per GPU)
+    python train_yolo.py --batch 40  # moderate (20 per GPU)
+    python train_yolo.py --batch 48  # aggressive (24 per GPU)
         """
     )
 
