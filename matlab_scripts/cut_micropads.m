@@ -87,11 +87,13 @@ function cut_micropads(varargin)
     % === ELLIPSE LAYOUT PARAMETERS ===
     MARGIN_TO_SPACING_RATIO = 1/3;
     VERTICAL_POSITION_RATIO = 1/3;
+    OVERLAP_SAFETY_FACTOR = 2.1;
 
     % === ELLIPSE GEOMETRY DEFAULTS ===
     SEMI_MAJOR_DEFAULT_RATIO = 0.70;
     SEMI_MINOR_DEFAULT_RATIO = 0.85;
     ROTATION_DEFAULT_ANGLE = 0;
+    MIN_AXIS_PERCENT = 0.005;
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = false;
@@ -183,7 +185,7 @@ function cut_micropads(varargin)
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, OUTPUT_FOLDER_ELLIPSES, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
                               DEFAULT_ENABLE_ELLIPSE_EDITING, DEFAULT_ENABLE_POLYGON_EDITING, REPLICATES_PER_CONCENTRATION, ...
-                              MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, ...
+                              MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, OVERLAP_SAFETY_FACTOR, MIN_AXIS_PERCENT, ...
                               SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ROTATION_DEFAULT_ANGLE, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
@@ -204,7 +206,7 @@ end
 function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllipses, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
                                    defaultEnableEllipseEditing, defaultEnablePolygonEditing, replicatesPerConcentration, ...
-                                   marginToSpacingRatio, verticalPositionRatio, ...
+                                   marginToSpacingRatio, verticalPositionRatio, overlapSafetyFactor, minAxisPercent, ...
                                    semiMajorDefaultRatio, semiMinorDefaultRatio, rotationDefaultAngle, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
                                    rotationAngleTolerance, ...
@@ -274,6 +276,8 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.ellipse.replicatesPerMicropad = replicatesPerConcentration;
     cfg.ellipse.marginToSpacingRatio = marginToSpacingRatio;
     cfg.ellipse.verticalPositionRatio = verticalPositionRatio;
+    cfg.ellipse.overlapSafetyFactor = overlapSafetyFactor;
+    cfg.ellipse.minAxisPercent = minAxisPercent;
     cfg.ellipse.semiMajorDefaultRatio = semiMajorDefaultRatio;
     cfg.ellipse.semiMinorDefaultRatio = semiMinorDefaultRatio;
     cfg.ellipse.rotationDefaultAngle = rotationDefaultAngle;
@@ -559,14 +563,15 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
             % Update memory for next image (Mode 3)
             if ~isempty(ellipseData)
-                if ~isempty(polygonParams)
-                    % Store polygon context for ellipse scaling
-                    memory = updateMemory(memory, polygonParams, initialRotation, [imageHeight, imageWidth], ellipseData);
-                else
-                    % Grid mode - no polygons to store
-                    memory = updateMemory(memory, [], initialRotation, [imageHeight, imageWidth], ellipseData);
-                end
+            if ~isempty(polygonParams)
+                displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
+                displayPolygonsMode3 = convertBasePolygonsToDisplay(polygonParams, [imageHeight, imageWidth], displaySize, initialRotation, cfg);
+                memory = updateMemory(memory, displayPolygonsMode3, initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
+            else
+                displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
+                memory = updateMemory(memory, [], initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
             end
+        end
 
             success = true;
             return;
@@ -587,7 +592,8 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     if ~isempty(polygonParams)
         saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation);
         % Update memory with exact display polygon shapes and rotation
-        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth], ellipseData);
+        displayImageSize = computeDisplayImageSize([imageHeight, imageWidth], rotation, cfg);
+        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth], displayImageSize, ellipseData, cfg);
 
         % Save ellipse data if ellipse editing was enabled
         if cfg.enableEllipseEditing && ~isempty(ellipseData)
@@ -677,6 +683,80 @@ function ellipseCenters = calculatePolygonRelativeEllipsePositions(corners, numR
     end
 end
 
+function bounds = computeEllipseAxisBounds(polygonVertices, imageSize, cfg)
+    % Compute min/max semi-axis lengths allowed for ellipse editing
+    imgHeight = imageSize(1);
+    imgWidth = imageSize(2);
+    baseExtent = max(imgWidth, imgHeight);
+    minAxis = max(1, baseExtent * cfg.ellipse.minAxisPercent);
+
+    if ~isempty(polygonVertices)
+        width = max(polygonVertices(:, 1)) - min(polygonVertices(:, 1));
+        height = max(polygonVertices(:, 2)) - min(polygonVertices(:, 2));
+    else
+        % Fallback for grid mode (no polygon context)
+        width = imgWidth / max(cfg.numSquares, 1);
+        height = imgHeight;
+    end
+
+    width = max(width, 1);
+    height = max(height, 1);
+
+    replicateFactor = max(cfg.ellipse.replicatesPerMicropad, 1);
+    safetyFactor = max(cfg.ellipse.overlapSafetyFactor, 1);
+
+    horizontalLimit = width / (replicateFactor * safetyFactor);
+    verticalLimit = height / safetyFactor;
+    maxAxis = min([horizontalLimit, verticalLimit, baseExtent]);
+
+    if ~isfinite(maxAxis) || maxAxis <= 0
+        maxAxis = baseExtent * 0.5;
+    end
+
+    maxAxis = max(maxAxis, minAxis);
+    bounds = struct('minAxis', minAxis, 'maxAxis', maxAxis);
+end
+
+function [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMajor, semiMinor, rotationAngle, bounds)
+    % Clamp ellipse axes to configured bounds and normalize rotation
+    if semiMinor > semiMajor
+        tmp = semiMajor;
+        semiMajor = semiMinor;
+        semiMinor = tmp;
+        rotationAngle = rotationAngle + 90;
+    end
+
+    if nargin < 4 || isempty(bounds)
+        rotationAngle = mod(rotationAngle + 180, 360) - 180;
+        return;
+    end
+
+    minAxis = bounds.minAxis;
+    maxAxis = bounds.maxAxis;
+
+    semiMajor = min(max(semiMajor, minAxis), maxAxis);
+    semiMinor = min(max(semiMinor, minAxis), semiMajor);
+    rotationAngle = mod(rotationAngle + 180, 360) - 180;
+end
+
+function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, cfg, bounds)
+    % Helper to instantiate drawellipse overlays with consistent constraints
+    if nargin < 8
+        bounds = [];
+    end
+
+    [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMajor, semiMinor, rotationAngle, bounds);
+
+    ellipseHandle = drawellipse(axHandle, ...
+        'Center', center, ...
+        'SemiAxes', [semiMajor, semiMinor], ...
+        'RotationAngle', rotationAngle, ...
+        'Color', color, ...
+        'LineWidth', 2, ...
+        'FaceAlpha', 0.2, ...
+        'InteractionsAllowed', 'all');
+end
+
 function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg)
     % Scale world coordinates to fit image with coverage factor
     n = size(worldCorners, 1);
@@ -734,7 +814,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
 
     while true
         % Polygon editing mode
-        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialPolygons, initialRotation, memory);
+        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialPolygons, initialRotation, memory, []);
 
         [action, userPolygons, userRotation] = waitForUserAction(fig);
 
@@ -760,7 +840,8 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
 
                 % Ellipse editing mode (if enabled)
                 if cfg.enableEllipseEditing
-                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory);
+                    viewState = captureViewState(guiDataEditing);
+                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, viewState);
 
                     [ellipseAction, ellipseCoords] = waitForUserAction(fig);
 
@@ -792,7 +873,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
                 end
 
                 % Preview mode
-                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory);
+                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, []);
 
                 % Store rotation and polygon params in guiData for preview mode
                 guiData = get(fig, 'UserData');
@@ -833,8 +914,11 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
     end
 end
 
-function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory)
+function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState)
     % Modes: 'editing' (polygon adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
+    if nargin < 10
+        viewState = [];
+    end
 
     if nargin < 8
         initialRotation = 0;
@@ -856,6 +940,10 @@ function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonPar
 
         case 'preview'
             buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams);
+    end
+
+    if ~isempty(viewState)
+        applyViewState(fig, viewState);
     end
 end
 
@@ -929,6 +1017,69 @@ function clearAllUIElements(fig, guiData)
     end
 
     set(fig, 'UserData', []);
+end
+
+function viewState = captureViewState(guiData)
+    viewState = [];
+    if ~isstruct(guiData)
+        return;
+    end
+
+    if isfield(guiData, 'imgAxes') && ishandle(guiData.imgAxes)
+        viewState.xlim = get(guiData.imgAxes, 'XLim');
+        viewState.ylim = get(guiData.imgAxes, 'YLim');
+    end
+
+    if isfield(guiData, 'zoomSlider') && ishandle(guiData.zoomSlider)
+        viewState.zoomSliderValue = get(guiData.zoomSlider, 'Value');
+    end
+
+    if isfield(guiData, 'zoomValue') && ishandle(guiData.zoomValue)
+        viewState.zoomLabel = get(guiData.zoomValue, 'String');
+    end
+
+    if isfield(guiData, 'zoomLevel')
+        viewState.zoomLevel = guiData.zoomLevel;
+    end
+end
+
+function applyViewState(fig, viewState)
+    if isempty(viewState)
+        return;
+    end
+
+    guiData = get(fig, 'UserData');
+    if ~isstruct(guiData) || ~isfield(guiData, 'imgAxes') || ~ishandle(guiData.imgAxes)
+        return;
+    end
+
+    if isfield(viewState, 'xlim')
+        try
+            xlim(guiData.imgAxes, viewState.xlim);
+        catch
+        end
+    end
+
+    if isfield(viewState, 'ylim')
+        try
+            ylim(guiData.imgAxes, viewState.ylim);
+        catch
+        end
+    end
+
+    if isfield(viewState, 'zoomSliderValue') && isfield(guiData, 'zoomSlider') && ishandle(guiData.zoomSlider)
+        set(guiData.zoomSlider, 'Value', viewState.zoomSliderValue);
+    end
+
+    if isfield(viewState, 'zoomLabel') && isfield(guiData, 'zoomValue') && ishandle(guiData.zoomValue)
+        set(guiData.zoomValue, 'String', viewState.zoomLabel);
+    end
+
+    if isfield(viewState, 'zoomLevel')
+        guiData.zoomLevel = viewState.zoomLevel;
+    end
+
+    set(fig, 'UserData', guiData);
 end
 
 function polys = collectValidPolygons(guiData)
@@ -1143,6 +1294,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.baseImageSize = [size(img, 1), size(img, 2)];
     guiData.currentImg = displayImg;
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
+    guiData.displayPolygons = convertBasePolygonsToDisplay(polygonParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
 
     % Title
     titleText = sprintf('Ellipse Editing - %s - %s', phoneName, imageName);
@@ -1168,7 +1320,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     numConcentrations = size(polygonParams, 1);
     guiData.polygonHandles = cell(numConcentrations, 1);
     for i = 1:numConcentrations
-        vertices = squeeze(polygonParams(i, :, :));
+        vertices = squeeze(guiData.displayPolygons(i, :, :));
         polygonColor = getConcentrationColor(i - 1, numConcentrations);
         guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
                                                 'Color', polygonColor, 'LineWidth', 2, ...
@@ -1190,7 +1342,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
         % Check if polygon geometry changed (need to scale)
         if isfield(guiData.memory, 'polygons') && ~isempty(guiData.memory.polygons)
             oldPolygons = guiData.memory.polygons;
-            newPolygons = polygonParams;
+            newPolygons = guiData.displayPolygons;
 
             % Scale ellipses for each concentration
             for concIdx = 1:numConcentrations
@@ -1200,16 +1352,20 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     oldEllipses = guiData.memory.ellipses{concIdx};
 
                     % Scale ellipses to new polygon geometry
-                    scaledEllipses = scaleEllipsesForPolygonChange(oldPoly, newPoly, oldEllipses);
+                    scaledEllipses = scaleEllipsesForPolygonChange(oldPoly, newPoly, oldEllipses, cfg, guiData.imageSize);
                     guiData.memory.ellipses{concIdx} = scaledEllipses;
                 end
             end
         end
     end
 
+    displayPolygons = guiData.displayPolygons;
     for concIdx = 1:numConcentrations
         polygonColor = getConcentrationColor(concIdx - 1, numConcentrations);
-        currentPolygon = squeeze(polygonParams(concIdx, :, :));
+        currentPolygon = squeeze(displayPolygons(concIdx, :, :));
+
+        % Compute axis bounds for this polygon
+        ellipseBounds = computeEllipseAxisBounds(currentPolygon, guiData.imageSize, cfg);
 
         % Check if we have memory for this concentration
         if hasMemory && concIdx <= numel(guiData.memory.ellipses) && ...
@@ -1236,12 +1392,8 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     ellipseRotation = cfg.ellipse.rotationDefaultAngle;
                 end
 
-                guiData.ellipses{ellipseIdx} = drawellipse(guiData.imgAxes, ...
-                    'Center', ellipseCenter, ...
-                    'SemiAxes', [ellipseSemiMajor, ellipseSemiMinor], ...
-                    'RotationAngle', ellipseRotation, ...
-                    'Color', polygonColor, 'LineWidth', 2, 'FaceAlpha', 0.2, ...
-                    'InteractionsAllowed', 'all');
+                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseCenter, ...
+                    ellipseSemiMajor, ellipseSemiMinor, ellipseRotation, polygonColor, cfg, ellipseBounds);
                 ellipseIdx = ellipseIdx + 1;
             end
         else
@@ -1255,12 +1407,8 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
             defaultSemiMinor = defaultSemiMajor * cfg.ellipse.semiMinorDefaultRatio;
 
             for repIdx = 1:numReplicates
-                guiData.ellipses{ellipseIdx} = drawellipse(guiData.imgAxes, ...
-                    'Center', ellipseCenters(repIdx, :), ...
-                    'SemiAxes', [defaultSemiMajor, defaultSemiMinor], ...
-                    'RotationAngle', cfg.ellipse.rotationDefaultAngle, ...
-                    'Color', polygonColor, 'LineWidth', 2, 'FaceAlpha', 0.2, ...
-                    'InteractionsAllowed', 'all');
+                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseCenters(repIdx, :), ...
+                    defaultSemiMajor, defaultSemiMinor, cfg.ellipse.rotationDefaultAngle, polygonColor, cfg, ellipseBounds);
                 ellipseIdx = ellipseIdx + 1;
             end
         end
@@ -1298,6 +1446,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     guiData.mode = 'ellipse_editing_grid';
     guiData.cfg = cfg;
     guiData.polygons = []; % No polygons in grid mode
+    guiData.displayPolygons = [];
     guiData.rotation = rotation;
     guiData.memory = memory;
 
@@ -1347,6 +1496,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
 
     % Create ellipses using grid positions
     ellipseIdx = 1;
+    gridBounds = computeEllipseAxisBounds([], guiData.imageSize, cfg);
     for groupIdx = 1:numGroups
         % Use cold-to-hot color gradient
         ellipseColor = getConcentrationColor(groupIdx - 1, numGroups);
@@ -1354,12 +1504,8 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
         for repIdx = 1:numReplicates
             centerPos = ellipsePositions(ellipseIdx, :);
 
-            guiData.ellipses{ellipseIdx} = drawellipse(guiData.imgAxes, ...
-                'Center', centerPos, ...
-                'SemiAxes', [defaultSemiMajor, defaultSemiMinor], ...
-                'RotationAngle', cfg.ellipse.rotationDefaultAngle, ...
-                'Color', ellipseColor, 'LineWidth', 2, 'FaceAlpha', 0.2, ...
-                'InteractionsAllowed', 'all');
+            guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, centerPos, ...
+                defaultSemiMajor, defaultSemiMinor, cfg.ellipse.rotationDefaultAngle, ellipseColor, cfg, gridBounds);
             ellipseIdx = ellipseIdx + 1;
         end
     end
@@ -1432,12 +1578,15 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     % Image display
     [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
 
+    displayPolygonsPreview = convertBasePolygonsToDisplay(polygonParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
+    displayEllipsesPreview = convertBaseEllipsesToDisplay(ellipseData, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
+
     % Draw polygon overlays if available
-    if hasPolygons && ~isempty(polygonParams)
-        numPolygons = size(polygonParams, 1);
+    if hasPolygons && ~isempty(displayPolygonsPreview)
+        numPolygons = size(displayPolygonsPreview, 1);
         guiData.polygonHandles = cell(numPolygons, 1);
         for i = 1:numPolygons
-            vertices = squeeze(polygonParams(i, :, :));
+            vertices = squeeze(displayPolygonsPreview(i, :, :));
             polygonColor = getConcentrationColor(i - 1, numPolygons);
             guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
                                                     'Color', polygonColor, 'LineWidth', 2, ...
@@ -1446,23 +1595,23 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     end
 
     % Draw ellipse overlays if available
-    if hasEllipses && ~isempty(ellipseData)
-        numEllipses = size(ellipseData, 1);
+    if hasEllipses && ~isempty(displayEllipsesPreview)
+        numEllipses = size(displayEllipsesPreview, 1);
         guiData.ellipseHandles = cell(numEllipses, 1);
 
         for i = 1:numEllipses
             % ellipseData format: [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-            concIdx = ellipseData(i, 1) + 1; % Convert 0-indexed to 1-indexed
-            center = ellipseData(i, 3:4);
-            semiMajor = ellipseData(i, 5);
-            semiMinor = ellipseData(i, 6);
-            rotationAngle = ellipseData(i, 7);
+            concIdx = displayEllipsesPreview(i, 1) + 1; % Convert 0-indexed to 1-indexed
+            center = displayEllipsesPreview(i, 3:4);
+            semiMajor = displayEllipsesPreview(i, 5);
+            semiMinor = displayEllipsesPreview(i, 6);
+            rotationAngle = displayEllipsesPreview(i, 7);
 
             % Use same color as corresponding polygon
             if hasPolygons
-                numConcentrations = size(polygonParams, 1);
+                numConcentrations = size(displayPolygonsPreview, 1);
             else
-                numConcentrations = max(ellipseData(:, 1)) + 1;
+                numConcentrations = max(displayEllipsesPreview(:, 1)) + 1;
             end
             ellipseColor = getConcentrationColor(concIdx - 1, numConcentrations);
 
@@ -2609,6 +2758,41 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
     end
 end
 
+function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageSize, displayImageSize, rotation, cfg)
+    displayPolygons = basePolygons;
+    if isempty(basePolygons)
+        return;
+    end
+
+    if rotation ~= 0 && isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [rotatedPolygons, rotatedSize] = rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
+    else
+        rotatedPolygons = basePolygons;
+        rotatedSize = baseImageSize;
+    end
+
+    targetSize = displayImageSize(1:2);
+    if any(rotatedSize ~= targetSize)
+        displayPolygons = scalePolygonsForImageSize(rotatedPolygons, rotatedSize, targetSize, size(basePolygons, 1));
+    else
+        displayPolygons = rotatedPolygons;
+    end
+end
+
+function displaySize = computeDisplayImageSize(baseSize, rotation, cfg)
+    displaySize = baseSize;
+    if rotation == 0
+        return;
+    end
+
+    if abs(mod(rotation, 90)) < cfg.rotation.angleTolerance
+        k = mod(round(rotation / 90), 2);
+        if k == 1
+            displaySize = fliplr(baseSize);
+        end
+    end
+end
+
 function rotatedImg = applyRotation(img, rotation, cfg)
     % Apply rotation to image (lossless rot90 for 90-deg multiples, bilinear with loose mode otherwise)
     if rotation == 0
@@ -2680,6 +2864,39 @@ function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize
     end
 end
 
+function [rotatedPoints, newSize] = rotatePointsDiscrete(points, imageSize, rotation)
+    rotatedPoints = points;
+    newSize = imageSize(1:2);
+
+    if isempty(points)
+        return;
+    end
+
+    k = mod(round(rotation / 90), 4);
+    if k == 0
+        return;
+    end
+
+    H = imageSize(1);
+    W = imageSize(2);
+    rotatedPoints = zeros(size(points));
+
+    switch k
+        case 1 % 90 degrees clockwise
+            newSize = [W, H];
+            rotatedPoints(:, 1) = H - points(:, 2) + 1;
+            rotatedPoints(:, 2) = points(:, 1);
+        case 2 % 180 degrees
+            newSize = [H, W];
+            rotatedPoints(:, 1) = W - points(:, 1) + 1;
+            rotatedPoints(:, 2) = H - points(:, 2) + 1;
+        case 3 % 270 degrees clockwise (90 ccw)
+            newSize = [W, H];
+            rotatedPoints(:, 1) = points(:, 2);
+            rotatedPoints(:, 2) = W - points(:, 1) + 1;
+    end
+end
+
 function tf = isMultipleOfNinety(angle, tolerance)
     % Determine if an angle is effectively a multiple of 90 degrees
     if isnan(angle) || isinf(angle)
@@ -2687,6 +2904,31 @@ function tf = isMultipleOfNinety(angle, tolerance)
         return;
     end
     tf = abs(angle / 90 - round(angle / 90)) <= tolerance;
+end
+
+function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSize, displayImageSize, rotation, cfg)
+    displayEllipses = ellipseData;
+    if isempty(ellipseData)
+        return;
+    end
+
+    if rotation ~= 0 && isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [rotCenters, rotatedSize] = rotatePointsDiscrete(ellipseData(:, 3:4), baseImageSize, rotation);
+    else
+        rotCenters = ellipseData(:, 3:4);
+        rotatedSize = baseImageSize;
+    end
+
+    targetSize = displayImageSize(1:2);
+    if any(rotatedSize ~= targetSize)
+        scaleX = targetSize(2) / rotatedSize(2);
+        scaleY = targetSize(1) / rotatedSize(1);
+        rotCenters(:, 1) = rotCenters(:, 1) * scaleX;
+        rotCenters(:, 2) = rotCenters(:, 2) * scaleY;
+    end
+
+    displayEllipses(:, 3:4) = rotCenters;
+    displayEllipses(:, 7) = mod(ellipseData(:, 7) + rotation + 180, 360) - 180;
 end
 
 function clamped = clampPolygonToImage(poly, imageSize)
@@ -3151,6 +3393,15 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 numConcentrations = size(guiData.polygons, 1);
                 numReplicates = guiData.cfg.ellipse.replicatesPerMicropad;
                 totalEllipses = numConcentrations * numReplicates;
+                boundsPerConcentration = cell(numConcentrations, 1);
+                polygonSetForBounds = guiData.polygons;
+                if isfield(guiData, 'displayPolygons') && ~isempty(guiData.displayPolygons)
+                    polygonSetForBounds = guiData.displayPolygons;
+                end
+                for concIdx = 1:numConcentrations
+                    currentPolygon = squeeze(polygonSetForBounds(concIdx, :, :));
+                    boundsPerConcentration{concIdx} = computeEllipseAxisBounds(currentPolygon, guiData.imageSize, guiData.cfg);
+                end
 
                 ellipseData = zeros(totalEllipses, 7);
                 ellipseIdx = 1;
@@ -3163,13 +3414,8 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             semiAxes = ellipse.SemiAxes;
                             rotationAngle = ellipse.RotationAngle;
 
-                            % Enforce semiMajor >= semiMinor constraint
-                            semiMajor = max(semiAxes);
-                            semiMinor = min(semiAxes);
-                            if semiAxes(1) < semiAxes(2)
-                                rotationAngle = rotationAngle + 90;
-                            end
-                            rotationAngle = mod(rotationAngle + 180, 360) - 180;
+                            bounds = boundsPerConcentration{concIdx};
+                            [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, bounds);
 
                             ellipseData(ellipseIdx, :) = [concIdx-1, repIdx-1, round(center), semiMajor, semiMinor, rotationAngle];
                         end
@@ -3206,6 +3452,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 numGroups = guiData.cfg.numSquares;
                 numReplicates = guiData.cfg.ellipse.replicatesPerMicropad;
                 totalEllipses = numGroups * numReplicates;
+                gridBounds = computeEllipseAxisBounds([], guiData.imageSize, guiData.cfg);
 
                 ellipseData = zeros(totalEllipses, 7);
                 ellipseIdx = 1;
@@ -3218,13 +3465,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             semiAxes = ellipse.SemiAxes;
                             rotationAngle = ellipse.RotationAngle;
 
-                            % Enforce semiMajor >= semiMinor constraint
-                            semiMajor = max(semiAxes);
-                            semiMinor = min(semiAxes);
-                            if semiAxes(1) < semiAxes(2)
-                                rotationAngle = rotationAngle + 90;
-                            end
-                            rotationAngle = mod(rotationAngle + 180, 360) - 180;
+                            [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, gridBounds);
 
                             ellipseData(ellipseIdx, :) = [groupIdx-1, repIdx-1, round(center), semiMajor, semiMinor, rotationAngle];
                         end
@@ -3791,20 +4032,21 @@ function ellipsePositions = createDefaultEllipseGrid(imageSize, numGroups, repli
     imageHeight = imageSize(1);
     imageWidth = imageSize(2);
 
-    % Vertical centering
-    yCenter = imageHeight / 2;
+    % Vertical placement respects configuration ratio
+    yCenter = imageHeight * cfg.ellipse.verticalPositionRatio;
+    yCenter = max(1, min(yCenter, imageHeight));
 
-    % Calculate horizontal spacing for groups
-    groupMargin = imageWidth * 0.1;  % 10% margin on each side
-    usableWidth = imageWidth - 2 * groupMargin;
-    groupSpacing = usableWidth / (numGroups + 1);
+    % Horizontal layout driven by margin-to-spacing ratio
+    marginRatio = max(cfg.ellipse.marginToSpacingRatio, eps);
+    totalUnits = (2 * marginRatio) + numGroups + max(numGroups - 1, 0) * marginRatio;
+    unitWidth = imageWidth / totalUnits;
+    outerMargin = marginRatio * unitWidth;
+    interGroupSpacing = marginRatio * unitWidth;
+    groupWidth = unitWidth;
 
-    % Calculate within-group spacing for replicates
-    % Use marginToSpacingRatio from config
-    groupWidth = groupSpacing * 0.8;  % 80% of spacing for group width
-    replicateMargin = groupWidth * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
-    replicateUsableWidth = groupWidth - 2 * replicateMargin;
-
+    % Within-group spacing for replicates (reuse ratio)
+    replicateMargin = groupWidth * marginRatio / (marginRatio + 1);
+    replicateUsableWidth = max(groupWidth - 2 * replicateMargin, eps);
     if replicatesPerGroup > 1
         replicateSpacing = replicateUsableWidth / (replicatesPerGroup - 1);
     else
@@ -3817,8 +4059,9 @@ function ellipsePositions = createDefaultEllipseGrid(imageSize, numGroups, repli
     ellipseIdx = 1;
 
     for groupIdx = 1:numGroups
-        % Calculate group center X
-        groupCenterX = groupMargin + groupIdx * groupSpacing;
+        % Calculate group start and center
+        startX = outerMargin + (groupIdx - 1) * (groupWidth + interGroupSpacing);
+        groupCenterX = startX + groupWidth / 2;
 
         % Position replicates within group
         for repIdx = 1:replicatesPerGroup
@@ -3827,7 +4070,7 @@ function ellipsePositions = createDefaultEllipseGrid(imageSize, numGroups, repli
                 xPos = groupCenterX;
             else
                 % Multiple replicates - distribute horizontally
-                xPos = groupCenterX - groupWidth/2 + replicateMargin + (repIdx - 1) * replicateSpacing;
+                xPos = startX + replicateMargin + (repIdx - 1) * replicateSpacing;
             end
             
             % Clamp positions to image bounds
@@ -4457,18 +4700,20 @@ function memory = initializeMemory()
     memory.hasSettings = false;
     memory.displayPolygons = [];  % Exact display coordinates (preserves quadrilateral shapes)
     memory.rotation = 0;          % Image rotation angle
-    memory.imageSize = [];
+    memory.displayImageSize = [];
+    memory.baseImageSize = [];
     memory.ellipses = {};         % Cell array indexed by concentration (0-based)
     memory.hasEllipseSettings = false;  % Boolean flag indicating if ellipse settings are saved
 end
 
-function memory = updateMemory(memory, displayPolygons, rotation, imageSize, ellipseData)
+function memory = updateMemory(memory, displayPolygons, rotation, baseImageSize, displayImageSize, ellipseData, cfg)
     % Update memory with exact display polygon coordinates and rotation
     % These preserve the exact quadrilateral shapes and rotation as seen by the user
     memory.hasSettings = true;
     memory.displayPolygons = displayPolygons;
     memory.rotation = rotation;
-    memory.imageSize = imageSize;
+    memory.displayImageSize = displayImageSize;
+    memory.baseImageSize = baseImageSize;
 
     % Store polygon params for ellipse scaling
     if ~isempty(displayPolygons)
@@ -4476,15 +4721,16 @@ function memory = updateMemory(memory, displayPolygons, rotation, imageSize, ell
     end
 
     % Store ellipse data if provided
-    if nargin >= 5 && ~isempty(ellipseData)
+    if nargin >= 7 && ~isempty(ellipseData)
+        ellipseDisplay = convertBaseEllipsesToDisplay(ellipseData, baseImageSize, displayImageSize, rotation, cfg);
         % Store ellipse data per concentration for memory persistence
-        memory.ellipses = cell(1, max(ellipseData(:, 1)) + 1);
-        for i = 1:size(ellipseData, 1)
-            concIdx = ellipseData(i, 1) + 1;  % Convert 0-indexed to 1-indexed
+        memory.ellipses = cell(1, max(ellipseDisplay(:, 1)) + 1);
+        for i = 1:size(ellipseDisplay, 1)
+            concIdx = ellipseDisplay(i, 1) + 1;  % Convert 0-indexed to 1-indexed
             if isempty(memory.ellipses{concIdx})
                 memory.ellipses{concIdx} = [];
             end
-            memory.ellipses{concIdx} = [memory.ellipses{concIdx}; ellipseData(i, :)];
+            memory.ellipses{concIdx} = [memory.ellipses{concIdx}; ellipseDisplay(i, :)];
         end
         memory.hasEllipseSettings = true;
     end
@@ -4495,9 +4741,9 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
     % Priority: memory (if available) -> default -> AI updates later
 
     % Check memory FIRST (even when AI is enabled)
-    if memory.hasSettings && ~isempty(memory.displayPolygons) && ~isempty(memory.imageSize)
+    if memory.hasSettings && ~isempty(memory.displayPolygons) && ~isempty(memory.displayImageSize)
         % Use exact display polygons and rotation from memory
-        scaledPolygons = scalePolygonsForImageSize(memory.displayPolygons, memory.imageSize, imageSize, cfg.numSquares);
+        scaledPolygons = scalePolygonsForImageSize(memory.displayPolygons, memory.displayImageSize, imageSize, cfg.numSquares);
 
         % If polygon count mismatch, fall back to default geometry
         if isempty(scaledPolygons)
@@ -4575,7 +4821,7 @@ function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, 
     end
 end
 
-function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, oldEllipses)
+function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, oldEllipses, cfg, imageSize)
     % Scale ellipse positions when polygon geometry changes between images
     % Preserves relative positions within polygon bounds
     %
@@ -4627,6 +4873,8 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
     numEllipses = size(oldEllipses, 1);
     scaledEllipses = zeros(size(oldEllipses));
 
+    bounds = computeEllipseAxisBounds(newCorners, imageSize, cfg);
+
     for i = 1:numEllipses
         % Extract from Nx7 format: [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
         concIdx = oldEllipses(i, 1);
@@ -4654,6 +4902,9 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
         else
             newRotation = oldRotation;
         end
+
+        % Enforce configured limits
+        [newSemiMajor, newSemiMinor, newRotation] = enforceEllipseAxisLimits(newSemiMajor, newSemiMinor, newRotation, bounds);
 
         % Preserve concIdx and repIdx in output (Nx7 format)
         scaledEllipses(i, :) = [concIdx, repIdx, newX, newY, newSemiMajor, newSemiMinor, newRotation];

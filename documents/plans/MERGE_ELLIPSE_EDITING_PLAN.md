@@ -77,20 +77,19 @@ After user finishes editing polygons for an image, the UI automatically transiti
 ---
 
 ### 1.2 Add Ellipse-Specific UI Constants
-- [✅] **Objective:** Extend UI_CONST structure with ellipse editing UI elements
+- [✅] **Objective:** Extend UI_CONST structure with ellipse editing UI visibility toggles
 - [✅] **File:** `matlab_scripts/cut_micropads.m`
 - [✅] **Integration Point:** Extend existing UI_CONST definition (around lines 102-150)
 - [✅] **Requirements:**
-  - Add UI positions for ellipse parameter controls (semi-major, semi-minor, rotation sliders)
-  - Add UI positions for replicate navigation (previous/next replicate buttons)
-  - Add UI positions for ellipse preview panel
-  - Add color definitions for ellipse overlay visualization
-  - Preserve all existing polygon UI layout
-- [✅] **Rationale:** Ellipse editing requires additional UI controls not present in polygon mode
+  - Reuse the same figure layout for both polygon and ellipse modes
+  - Provide flags to hide polygon-only controls (`RUN AI`, rotation presets/layout) when ellipse editing is active
+  - Ensure drawellipse overlays are the only interactive elements needed in ellipse mode
+  - Preserve color definitions for ellipse overlay visualization
+- [✅] **Rationale:** Ellipse editing takes place in the same UI window and only needs ROI overlays, so layout work focuses on toggling visibility rather than adding new widgets
 - [✅] **Success Criteria:**
-  - UI_CONST structure contains both polygon and ellipse UI definitions
-  - No layout conflicts between polygon and ellipse UI elements
-  - UI elements positioned to avoid overlap
+  - UI_CONST structure contains visibility settings for polygon controls
+  - Ellipse mode can hide RUN AI and rotation controls without affecting polygon mode
+  - No new UI controls are introduced for ellipse editing beyond drawellipse overlays
 
 ---
 
@@ -210,22 +209,19 @@ After user finishes editing polygons for an image, the UI automatically transiti
 
 ---
 
-### 3.3 Add Replicate Navigation Controls
-- [✅] **Objective:** Implement Previous/Next Replicate buttons for ellipse editing
+### 3.3 Replicate Handling (UI)
+- [✅] **Objective:** Keep ellipse editing lightweight by avoiding additional controls
 - [✅] **File:** `matlab_scripts/cut_micropads.m`
-- [✅] **Integration Point:** Ellipse UI panel creation (new section around line 1900)
+- [✅] **Integration Point:** Ellipse UI panel creation (around line 1900)
 - [✅] **Requirements:**
-  - Add "Previous Replicate" button (disabled when currentReplicate == 0)
-  - Add "Next Replicate" button (advances to next ellipse, disabled on replicate 2 if not last polygon)
-  - Add replicate indicator label: "Replicate X of 3"
-  - Button callbacks update `currentReplicate` state variable
-  - Switching replicates saves current ellipse parameters to memory
-  - Switching replicates loads saved ellipse parameters for target replicate
-- [✅] **Rationale:** Users must navigate between 3 elliptical regions per polygon
+  - Show all replicate ellipses simultaneously as `drawellipse` overlays
+  - Allow users to edit any replicate directly on the canvas without navigation widgets
+  - Maintain the same DONE/BACK buttons that polygon mode already uses
+- [✅] **Rationale:** The ellipse workflow needs to stay within the single-window experience without extra buttons
 - [✅] **Success Criteria:**
-  - Navigation buttons correctly cycle through replicates 0, 1, 2
-  - Ellipse parameters persist when switching between replicates
-  - Buttons disabled appropriately at boundaries
+  - No replicate navigation buttons are added
+  - Users can interact with any ellipse overlay directly
+  - State machine logic continues to track replicate metadata internally
 
 ---
 
@@ -251,22 +247,19 @@ After user finishes editing polygons for an image, the UI automatically transiti
 
 ---
 
-### 4.2 Implement Ellipse Parameter Sliders
-- [✅] **Objective:** Add slider controls for precise ellipse parameter adjustment
-- [✅] **File:** `matlab_scripts/cut_micropads.m`
-- [✅] **Integration Point:** Ellipse UI panel (around line 1950)
-- [✅] **Requirements:**
-  - Semi-major axis slider: range [MIN_AXIS_PERCENT * imgWidth, maxAllowedAxis]
-  - Semi-minor axis slider: range [MIN_AXIS_PERCENT * imgWidth, semiMajorAxis] (must be ≤ semi-major)
-  - Rotation angle slider: range [-180, 180] degrees
-  - Slider callbacks update ellipse ROI in real-time
-  - Value labels show current slider values with units (pixels, degrees)
-  - Slider ranges update dynamically when image size or semi-major axis changes
-- [✅] **Rationale:** Sliders provide precise control for ellipse parameters that may be difficult to adjust with mouse
-- [✅] **Success Criteria:**
-  - Sliders update ellipse ROI without lag
-  - Semi-minor axis constraint enforced (cannot exceed semi-major)
-  - Rotation slider correctly rotates ellipse around its center
+### 4.2 Ellipse Parameter Controls
+- [x] **Objective:** Keep ellipse editing free of extra sliders or numeric inputs
+- [x] **File:** matlab_scripts/cut_micropads.m
+- [x] **Integration Point:** Ellipse UI panel (around line 1950)
+- [x] **Requirements:**
+  - Use only drawellipse overlays for adjusting center/axes/rotation
+  - Hide polygon-only widgets (RUN AI button, rotation presets/layout) while ellipse editing is active
+  - Restore polygon controls automatically when returning to polygon mode
+- [x] **Rationale:** Ellipse editing shares the same UI window as polygon editing and should remain lightweight
+- [x] **Success Criteria:**
+  - No sliders or numeric controls exist in ellipse mode
+  - RUN AI and rotation widgets are invisible during ellipse editing
+  - Polygon editing state still shows the hidden controls
 
 ---
 
@@ -875,6 +868,11 @@ Users need flexibility to skip polygon editing when coordinates already exist fr
 - When in `ellipse_editing` state, polygon overlays remain visible as context
 - Polygons set to non-interactive: `InteractionsAllowed='none'`
 - Same behavior in Mode 1 (user-edited polygons) and Mode 3 (loaded from file)
+
+**Shared UI Window / Control Visibility:**
+- Polygon and ellipse modes reuse the exact same figure (no new windows)
+- Ellipse mode shows only drawellipse overlays plus existing global controls (STOP, DONE/BACK, instructions)
+- Polygon-only widgets (RUN AI button, rotation layout/presets) are hidden whenever ellipse mode is active
 
 ---
 
