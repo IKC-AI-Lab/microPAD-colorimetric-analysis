@@ -276,6 +276,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.ellipse.replicatesPerMicropad = replicatesPerConcentration;
     cfg.ellipse.marginToSpacingRatio = marginToSpacingRatio;
     cfg.ellipse.verticalPositionRatio = verticalPositionRatio;
+    cfg.ellipse.horizontalPositionRatio = 0.5;  % X-position ratio for vertical layout (centered)
     cfg.ellipse.overlapSafetyFactor = overlapSafetyFactor;
     cfg.ellipse.minAxisPercent = minAxisPercent;
     cfg.ellipse.semiMajorDefaultRatio = semiMajorDefaultRatio;
@@ -582,10 +583,15 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     [initialPolygons, initialRotation, ~] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
 
     % Memory polygons are exact display coordinates - use them directly
-    initialPolygons = sortPolygonArrayByX(initialPolygons);
+    [initialPolygons, orientation] = sortPolygonArrayByX(initialPolygons);
+
+    % Use memory orientation if available (polygons may come from memory with known orientation)
+    if memory.hasSettings && ~isempty(memory.orientation)
+        orientation = memory.orientation;
+    end
 
     % Display GUI immediately with memory/default polygons and rotation
-    [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory);
+    [polygonParams, displayPolygons, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation);
 
     % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
 
@@ -593,7 +599,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation);
         % Update memory with exact display polygon shapes and rotation
         displayImageSize = computeDisplayImageSize([imageHeight, imageWidth], rotation, cfg);
-        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth], displayImageSize, ellipseData, cfg);
+        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth], displayImageSize, ellipseData, cfg, orientation);
 
         % Save ellipse data if ellipse editing was enabled
         if cfg.enableEllipseEditing && ~isempty(ellipseData)
@@ -644,9 +650,19 @@ function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
     polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg);
 end
 
-function ellipseCenters = calculatePolygonRelativeEllipsePositions(corners, numReplicates, cfg)
+function ellipseCenters = calculatePolygonRelativeEllipsePositions(corners, numReplicates, cfg, orientation)
     % Calculate initial ellipse positions distributed within polygon bounds
-    % Uses margin-aware spacing and vertical positioning from configuration
+    % Uses margin-aware spacing and positioning from configuration
+    %
+    % Args:
+    %   corners      - Nx2 polygon vertices
+    %   numReplicates - Number of ellipses to position
+    %   cfg          - Configuration struct
+    %   orientation  - 'horizontal' (left-to-right) or 'vertical' (bottom-to-top)
+
+    if nargin < 4 || isempty(orientation)
+        orientation = 'horizontal';
+    end
 
     % Calculate polygon bounding box
     minX = min(corners(:, 1));
@@ -657,29 +673,58 @@ function ellipseCenters = calculatePolygonRelativeEllipsePositions(corners, numR
     polygonWidth = maxX - minX;
     polygonHeight = maxY - minY;
 
-    % Use margin-aware spacing
-    margin = polygonWidth * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
-    usableWidth = polygonWidth - 2 * margin;
-
-    % Calculate spacing between ellipses
-    if numReplicates > 1
-        spacing = usableWidth / (numReplicates - 1);
-    else
-        spacing = 0;  % Single ellipse centered
-    end
-
-    % Use vertical positioning ratio
-    yPos = minY + polygonHeight * cfg.ellipse.verticalPositionRatio;
-
-    % Position ellipses
     ellipseCenters = zeros(numReplicates, 2);
-    for i = 1:numReplicates
-        if numReplicates == 1
-            ellipseCenters(i, 1) = minX + polygonWidth / 2;  % Center single ellipse
+
+    if strcmp(orientation, 'vertical')
+        % Vertical layout: bottom-to-top within polygon
+        % Y increases downward in image coords, so bottom = higher Y value
+        margin = polygonHeight * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
+        usableHeight = polygonHeight - 2 * margin;
+
+        % Calculate spacing between ellipses
+        if numReplicates > 1
+            spacing = usableHeight / (numReplicates - 1);
         else
-            ellipseCenters(i, 1) = minX + margin + (i - 1) * spacing;
+            spacing = 0;
         end
-        ellipseCenters(i, 2) = yPos;
+
+        % X position centered horizontally
+        xPos = minX + polygonWidth * cfg.ellipse.horizontalPositionRatio;
+
+        % Position ellipses bottom-to-top (index 1 at bottom = highest Y)
+        for i = 1:numReplicates
+            ellipseCenters(i, 1) = xPos;
+            if numReplicates == 1
+                ellipseCenters(i, 2) = minY + polygonHeight / 2;  % Center single ellipse
+            else
+                % Bottom-to-top: first ellipse at maxY - margin, last at minY + margin
+                ellipseCenters(i, 2) = maxY - margin - (i - 1) * spacing;
+            end
+        end
+    else
+        % Horizontal layout: left-to-right (default)
+        margin = polygonWidth * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
+        usableWidth = polygonWidth - 2 * margin;
+
+        % Calculate spacing between ellipses
+        if numReplicates > 1
+            spacing = usableWidth / (numReplicates - 1);
+        else
+            spacing = 0;
+        end
+
+        % Y position using vertical positioning ratio
+        yPos = minY + polygonHeight * cfg.ellipse.verticalPositionRatio;
+
+        % Position ellipses left-to-right
+        for i = 1:numReplicates
+            if numReplicates == 1
+                ellipseCenters(i, 1) = minX + polygonWidth / 2;  % Center single ellipse
+            else
+                ellipseCenters(i, 1) = minX + margin + (i - 1) * spacing;
+            end
+            ellipseCenters(i, 2) = yPos;
+        end
     end
 end
 
@@ -790,7 +835,7 @@ end
 %% Interactive UI
 %% -------------------------------------------------------------------------
 
-function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory)
+function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation)
     % Show interactive GUI with editing, ellipse editing (optional), and preview modes
     polygonParams = [];
     displayPolygons = [];
@@ -812,9 +857,14 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
         memory = initializeMemory();
     end
 
+    % Initialize orientation if not provided
+    if nargin < 9 || isempty(orientation)
+        orientation = 'horizontal';
+    end
+
     while true
         % Polygon editing mode
-        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialPolygons, initialRotation, memory, []);
+        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialPolygons, initialRotation, memory, [], orientation);
 
         [action, userPolygons, userRotation] = waitForUserAction(fig);
 
@@ -841,7 +891,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
                 % Ellipse editing mode (if enabled)
                 if cfg.enableEllipseEditing
                     viewState = captureViewState(guiDataEditing);
-                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, viewState);
+                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, viewState, orientation);
 
                     [ellipseAction, ellipseCoords] = waitForUserAction(fig);
 
@@ -873,7 +923,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
                 end
 
                 % Preview mode
-                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, []);
+                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, [], orientation);
 
                 % Store rotation and polygon params in guiData for preview mode
                 guiData = get(fig, 'UserData');
@@ -914,8 +964,12 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData] = showInte
     end
 end
 
-function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState)
+function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState, orientation)
     % Modes: 'editing' (polygon adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
+    if nargin < 11 || isempty(orientation)
+        orientation = 'horizontal';
+    end
+
     if nargin < 10
         viewState = [];
     end
@@ -936,7 +990,7 @@ function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonPar
             buildEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation);
 
         case 'ellipse_editing'
-            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory);
+            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, orientation);
 
         case 'preview'
             buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams);
@@ -1273,9 +1327,14 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams)
     set(fig, 'UserData', guiData);
 end
 
-function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, rotation, memory)
+function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, rotation, memory, orientation)
     % Build UI for ellipse editing mode
     set(fig, 'Name', sprintf('Ellipse Editing - %s - %s', phoneName, imageName));
+
+    % Initialize orientation if not provided
+    if nargin < 9 || isempty(orientation)
+        orientation = 'horizontal';
+    end
 
     guiData = struct();
     guiData.mode = 'ellipse_editing';
@@ -1283,6 +1342,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.polygons = polygonParams;
     guiData.rotation = rotation;
     guiData.memory = memory;
+    guiData.orientation = orientation;  % Store orientation for ellipse positioning
 
     % Apply rotation to image
     if rotation ~= 0
@@ -1382,7 +1442,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     ellipseRotation = memEllipses(repIdx, 7);
                 else
                     % Fallback to defaults if memory incomplete
-                    ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg);
+                    ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg, orientation);
                     polygonWidth = max(currentPolygon(:, 1)) - min(currentPolygon(:, 1));
                     polygonHeight = max(currentPolygon(:, 2)) - min(currentPolygon(:, 2));
                     avgDim = (polygonWidth + polygonHeight) / 2;
@@ -1398,7 +1458,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
             end
         else
             % No memory - use defaults
-            ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg);
+            ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg, orientation);
 
             polygonWidth = max(currentPolygon(:, 1)) - min(currentPolygon(:, 1));
             polygonHeight = max(currentPolygon(:, 2)) - min(currentPolygon(:, 2));
@@ -2156,7 +2216,8 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
     end
 
     % Ensure polygons are ordered left-to-right, bottom-to-top in UI space
-    newPolygons = sortPolygonArrayByX(newPolygons);
+    [newPolygons, newOrientation] = sortPolygonArrayByX(newPolygons);
+    guiData.orientation = newOrientation;  % Update orientation based on new polygon layout
     targetCount = size(newPolygons, 1);
 
     if targetCount == 0
@@ -3191,12 +3252,17 @@ function guiData = enforceConcentrationOrdering(guiData)
     end
 end
 
-function sortedPolygons = sortPolygonArrayByX(polygons)
+function [sortedPolygons, orientation] = sortPolygonArrayByX(polygons)
     % Determine polygon ordering based on dominant axis coverage.
     % Primary ordering follows the axis with the greater spread-to-size ratio:
     %   - Horizontal layouts: left-to-right (primary), bottom-to-top (secondary)
     %   - Vertical layouts: bottom-to-top (primary), left-to-right (secondary)
+    %
+    % Returns:
+    %   sortedPolygons - Polygons sorted by dominant axis
+    %   orientation    - 'horizontal' or 'vertical' based on layout
     sortedPolygons = polygons;
+    orientation = 'horizontal';  % Default
     if isempty(polygons)
         return;
     end
@@ -3282,10 +3348,12 @@ function sortedPolygons = sortPolygonArrayByX(polygons)
 
     if countX >= countY
         % Horizontal dominance: prioritize left→right, then bottom→top
+        orientation = 'horizontal';
         sortKey(validMask, 1) = centroids(validMask, 1);
         sortKey(validMask, 2) = -centroids(validMask, 2);
     else
         % Vertical dominance: prioritize bottom→top, then left→right
+        orientation = 'vertical';
         sortKey(validMask, 1) = -centroids(validMask, 2);
         sortKey(validMask, 2) = centroids(validMask, 1);
     end
@@ -3552,7 +3620,7 @@ function polygonParams = extractPolygonParameters(guiData)
         polygonParams(i, :, :) = keptPositions{i};
     end
 
-    polygonParams = sortPolygonArrayByX(polygonParams);
+    [polygonParams, ~] = sortPolygonArrayByX(polygonParams);
 end
 
 %% -------------------------------------------------------------------------
@@ -4704,9 +4772,10 @@ function memory = initializeMemory()
     memory.baseImageSize = [];
     memory.ellipses = {};         % Cell array indexed by concentration (0-based)
     memory.hasEllipseSettings = false;  % Boolean flag indicating if ellipse settings are saved
+    memory.orientation = 'horizontal';  % Layout orientation: 'horizontal' or 'vertical'
 end
 
-function memory = updateMemory(memory, displayPolygons, rotation, baseImageSize, displayImageSize, ellipseData, cfg)
+function memory = updateMemory(memory, displayPolygons, rotation, baseImageSize, displayImageSize, ellipseData, cfg, orientation)
     % Update memory with exact display polygon coordinates and rotation
     % These preserve the exact quadrilateral shapes and rotation as seen by the user
     memory.hasSettings = true;
@@ -4714,6 +4783,11 @@ function memory = updateMemory(memory, displayPolygons, rotation, baseImageSize,
     memory.rotation = rotation;
     memory.displayImageSize = displayImageSize;
     memory.baseImageSize = baseImageSize;
+
+    % Store orientation if provided
+    if nargin >= 8 && ~isempty(orientation)
+        memory.orientation = orientation;
+    end
 
     % Store polygon params for ellipse scaling
     if ~isempty(displayPolygons)
@@ -5067,7 +5141,8 @@ function pollDetectionStatus(fig, cfg)
             [newPolygons, ~] = rotatePolygonsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
             
             % Sort by display-frame X coordinate for consistent labeling
-            newPolygons = sortPolygonArrayByX(newPolygons);
+            [newPolygons, newOrientation] = sortPolygonArrayByX(newPolygons);
+            guiData.orientation = newOrientation;  % Update orientation based on AI detection
 
             % Apply detected polygons with race condition guard
             try
