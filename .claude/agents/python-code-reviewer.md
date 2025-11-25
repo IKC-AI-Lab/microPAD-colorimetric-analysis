@@ -1,5 +1,6 @@
 ---
 name: python-code-reviewer
+model: opus
 description: Review Python code for quality, correctness, and best practices in ML/CV projects
 tools: Read, Glob, Grep, Bash
 color: cyan

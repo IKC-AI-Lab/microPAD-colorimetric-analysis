@@ -1,5 +1,6 @@
 ---
 name: plan-writer
+model: opus
 description: Create detailed, progressible markdown implementation plans with checkboxes and tracking. Updates plans as work progresses.
 tools: Read, Write, Edit, Glob, Grep, Bash
 color: blue

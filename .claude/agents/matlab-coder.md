@@ -1,5 +1,6 @@
 ---
 name: matlab-coder
+model: sonnet
 description: Write MATLAB code for microPAD colorimetric analysis pipeline following project standards
 tools: Read, Write, Edit, Glob, Grep, Bash
 color: orange

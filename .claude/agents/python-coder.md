@@ -1,5 +1,6 @@
 ---
 name: python-coder
+model: sonnet
 description: Write Python code for AI model training, inference, and data processing in the microPAD project
 tools: Read, Write, Edit, Glob, Grep, Bash
 color: green

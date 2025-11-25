@@ -1,5 +1,6 @@
 ---
 name: matlab-code-reviewer
+model: opus
 description: Review MATLAB code for quality, style, and best practices
 tools: Read, Glob, Grep, Bash
 color: yellow
