@@ -228,6 +228,9 @@ function augment_dataset(varargin)
     customBgHeight = ~ismember('backgroundHeight', defaultsUsed);
     customScenePrefix = ~ismember('scenePrefix', defaultsUsed);
 
+    % Load homography utilities from helper script
+    homography = homography_utils();
+
     % Build configuration
     cfg = struct();
     cfg.numAugmentations = opts.numAugmentations;
@@ -668,14 +671,14 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         extremeCamera = cfg.camera;
         extremeCamera.maxAngleDeg = 75;
         extremeCamera.zRange = [0.8, 4.0];
-        viewParams = sample_viewpoint(extremeCamera);
+        viewParams = homography.sample_viewpoint(extremeCamera);
     else
         % Normal camera viewpoint
-        viewParams = sample_viewpoint(cfg.camera);
+        viewParams = homography.sample_viewpoint(cfg.camera);
     end
-    tformPersp = compute_homography(size(stage1Img), viewParams, cfg.camera);
-    rotAngle = rand_range(cfg.rotationRange);
-    tformRot = centered_rotation_tform(size(stage1Img), rotAngle);
+    tformPersp = homography.compute_homography(size(stage1Img), viewParams, cfg.camera);
+    rotAngle = homography.rand_range(cfg.rotationRange);
+    tformRot = homography.centered_rotation_tform(size(stage1Img), rotAngle);
 
     % Pre-allocate coordinate accumulators
     % Stage 2: one entry per polygon (upper bound = validCount after validation)
@@ -702,18 +705,18 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         origVertices = polyEntry.vertices;
 
         % Apply shared perspective transformation
-        augVertices = transform_polygon(origVertices, tformPersp);
-        augVertices = transform_polygon(augVertices, tformRot);
+        augVertices = homography.transform_polygon(origVertices, tformPersp);
+        augVertices = homography.transform_polygon(augVertices, tformRot);
 
         % Apply independent rotation per polygon if enabled
         if cfg.independentRotation
-            independentRotAngle = rand_range(cfg.rotationRange);
-            tformIndepRot = centered_rotation_tform(size(stage1Img), independentRotAngle);
+            independentRotAngle = homography.rand_range(cfg.rotationRange);
+            tformIndepRot = homography.centered_rotation_tform(size(stage1Img), independentRotAngle);
         else
             independentRotAngle = 0;
             tformIndepRot = affine2d(eye(3));
         end
-        augVertices = transform_polygon(augVertices, tformIndepRot);
+        augVertices = homography.transform_polygon(augVertices, tformIndepRot);
 
         % Validate transformed polygon
         if ~is_valid_polygon(augVertices, cfg.minValidPolygonArea)
@@ -727,7 +730,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         [polygonContent, contentBbox] = extract_polygon_masked(stage1Img, origVertices);
 
         % Transform extracted content to match augmented shape
-        augPolygonImg = transform_polygon_content(polygonContent, ...
+        augPolygonImg = homography.transform_polygon_content(polygonContent, ...
                                                   origVertices, augVertices, contentBbox);
 
         % Convert augmented vertices to cropped coordinate space (shared by damage + ellipse transforms)
@@ -740,7 +743,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         ellipseKey = sprintf('%s#%d', paperBase, concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
             rawEllipseList = ellipseMap(ellipseKey);
-            ellipseAugList = transform_region_ellipses( ...
+            ellipseAugList = homography.transform_region_ellipses( ...
                 rawEllipseList, paperBase, concentration, origVertices, contentBbox, ...
                 augVertices, minXCrop, minYCrop, tformPersp, tformRot, ...
                 tformIndepRot, rotAngle + independentRotAngle);
@@ -879,7 +882,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         % Record stage 2 coordinates (polygon in scene)
         % Compute total applied rotation and update saved rotation field
         totalAppliedRotation = rotAngle + region.independentRotAngle;
-        augmentedRotation = normalizeAngle(region.originalRotation - totalAppliedRotation);
+        augmentedRotation = homography.normalizeAngle(region.originalRotation - totalAppliedRotation);
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
@@ -1039,133 +1042,6 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
     end
 
     bbox = [minX, minY, bboxWidth, bboxHeight];
-end
-
-function augImg = transform_polygon_content(content, origVerts, augVerts, bbox)
-    % Transform polygon content to match target geometry
-
-    % Convert vertices to bbox-relative coordinates
-    origVertsRel = origVerts - [bbox(1) - 1, bbox(2) - 1];
-    minX = min(augVerts(:,1));
-    minY = min(augVerts(:,2));
-    augVertsRel = augVerts - [minX, minY];
-
-    % Compute projective transformation
-    tform = fitgeotrans(origVertsRel, augVertsRel, 'projective');
-
-    % Determine output dimensions
-    outWidth = ceil(max(augVertsRel(:,1)) - min(augVertsRel(:,1)) + 1);
-    outHeight = ceil(max(augVertsRel(:,2)) - min(augVertsRel(:,2)) + 1);
-    outRef = imref2d([outHeight, outWidth]);
-
-    % Apply transformation
-    augImg = imwarp(content, tform, 'OutputView', outRef, ...
-                    'InterpolationMethod', 'linear', 'FillValues', 0);
-end
-
-function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, concentration, ...
-                                                     origVertices, contentBbox, augVertices, ...
-                                                     minXCrop, minYCrop, tformPersp, tformRot, ...
-                                                     tformIndepRot, totalAppliedRotation)
-    % Transform ellipse annotations into the augmented crop coordinate frame
-
-    if isempty(ellipseList)
-        ellipseCropList = struct('replicate', {}, 'center', {}, ...
-                                 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
-        return;
-    end
-
-    % Pre-allocate for all ellipses (trim to actual count after loop)
-    maxEllipses = numel(ellipseList);
-    ellipseCropList = repmat(struct('replicate', [], 'center', [], ...
-                                    'semiMajor', [], 'semiMinor', [], 'rotation', []), ...
-                             maxEllipses, 1);
-    validCount = 0;
-
-    for idx = 1:numel(ellipseList)
-        ellipseIn = ellipseList(idx);
-
-        % Map ellipse from crop space to original image coordinates
-        ellipseInImageSpace = map_ellipse_crop_to_image(ellipseIn, contentBbox);
-
-        % Validate ellipse lies inside the original polygon before augmentations
-        if ~inpolygon(ellipseInImageSpace.center(1), ellipseInImageSpace.center(2), ...
-                      origVertices(:,1), origVertices(:,2))
-            warning('augmentDataset:ellipseOutsideOriginal', ...
-                    '  ! Ellipse %s con %d rep %d outside original polygon. Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate);
-            continue;
-        end
-
-        % Apply shared perspective + rotation + independent rotation transforms
-        ellipseAug = transform_ellipse(ellipseInImageSpace, tformPersp);
-        if ~ellipseAug.valid
-            warning('augmentDataset:ellipseInvalid1', ...
-                    '  ! Ellipse %s con %d rep %d invalid after perspective. Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate);
-            continue;
-        end
-
-        ellipseAug = transform_ellipse(ellipseAug, tformRot);
-        if ~ellipseAug.valid
-            warning('augmentDataset:ellipseInvalid2', ...
-                    '  ! Ellipse %s con %d rep %d invalid after shared rotation. Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate);
-            continue;
-        end
-
-        ellipseAug = transform_ellipse(ellipseAug, tformIndepRot);
-        if ~ellipseAug.valid
-            warning('augmentDataset:ellipseInvalid3', ...
-                    '  ! Ellipse %s con %d rep %d invalid after independent rotation. Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate);
-            continue;
-        end
-
-        % Ensure ellipse stays inside the augmented polygon footprint
-        if ~inpolygon(ellipseAug.center(1), ellipseAug.center(2), ...
-                      augVertices(:,1), augVertices(:,2))
-            warning('augmentDataset:ellipseOutside', ...
-                    '  ! Ellipse %s con %d rep %d outside transformed polygon. Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate);
-            continue;
-        end
-
-        % Convert to polygon-crop coordinates
-        ellipseCrop = ellipseAug;
-        ellipseCrop.center = ellipseAug.center - [minXCrop, minYCrop];
-
-        if ~isfinite(ellipseCrop.semiMajor) || ~isfinite(ellipseCrop.semiMinor) || ...
-           ellipseCrop.semiMajor <= 0 || ellipseCrop.semiMinor <= 0
-            warning('augmentDataset:invalidAxes', ...
-                    '  ! Ellipse %s con %d rep %d has invalid axes (major=%.4f, minor=%.4f). Skipping.', ...
-                    paperBase, concentration, ellipseIn.replicate, ...
-                    ellipseCrop.semiMajor, ellipseCrop.semiMinor);
-            continue;
-        end
-
-        % Enforce semiMajor >= semiMinor convention
-        if ellipseCrop.semiMajor < ellipseCrop.semiMinor
-            tmp = ellipseCrop.semiMajor;
-            ellipseCrop.semiMajor = ellipseCrop.semiMinor;
-            ellipseCrop.semiMinor = tmp;
-            ellipseCrop.rotation = ellipseCrop.rotation + 90;
-        end
-
-        % Adjust rotation relative to the augmented patch reference frame
-        ellipseCrop.rotation = normalizeAngle(ellipseCrop.rotation - totalAppliedRotation);
-
-        validCount = validCount + 1;
-        ellipseCropList(validCount) = struct( ...
-            'replicate', ellipseIn.replicate, ...
-            'center', ellipseCrop.center, ...
-            'semiMajor', ellipseCrop.semiMajor, ...
-            'semiMinor', ellipseCrop.semiMinor, ...
-            'rotation', ellipseCrop.rotation);
-    end
-
-    % Trim to actual valid ellipse count
-    ellipseCropList = ellipseCropList(1:validCount);
 end
 
 function bg = composite_to_background(bg, polygonImg, sceneVerts)
@@ -2325,86 +2201,8 @@ function img = apply_photometric_augmentation(img, mode)
 end
 
 %% =========================================================================
-%% TRANSFORMATION FUNCTIONS
+%% UTILITY FUNCTIONS
 %% =========================================================================
-
-function viewParams = sample_viewpoint(cameraCfg)
-    % Sample camera viewpoint with uniform distribution
-
-    % Simple uniform sampling over camera range
-    vx = cameraCfg.xRange(1) + rand() * diff(cameraCfg.xRange);
-    vy = cameraCfg.yRange(1) + rand() * diff(cameraCfg.yRange);
-    vz = cameraCfg.zRange(1) + rand() * diff(cameraCfg.zRange);
-
-    viewParams = struct('vx', vx, 'vy', vy, 'vz', vz);
-end
-
-function tform = compute_homography(imageSize, viewParams, cameraCfg)
-    imgHeight = imageSize(1);
-    imgWidth = imageSize(2);
-    corners = [1 1; imgWidth 1; imgWidth imgHeight; 1 imgHeight];
-
-    yawDeg = normalize_to_angle(viewParams.vx, cameraCfg.xRange, cameraCfg.maxAngleDeg);
-    pitchDeg = normalize_to_angle(viewParams.vy, cameraCfg.yRange, cameraCfg.maxAngleDeg);
-
-    projected = project_corners(imgWidth, imgHeight, yawDeg, pitchDeg, viewParams.vz);
-    coverage = cameraCfg.coverageOffcenter;
-    if abs(viewParams.vx) < 1e-3 && abs(viewParams.vy) < 1e-3
-        coverage = cameraCfg.coverageCenter;
-    end
-    aligned = fit_points_to_frame(projected, imgWidth, imgHeight, coverage);
-
-    tform = fitgeotrans(corners, aligned, 'projective');
-end
-
-function projected = project_corners(imgWidth, imgHeight, yawDeg, pitchDeg, viewZ)
-    corners = [1 1; imgWidth 1; imgWidth imgHeight; 1 imgHeight];
-    cx = (imgWidth + 1) / 2;
-    cy = (imgHeight + 1) / 2;
-    scale = max(imgWidth, imgHeight);
-
-    pts = [(corners(:,1) - cx) / scale, (corners(:,2) - cy) / scale, zeros(4,1)];
-    yaw = deg2rad(yawDeg);
-    pitch = deg2rad(pitchDeg);
-    Ry = [cos(yaw) 0 sin(yaw); 0 1 0; -sin(yaw) 0 cos(yaw)];
-    Rx = [1 0 0; 0 cos(pitch) -sin(pitch); 0 sin(pitch) cos(pitch)];
-    R = Rx * Ry;
-
-    rotated = (R * pts')';
-    rotated(:,3) = rotated(:,3) + viewZ;
-
-    f = viewZ;
-    u = f * rotated(:,1) ./ rotated(:,3);
-    v = f * rotated(:,2) ./ rotated(:,3);
-
-    projected = [u * scale + cx, v * scale + cy];
-end
-
-function aligned = fit_points_to_frame(projected, imgWidth, imgHeight, coverage)
-    MIN_DIMENSION = 1.0;  % Minimum valid dimension in pixels
-
-    minX = min(projected(:,1));
-    maxX = max(projected(:,1));
-    minY = min(projected(:,2));
-    maxY = max(projected(:,2));
-    width = maxX - minX;
-    height = maxY - minY;
-    if width < MIN_DIMENSION || height < MIN_DIMENSION
-        aligned = projected;
-        return;
-    end
-
-    scale = coverage * min((imgWidth - 1) / width, (imgHeight - 1) / height);
-    center = [(maxX + minX) / 2, (maxY + minY) / 2];
-    targetCenter = [(imgWidth + 1) / 2, (imgHeight + 1) / 2];
-
-    aligned = (projected - center) * scale + targetCenter;
-end
-
-function polygonOut = transform_polygon(vertices, tform)
-    [x, y] = transformPointsForward(tform, vertices(:,1), vertices(:,2));
-    polygonOut = [x, y];
-end
 
 function hashVal = stable_string_hash(strInput)
     % Deterministic uint32 hash for reproducible RNG offsets
@@ -2437,176 +2235,6 @@ function hashVal = stable_string_hash(strInput)
     end
 
     hashVal = double(hash);
-end
-
-function ellipseOut = transform_ellipse(ellipseIn, tform)
-    conic = ellipse_to_conic(ellipseIn);
-
-    % Check if conic is degenerate (from invalid input ellipse)
-    if all(conic(:) == 0)
-        ellipseOut = invalid_ellipse();
-        return;
-    end
-
-    H = tform.T';
-
-    % Validate transformation matrix is not singular before inversion
-    if abs(det(H)) < 1e-10
-        ellipseOut = invalid_ellipse();
-        return;
-    end
-
-    Hinv = inv(H);
-    transformedConic = Hinv' * conic * Hinv;
-    ellipseOut = conic_to_ellipse(transformedConic);
-end
-
-function ellipseImageSpace = map_ellipse_crop_to_image(ellipseCrop, cropBbox)
-    % Map ellipse from crop space to image space
-
-    validateattributes(cropBbox, {'numeric'}, {'vector','numel',4}, mfilename, 'cropBbox');
-
-    xOffset = double(cropBbox(1) - 1);
-    yOffset = double(cropBbox(2) - 1);
-
-    ellipseImageSpace = ellipseCrop;
-    ellipseImageSpace.center = double(ellipseCrop.center) + [xOffset, yOffset];
-    ellipseImageSpace.semiMajor = double(ellipseCrop.semiMajor);
-    ellipseImageSpace.semiMinor = double(ellipseCrop.semiMinor);
-    ellipseImageSpace.rotation = double(ellipseCrop.rotation);
-    ellipseImageSpace.valid = true;
-end
-
-function conic = ellipse_to_conic(ellipse)
-    MIN_AXIS = 0.1;  % Minimum ellipse axis length in pixels
-
-    xc = ellipse.center(1);
-    yc = ellipse.center(2);
-    a = ellipse.semiMajor;
-    b = ellipse.semiMinor;
-    theta = deg2rad(ellipse.rotation);
-
-    % Validate axes are positive to prevent division by zero
-    if a < MIN_AXIS || b < MIN_AXIS || ~isfinite(a) || ~isfinite(b)
-        % Return degenerate conic that will be detected by conic_to_ellipse
-        conic = zeros(3, 3);
-        return;
-    end
-
-    c = cos(theta);
-    s = sin(theta);
-    R = [c -s; s c];
-    D = diag([1/a^2, 1/b^2]);
-    Q = R * D * R';
-    center = [xc; yc];
-
-    conic = [Q, -Q*center; -center'*Q, center'*Q*center - 1];
-end
-
-function ellipse = conic_to_ellipse(C)
-    % Validate C(3,3) is not zero before normalization to prevent division by zero
-    if abs(C(3,3)) < 1e-10
-        ellipse = invalid_ellipse();
-        return;
-    end
-
-    C = C ./ C(3,3);
-    A = C(1,1);
-    B = 2*C(1,2);
-    Cc = C(2,2);
-    D = 2*C(1,3);
-    E = 2*C(2,3);
-    F = C(3,3);
-
-    denom = B^2 - 4*A*Cc;
-    if denom >= 0
-        ellipse = invalid_ellipse();
-        return;
-    end
-
-    xc = (2*Cc*D - B*E) / denom;
-    yc = (2*A*E - B*D) / denom;
-
-    theta = 0.5 * atan2(B, A - Cc);
-    cosT = cos(theta);
-    sinT = sin(theta);
-
-    A1 = A*cosT^2 + B*cosT*sinT + Cc*sinT^2;
-    C1 = A*sinT^2 - B*cosT*sinT + Cc*cosT^2;
-
-    F0 = F + D*xc + E*yc + A*xc^2 + B*xc*yc + Cc*yc^2;
-
-    % Defensive check (should never trigger with validated inputs upstream)
-    if ~all(isfinite([xc, yc, A1, C1, F0]))
-        ellipse = invalid_ellipse();
-        return;
-    end
-
-    % Validate ellipse exists (F0 < 0 and positive diagonal elements)
-    if F0 >= 0 || A1 <= 0 || C1 <= 0
-        ellipse = invalid_ellipse();
-        return;
-    end
-
-    % Compute axes (arguments guaranteed positive by above checks)
-    a = sqrt(-F0 / A1);
-    b = sqrt(-F0 / C1);
-
-    if a < b
-        tmp = a;
-        a = b;
-        b = tmp;
-        theta = theta + pi/2;
-    end
-
-    ellipse = struct( ...
-        'center', [xc, yc], ...
-        'semiMajor', a, ...
-        'semiMinor', b, ...
-        'rotation', rad2deg(theta), ...
-        'valid', true);
-end
-
-function ellipse = invalid_ellipse()
-    ellipse = struct('center', [NaN, NaN], 'semiMajor', NaN, 'semiMinor', NaN, ...
-                     'rotation', NaN, 'valid', false);
-end
-
-function tform = centered_rotation_tform(imageSize, angleDeg)
-    height = imageSize(1);
-    width = imageSize(2);
-    cx = (width + 1) / 2;
-    cy = (height + 1) / 2;
-
-    cosA = cosd(angleDeg);
-    sinA = sind(angleDeg);
-
-    translateToOrigin = [1 0 0; 0 1 0; -cx -cy 1];
-    rotation = [cosA -sinA 0; sinA cosA 0; 0 0 1];
-    translateBack = [1 0 0; 0 1 0; cx cy 1];
-
-    matrix = translateToOrigin * rotation * translateBack;
-    tform = affine2d(matrix);
-end
-
-function angleDeg = normalize_to_angle(value, range, maxAngle)
-    if numel(range) ~= 2
-        error('augmentDataset:invalidRange', ...
-            'Range parameter must have exactly 2 elements. Got %d.', numel(range));
-    end
-
-    mid = mean(range);
-    span = range(2) - range(1);
-    if span <= 0
-        angleDeg = 0;
-        return;
-    end
-    normalized = 2 * (value - mid) / span;
-    angleDeg = normalized * maxAngle;
-end
-
-function val = rand_range(range)
-    val = range(1) + (range(2) - range(1)) * rand();
 end
 
 %% =========================================================================
@@ -2959,11 +2587,6 @@ end
 %% =========================================================================
 %% VALIDATION AND UTILITIES
 %% =========================================================================
-
-function angle = normalizeAngle(angle)
-    % Normalize angle to range [-180, 180] degrees
-    angle = mod(angle + 180, 360) - 180;
-end
 
 function valid = is_valid_polygon(vertices, minArea)
     % Check if polygon is valid (non-degenerate)

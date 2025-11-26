@@ -84,15 +84,27 @@ function cut_micropads(varargin)
     DEFAULT_ENABLE_POLYGON_EDITING = true;
     REPLICATES_PER_CONCENTRATION = 3;
 
-    % === ELLIPSE LAYOUT PARAMETERS ===
+    % Ellipse definitions in normalized micropad coordinates [0,1]×[0,1]
+    % Each row: [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
+    % - x, y: center position (0,0 = top-left, 1,1 = bottom-right)
+    % - semiMajorAxis, semiMinorAxis: fraction of micropad side length
+    % - rotationAngle: degrees, clockwise from horizontal
+    % These values define ellipse positions relative to an ideal square micropad.
+    % The homography transform will adjust for perspective distortion.
+    ELLIPSE_DEFAULT_RECORDS = [
+        % x,    y,    semiMajor, semiMinor, rotationAngle
+        0.25,  0.40,  0.10,      0.08,      -45;  % Replicate 0 (Urea)
+        0.5,  0.35,  0.10,      0.08,        0;  % Replicate 1 (Creatinine)
+        0.75,  0.40,  0.10,      0.08,       45   % Replicate 2 (Lactate)
+    ];
+
+    % === ELLIPSE LAYOUT PARAMETERS (legacy, for fallback) ===
     MARGIN_TO_SPACING_RATIO = 1/3;
     VERTICAL_POSITION_RATIO = 1/3;
-    OVERLAP_SAFETY_FACTOR = 2.1;
 
     % === ELLIPSE GEOMETRY DEFAULTS ===
-    SEMI_MAJOR_DEFAULT_RATIO = 0.70;
+    SEMI_MAJOR_DEFAULT_RATIO = 0.05;
     SEMI_MINOR_DEFAULT_RATIO = 0.85;
-    ROTATION_DEFAULT_ANGLE = 0;
     MIN_AXIS_PERCENT = 0.005;
 
     % === AI DETECTION DEFAULTS ===
@@ -181,15 +193,25 @@ function cut_micropads(varargin)
         'range', [0, 1], ...
         'defaultValue', 0);
 
+    %% Add helper_scripts to path (contains homography_utils and other utilities)
+    scriptDir = fileparts(mfilename('fullpath'));
+    helperDir = fullfile(scriptDir, 'helper_scripts');
+    if exist(helperDir, 'dir')
+        addpath(helperDir);
+    end
+
+    %% Load homography utilities for ellipse transformation
+    homography = homography_utils();
+
     %% Build configuration
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, OUTPUT_FOLDER_ELLIPSES, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
                               DEFAULT_ENABLE_ELLIPSE_EDITING, DEFAULT_ENABLE_POLYGON_EDITING, REPLICATES_PER_CONCENTRATION, ...
-                              MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, OVERLAP_SAFETY_FACTOR, MIN_AXIS_PERCENT, ...
-                              SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ROTATION_DEFAULT_ANGLE, ...
+                              MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, MIN_AXIS_PERCENT, ...
+                              SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ELLIPSE_DEFAULT_RECORDS, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
-                              COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, UI_CONST, varargin{:});
+                              COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, UI_CONST, homography, varargin{:});
 
     try
         processAllFolders(cfg);
@@ -206,11 +228,11 @@ end
 function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllipses, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
                                    defaultEnableEllipseEditing, defaultEnablePolygonEditing, replicatesPerConcentration, ...
-                                   marginToSpacingRatio, verticalPositionRatio, overlapSafetyFactor, minAxisPercent, ...
-                                   semiMajorDefaultRatio, semiMinorDefaultRatio, rotationDefaultAngle, ...
+                                   marginToSpacingRatio, verticalPositionRatio, minAxisPercent, ...
+                                   semiMajorDefaultRatio, semiMinorDefaultRatio, ellipseDefaultRecords, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
                                    rotationAngleTolerance, ...
-                                   coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, UI_CONST, varargin)
+                                   coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, UI_CONST, homography, varargin)
     parser = inputParser;
     parser.addParameter('numSquares', defaultNumSquares, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',1,'<=',20}));
 
@@ -277,11 +299,25 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.ellipse.marginToSpacingRatio = marginToSpacingRatio;
     cfg.ellipse.verticalPositionRatio = verticalPositionRatio;
     cfg.ellipse.horizontalPositionRatio = 0.5;  % X-position ratio for vertical layout (centered)
-    cfg.ellipse.overlapSafetyFactor = overlapSafetyFactor;
     cfg.ellipse.minAxisPercent = minAxisPercent;
     cfg.ellipse.semiMajorDefaultRatio = semiMajorDefaultRatio;
     cfg.ellipse.semiMinorDefaultRatio = semiMinorDefaultRatio;
-    cfg.ellipse.rotationDefaultAngle = rotationDefaultAngle;
+    cfg.ellipse.defaultRecords = ellipseDefaultRecords;  % Nx5 matrix [x, y, semiMajor, semiMinor, rotation]
+
+    % Validate ellipse default records matrix dimensions
+    if size(cfg.ellipse.defaultRecords, 1) ~= cfg.ellipse.replicatesPerMicropad
+        error('cut_micropads:ellipse_records_mismatch', ...
+              'ELLIPSE_DEFAULT_RECORDS has %d rows but REPLICATES_PER_CONCENTRATION is %d. They must match.', ...
+              size(cfg.ellipse.defaultRecords, 1), cfg.ellipse.replicatesPerMicropad);
+    end
+    if size(cfg.ellipse.defaultRecords, 2) ~= 5
+        error('cut_micropads:ellipse_records_columns', ...
+              'ELLIPSE_DEFAULT_RECORDS must have 5 columns [x, y, semiMajor, semiMinor, rotation]. Got %d.', ...
+              size(cfg.ellipse.defaultRecords, 2));
+    end
+
+    % Store homography utilities for ellipse transformation
+    cfg.homography = homography;
 
     % Rotation configuration
     cfg.rotation.angleTolerance = rotationAngleTolerance;
@@ -564,15 +600,15 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
             % Update memory for next image (Mode 3)
             if ~isempty(ellipseData)
-            if ~isempty(polygonParams)
-                displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
-                displayPolygonsMode3 = convertBasePolygonsToDisplay(polygonParams, [imageHeight, imageWidth], displaySize, initialRotation, cfg);
-                memory = updateMemory(memory, displayPolygonsMode3, initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
-            else
-                displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
-                memory = updateMemory(memory, [], initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
+                if ~isempty(polygonParams)
+                    displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
+                    displayPolygonsMode3 = convertBasePolygonsToDisplay(polygonParams, [imageHeight, imageWidth], displaySize, initialRotation, cfg);
+                    memory = updateMemory(memory, displayPolygonsMode3, initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
+                else
+                    displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
+                    memory = updateMemory(memory, [], initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
+                end
             end
-        end
 
             success = true;
             return;
@@ -650,115 +686,133 @@ function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
     polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg);
 end
 
-function ellipseCenters = calculatePolygonRelativeEllipsePositions(corners, numReplicates, cfg, orientation)
-    % Calculate initial ellipse positions distributed within polygon bounds
-    % Uses margin-aware spacing and positioning from configuration
+function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg, orientation, rotation)
+    % Transform normalized ellipse records to pixel coordinates via homography
+    %
+    % Computes a homography from the unit square [0,1]×[0,1] to the actual
+    % polygon vertices, then transforms each ellipse from ELLIPSE_DEFAULT_RECORDS
+    % through this homography to get pixel-space ellipse parameters.
     %
     % Args:
-    %   corners      - Nx2 polygon vertices
-    %   numReplicates - Number of ellipses to position
-    %   cfg          - Configuration struct
-    %   orientation  - 'horizontal' (left-to-right) or 'vertical' (bottom-to-top)
+    %   polygonVertices - 4×2 matrix of polygon corners [TL; TR; BR; BL] in pixels
+    %   cfg             - Configuration struct with cfg.ellipse.defaultRecords
+    %                     and cfg.homography
+    %   orientation     - 'horizontal' or 'vertical' (strip layout on screen)
+    %                     Determines how ELLIPSE_DEFAULT_RECORDS are transformed
+    %                     before applying homography. Default: 'horizontal'
+    %   rotation        - Rotation angle applied to image (degrees). Used to
+    %                     re-align vertex order (Vertex 1 = Visual Top-Left).
+    %
+    % Returns:
+    %   ellipseParams - N×5 matrix [x, y, semiMajor, semiMinor, rotation] in pixels
 
-    if nargin < 4 || isempty(orientation)
+    if nargin < 3 || isempty(orientation)
         orientation = 'horizontal';
     end
 
-    % Calculate polygon bounding box
-    minX = min(corners(:, 1));
-    maxX = max(corners(:, 1));
-    minY = min(corners(:, 2));
-    maxY = max(corners(:, 2));
+    if nargin < 4
+        rotation = 0;
+    end
 
-    polygonWidth = maxX - minX;
-    polygonHeight = maxY - minY;
+    % Adjust polygon vertices based on rotation to ensure Vertex 1 is always Top-Left
+    % relative to the visual display.
+    % Rotation is positive clockwise (e.g. 90 = 1x CW).
+    % Default vertex order [TL, TR, BR, BL] cycles with rotation.
+    if rotation ~= 0
+        k = mod(round(rotation / 90), 4);
+        if k > 0
+            polygonVertices = circshift(polygonVertices, k, 1);
+        end
+    end
 
-    ellipseCenters = zeros(numReplicates, 2);
+    defaultRecords = cfg.ellipse.defaultRecords;
+    homography = cfg.homography;
 
+    % Transform default records based on micropad strip orientation
+    % ELLIPSE_DEFAULT_RECORDS is defined for horizontal strip layout (reading position)
+    % When strip is vertical (rotated 90° CCW), transform positions accordingly
     if strcmp(orientation, 'vertical')
-        % Vertical layout: bottom-to-top within polygon
-        % Y increases downward in image coords, so bottom = higher Y value
-        margin = polygonHeight * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
-        usableHeight = polygonHeight - 2 * margin;
+        % Paper strip rotated 90° CCW: physical left → screen bottom
+        % Transform in unit square: (x, y) → (y, 1-x)
+        % Ellipse rotation: +90° to account for paper rotation
+        transformedRecords = zeros(size(defaultRecords));
+        transformedRecords(:, 1) = defaultRecords(:, 2);           % new x = old y
+        transformedRecords(:, 2) = 1 - defaultRecords(:, 1);       % new y = 1 - old x
+        transformedRecords(:, 3:4) = defaultRecords(:, 3:4);       % axes unchanged
+        transformedRecords(:, 5) = defaultRecords(:, 5) + 90;      % rotation +90°
+        defaultRecords = transformedRecords;
+    end
 
-        % Calculate spacing between ellipses
-        if numReplicates > 1
-            spacing = usableHeight / (numReplicates - 1);
+    % Unit square corners (source reference frame)
+    % Order: TL, TR, BR, BL to match polygon vertex order
+    unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];
+
+    % Compute homography from unit square to polygon
+    tform = homography.compute_homography_from_points(unitSquare, polygonVertices);
+
+    % Compute polygon scale (average side length for axis scaling)
+    sides = zeros(4, 1);
+    for i = 1:4
+        j = mod(i, 4) + 1;
+        sides(i) = norm(polygonVertices(i,:) - polygonVertices(j,:));
+    end
+    polygonScale = mean(sides);
+
+    numEllipses = size(defaultRecords, 1);
+    ellipseParams = zeros(numEllipses, 5);
+
+    for i = 1:numEllipses
+        % Create ellipse struct for transform_ellipse
+        % Note: defaultRecords axes are fractions of unit square side (0-1)
+        ellipseIn.center = defaultRecords(i, 1:2);
+        ellipseIn.semiMajor = defaultRecords(i, 3);
+        ellipseIn.semiMinor = defaultRecords(i, 4);
+        ellipseIn.rotation = defaultRecords(i, 5);
+        ellipseIn.valid = true;
+
+        % Transform through homography
+        ellipseOut = homography.transform_ellipse(ellipseIn, tform);
+
+        if ellipseOut.valid
+            % Scale axes by polygon size (normalized -> pixels)
+            ellipseParams(i, :) = [
+                ellipseOut.center(1), ellipseOut.center(2), ...
+                ellipseOut.semiMajor * polygonScale, ...
+                ellipseOut.semiMinor * polygonScale, ...
+                ellipseOut.rotation
+            ];
         else
-            spacing = 0;
+            % Fallback: simple center transform without shape distortion
+            centerPt = homography.transform_polygon(defaultRecords(i, 1:2), tform);
+            ellipseParams(i, :) = [
+                centerPt(1), centerPt(2), ...
+                defaultRecords(i, 3) * polygonScale, ...
+                defaultRecords(i, 4) * polygonScale, ...
+                defaultRecords(i, 5)
+            ];
         end
 
-        % X position centered horizontally
-        xPos = minX + polygonWidth * cfg.ellipse.horizontalPositionRatio;
-
-        % Position ellipses bottom-to-top (index 1 at bottom = highest Y)
-        for i = 1:numReplicates
-            ellipseCenters(i, 1) = xPos;
-            if numReplicates == 1
-                ellipseCenters(i, 2) = minY + polygonHeight / 2;  % Center single ellipse
-            else
-                % Bottom-to-top: first ellipse at maxY - margin, last at minY + margin
-                ellipseCenters(i, 2) = maxY - margin - (i - 1) * spacing;
-            end
-        end
-    else
-        % Horizontal layout: left-to-right (default)
-        margin = polygonWidth * cfg.ellipse.marginToSpacingRatio / (cfg.ellipse.marginToSpacingRatio + 1);
-        usableWidth = polygonWidth - 2 * margin;
-
-        % Calculate spacing between ellipses
-        if numReplicates > 1
-            spacing = usableWidth / (numReplicates - 1);
-        else
-            spacing = 0;
+        % Enforce semiMajor >= semiMinor convention
+        if ellipseParams(i, 3) < ellipseParams(i, 4)
+            tmp = ellipseParams(i, 3);
+            ellipseParams(i, 3) = ellipseParams(i, 4);
+            ellipseParams(i, 4) = tmp;
+            ellipseParams(i, 5) = ellipseParams(i, 5) + 90;
         end
 
-        % Y position using vertical positioning ratio
-        yPos = minY + polygonHeight * cfg.ellipse.verticalPositionRatio;
-
-        % Position ellipses left-to-right
-        for i = 1:numReplicates
-            if numReplicates == 1
-                ellipseCenters(i, 1) = minX + polygonWidth / 2;  % Center single ellipse
-            else
-                ellipseCenters(i, 1) = minX + margin + (i - 1) * spacing;
-            end
-            ellipseCenters(i, 2) = yPos;
-        end
+        % Normalize rotation to [-180, 180]
+        ellipseParams(i, 5) = homography.normalizeAngle(ellipseParams(i, 5));
     end
 end
 
-function bounds = computeEllipseAxisBounds(polygonVertices, imageSize, cfg)
+function bounds = computeEllipseAxisBounds(~, imageSize, cfg)
     % Compute min/max semi-axis lengths allowed for ellipse editing
+    % No overlap safety - ellipses can be any size up to image extent
     imgHeight = imageSize(1);
     imgWidth = imageSize(2);
     baseExtent = max(imgWidth, imgHeight);
     minAxis = max(1, baseExtent * cfg.ellipse.minAxisPercent);
-
-    if ~isempty(polygonVertices)
-        width = max(polygonVertices(:, 1)) - min(polygonVertices(:, 1));
-        height = max(polygonVertices(:, 2)) - min(polygonVertices(:, 2));
-    else
-        % Fallback for grid mode (no polygon context)
-        width = imgWidth / max(cfg.numSquares, 1);
-        height = imgHeight;
-    end
-
-    width = max(width, 1);
-    height = max(height, 1);
-
-    replicateFactor = max(cfg.ellipse.replicatesPerMicropad, 1);
-    safetyFactor = max(cfg.ellipse.overlapSafetyFactor, 1);
-
-    horizontalLimit = width / (replicateFactor * safetyFactor);
-    verticalLimit = height / safetyFactor;
-    maxAxis = min([horizontalLimit, verticalLimit, baseExtent]);
-
-    if ~isfinite(maxAxis) || maxAxis <= 0
-        maxAxis = baseExtent * 0.5;
-    end
-
-    maxAxis = max(maxAxis, minAxis);
+    maxAxis = baseExtent;
     bounds = struct('minAxis', minAxis, 'maxAxis', maxAxis);
 end
 
@@ -784,7 +838,7 @@ function [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMa
     rotationAngle = mod(rotationAngle + 180, 360) - 180;
 end
 
-function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, cfg, bounds)
+function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, ~, bounds)
     % Helper to instantiate drawellipse overlays with consistent constraints
     if nargin < 8
         bounds = [];
@@ -887,6 +941,11 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                 savedRotation = userRotation;
                 savedDisplayPolygons = userPolygons;
                 savedBasePolygons = basePolygons;
+
+                % Retrieve updated orientation from editing mode (may have changed due to rotation/AI)
+                if isfield(guiDataEditing, 'orientation') && ~isempty(guiDataEditing.orientation)
+                    orientation = guiDataEditing.orientation;
+                end
 
                 % Ellipse editing mode (if enabled)
                 if cfg.enableEllipseEditing
@@ -1209,7 +1268,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
 
     % Create editable polygons
     guiData.polygons = createPolygons(initialPolygons, cfg, fig);
-    guiData.polygons = assignPolygonLabels(guiData.polygons);
+    [guiData.polygons, ~, guiData.orientation] = assignPolygonLabels(guiData.polygons);
 
     numInitialPolygons = numel(guiData.polygons);
     totalForColor = max(numInitialPolygons, 1);
@@ -1342,7 +1401,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.polygons = polygonParams;
     guiData.rotation = rotation;
     guiData.memory = memory;
-    guiData.orientation = orientation;  % Store orientation for ellipse positioning
+    guiData.orientation = orientation;  % Store for polygon ordering and ellipse positioning
 
     % Apply rotation to image
     if rotation ~= 0
@@ -1441,15 +1500,12 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     ellipseSemiMinor = memEllipses(repIdx, 6);
                     ellipseRotation = memEllipses(repIdx, 7);
                 else
-                    % Fallback to defaults if memory incomplete
-                    ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg, orientation);
-                    polygonWidth = max(currentPolygon(:, 1)) - min(currentPolygon(:, 1));
-                    polygonHeight = max(currentPolygon(:, 2)) - min(currentPolygon(:, 2));
-                    avgDim = (polygonWidth + polygonHeight) / 2;
-                    ellipseCenter = ellipseCenters(repIdx, :);
-                    ellipseSemiMajor = avgDim * cfg.ellipse.semiMajorDefaultRatio;
-                    ellipseSemiMinor = ellipseSemiMajor * cfg.ellipse.semiMinorDefaultRatio;
-                    ellipseRotation = cfg.ellipse.rotationDefaultAngle;
+                    % Fallback to homography-transformed defaults if memory incomplete
+                    ellipseParams = transformDefaultEllipsesToPolygon(currentPolygon, cfg, orientation, rotation);
+                    ellipseCenter = ellipseParams(repIdx, 1:2);
+                    ellipseSemiMajor = ellipseParams(repIdx, 3);
+                    ellipseSemiMinor = ellipseParams(repIdx, 4);
+                    ellipseRotation = ellipseParams(repIdx, 5);
                 end
 
                 guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseCenter, ...
@@ -1457,18 +1513,12 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                 ellipseIdx = ellipseIdx + 1;
             end
         else
-            % No memory - use defaults
-            ellipseCenters = calculatePolygonRelativeEllipsePositions(currentPolygon, numReplicates, cfg, orientation);
-
-            polygonWidth = max(currentPolygon(:, 1)) - min(currentPolygon(:, 1));
-            polygonHeight = max(currentPolygon(:, 2)) - min(currentPolygon(:, 2));
-            avgDim = (polygonWidth + polygonHeight) / 2;
-            defaultSemiMajor = avgDim * cfg.ellipse.semiMajorDefaultRatio;
-            defaultSemiMinor = defaultSemiMajor * cfg.ellipse.semiMinorDefaultRatio;
+            % No memory - use homography-transformed defaults from ELLIPSE_DEFAULT_RECORDS
+            ellipseParams = transformDefaultEllipsesToPolygon(currentPolygon, cfg, orientation, rotation);
 
             for repIdx = 1:numReplicates
-                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseCenters(repIdx, :), ...
-                    defaultSemiMajor, defaultSemiMinor, cfg.ellipse.rotationDefaultAngle, polygonColor, cfg, ellipseBounds);
+                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
+                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), polygonColor, cfg, ellipseBounds);
                 ellipseIdx = ellipseIdx + 1;
             end
         end
@@ -1555,6 +1605,8 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     defaultSemiMinor = defaultSemiMajor * cfg.ellipse.semiMinorDefaultRatio;
 
     % Create ellipses using grid positions
+    % In grid mode, use rotation angles from ELLIPSE_DEFAULT_RECORDS (no homography)
+    defaultRotations = cfg.ellipse.defaultRecords(:, 5);  % Column 5 = rotation
     ellipseIdx = 1;
     gridBounds = computeEllipseAxisBounds([], guiData.imageSize, cfg);
     for groupIdx = 1:numGroups
@@ -1565,7 +1617,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
             centerPos = ellipsePositions(ellipseIdx, :);
 
             guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, centerPos, ...
-                defaultSemiMajor, defaultSemiMinor, cfg.ellipse.rotationDefaultAngle, ellipseColor, cfg, gridBounds);
+                defaultSemiMajor, defaultSemiMinor, defaultRotations(repIdx), ellipseColor, cfg, gridBounds);
             ellipseIdx = ellipseIdx + 1;
         end
     end
@@ -2248,7 +2300,8 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
     end
 
     % Reorder polygons to enforce gradient ordering
-    [guiData.polygons, order] = assignPolygonLabels(guiData.polygons);
+    [guiData.polygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    guiData.orientation = newOrientation;  % Update orientation based on current layout
 
     % Synchronize labels
     hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
@@ -2565,7 +2618,8 @@ function applyRotation_UI(angle, fig, cfg)
     end
 
     % Reorder polygons to maintain concentration ordering after rotation
-    [guiData.polygons, order] = assignPolygonLabels(guiData.polygons);
+    [guiData.polygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    guiData.orientation = newOrientation;  % Update orientation based on new layout
 
     hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
     if hasLabels && ~isempty(order) && numel(guiData.polygonLabels) >= numel(order)
@@ -3109,11 +3163,17 @@ function updatePolygonLabelsCallback(polygon, varargin)
     set(fig, 'UserData', guiData);
 end
 
-function [polygons, order] = assignPolygonLabels(polygons)
+function [polygons, order, orientation] = assignPolygonLabels(polygons)
     % Reorder drawpolygon handles so con_0..con_N follow low→high concentration order.
     % Ordering direction matches the dominant layout axis: horizontal strips
     % sort left→right, vertical strips sort bottom→top.
+    %
+    % Returns:
+    %   polygons    - Reordered cell array of polygon handles
+    %   order       - Permutation indices used for reordering
+    %   orientation - 'horizontal' or 'vertical' based on layout
     order = [];
+    orientation = 'horizontal';  % Default
 
     if isempty(polygons) || ~iscell(polygons)
         return;
@@ -3189,10 +3249,12 @@ function [polygons, order] = assignPolygonLabels(polygons)
     sortKey = inf(numPolygons, 2);
     if countX >= countY
         % Horizontal dominance: prioritize left→right, break ties bottom→top
+        orientation = 'horizontal';
         sortKey(validMask, 1) = centroids(validMask, 1);
         sortKey(validMask, 2) = -centroids(validMask, 2);
     else
         % Vertical dominance: prioritize bottom→top, break ties left→right
+        orientation = 'vertical';
         sortKey(validMask, 1) = -centroids(validMask, 2);
         sortKey(validMask, 2) = centroids(validMask, 1);
     end
@@ -3210,7 +3272,8 @@ function guiData = enforceConcentrationOrdering(guiData)
         return;
     end
 
-    [sortedPolygons, order] = assignPolygonLabels(guiData.polygons);
+    [sortedPolygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    guiData.orientation = newOrientation;  % Always update orientation based on current layout
     numPolygons = numel(guiData.polygons);
     needsReindex = ~isempty(order) && numel(order) == numPolygons && ...
                    ~isequal(order(:).', 1:numPolygons);

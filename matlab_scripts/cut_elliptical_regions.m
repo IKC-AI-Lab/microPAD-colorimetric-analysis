@@ -66,13 +66,12 @@ function cut_elliptical_regions(varargin)
     MARGIN_TO_SPACING_RATIO = 1/3;                      % Margin = rectangleWidth / 3
     VERTICAL_POSITION_RATIO = 1/3;                      % Ellipse center at 1/3 of image height
 
-    % === SAFETY AND QUALITY FACTORS ===
-    OVERLAP_SAFETY_FACTOR = 2.1;                       % Prevent ellipse overlap
+    % === QUALITY FACTORS ===
     DIM_FACTOR = 0.2;                                  % Dimming factor for preview (0.2 = 80% dimmed)
 
     % === ELLIPSE RANGE PARAMETERS ===
     MIN_AXIS_PERCENT = 0.005;                          % 0.5% of width as minimum axis length
-    SEMI_MAJOR_DEFAULT_RATIO = 0.70;                   % Default semi-major axis (70% of max)
+    SEMI_MAJOR_DEFAULT_RATIO = 0.21;                   % Default semi-major axis (21% of max)
     SEMI_MINOR_DEFAULT_RATIO = 0.85;                   % Default semi-minor/semi-major ratio
     ROTATION_DEFAULT_ANGLE = 0;                        % Default rotation (degrees)
 
@@ -103,7 +102,7 @@ function cut_elliptical_regions(varargin)
     % Configuration - All defaults calculated from these base constants
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, REPLICATES_PER_CONCENTRATION, ...
                               MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, ...
-                              OVERLAP_SAFETY_FACTOR, DIM_FACTOR, ...
+                              DIM_FACTOR, ...
                               MIN_AXIS_PERCENT, SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ROTATION_DEFAULT_ANGLE, ...
                               CONC_FOLDER_PREFIX, ...
                               COORDINATE_FILENAME, PATCH_FILENAME_FORMAT, ...
@@ -127,7 +126,7 @@ end
 
 function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConcentration, ...
                              marginToSpacingRatio, verticalPositionRatio, ...
-                             overlapSafetyFactor, dimFactor, ...
+                             dimFactor, ...
                              minAxisPercent, semiMajorDefaultRatio, semiMinorDefaultRatio, rotationDefaultAngle, ...
                              concFolderPrefix, ...
                              coordinateFileName, patchFilenameFormat, imageExtensions, ...
@@ -137,7 +136,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
     validateattributes(replicatesPerConcentration, {'numeric'},{'scalar','integer','>=',1},mfilename,'replicatesPerConcentration');
     validateattributes(marginToSpacingRatio, {'numeric'},{'scalar','>',0},mfilename,'marginToSpacingRatio');
     validateattributes(verticalPositionRatio, {'numeric'},{'scalar','>',0,'<',1},mfilename,'verticalPositionRatio');
-    validateattributes(overlapSafetyFactor, {'numeric'},{'scalar','>',1},mfilename,'overlapSafetyFactor');
     validateattributes(dimFactor, {'numeric'},{'scalar','>=',0,'<=',1},mfilename,'dimFactor');
     validateattributes(minAxisPercent, {'numeric'},{'scalar','>',0,'<',1},mfilename,'minAxisPercent');
     validateattributes(semiMajorDefaultRatio, {'numeric'},{'scalar','>=',0,'<=',1},mfilename,'semiMajorDefaultRatio');
@@ -161,8 +159,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, replicatesPerConce
     cfg.marginToSpacingRatio = marginToSpacingRatio;  % margin = rectangleWidth * ratio
     cfg.verticalPositionRatio = verticalPositionRatio;
 
-    % Safety and quality factors (using centralized constants)
-    cfg.overlapSafetyFactor = overlapSafetyFactor;
+    % Quality factors (using centralized constants)
     cfg.dimFactor = dimFactor;
 
     % Ellipse geometry range parameters (using centralized constants)
@@ -228,16 +225,14 @@ function layoutParams = calculateLayoutParameters(imageWidth, cfg)
 
     layoutParams.rectangleWidth = rectangleWidth;
     layoutParams.margin = margin;
-    layoutParams.maxSafeEllipseDimension = rectangleWidth / (cfg.replicatesPerConcentration * cfg.overlapSafetyFactor);
     layoutParams.verticalCenter = NaN; % Will be set when image height is known
 end
 
 function geometryParams = calculateGeometryParameters(imageWidth, cfg)
     %% Calculate ellipse geometry limits based on image width and configuration
-    layoutParams = calculateLayoutParameters(imageWidth, cfg);
-
+    % No overlap safety - ellipses can be any size up to image width
     geometryParams.minPixels = imageWidth * cfg.minAxisPercent;
-    geometryParams.maxPixels = layoutParams.maxSafeEllipseDimension;
+    geometryParams.maxPixels = imageWidth;
     geometryParams.range = geometryParams.maxPixels - geometryParams.minPixels;
     geometryParams.rotationMin = -180;
     geometryParams.rotationMax = 180;
