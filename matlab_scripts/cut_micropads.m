@@ -4711,9 +4711,8 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
             % Validate coordinate format (no migration - project is in active development)
             if size(nums, 2) ~= numericCount
                 error('cut_micropads:invalid_coord_format', ...
-                    ['Coordinate file has invalid format: %d columns found, expected %d.\n' ...
+                    ['Coordinate file has invalid format: %d numeric columns found, expected %d.\n' ...
                      'File: %s\n' ...
-                     'This project requires the current 10-column format (image, concentration, x1, y1, x2, y2, x3, y3, x4, y4, rotation).\n' ...
                      'NOTE: This project is in active development mode with no backward compatibility.\n' ...
                      'Delete the corrupted file and rerun the stage to regenerate.'], ...
                     size(nums, 2), numericCount, coordPath);
@@ -4722,7 +4721,15 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
             existingNums = nums;
 
             % Validate numeric content (skip rotation column for NaN check)
-            coordCols = 2:9;  % x1, y1, x2, y2, x3, y3, x4, y4
+            % Polygon format (10 cols): cols 2:9 are x1,y1,x2,y2,x3,y3,x4,y4
+            % Ellipse format (7 cols): cols 3:6 are x,y,semiMajor,semiMinor
+            if numericCount == 10
+                coordCols = 2:9;
+            elseif numericCount == 7
+                coordCols = 3:6;
+            else
+                coordCols = 2:(numericCount-1);
+            end
             invalidRows = any(~isfinite(existingNums(:, coordCols)), 2);
             if any(invalidRows)
                 warning('cut_micropads:corrupt_coords', ...
