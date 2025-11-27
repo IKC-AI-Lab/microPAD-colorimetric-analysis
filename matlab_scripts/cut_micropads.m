@@ -93,9 +93,9 @@ function cut_micropads(varargin)
     % The homography transform will adjust for perspective distortion.
     ELLIPSE_DEFAULT_RECORDS = [
         % x,    y,    semiMajor, semiMinor, rotationAngle
-        0.25,  0.40,  0.10,      0.08,      -45;  % Replicate 0 (Urea)
-        0.5,  0.35,  0.10,      0.08,        0;  % Replicate 1 (Creatinine)
-        0.75,  0.40,  0.10,      0.08,       45   % Replicate 2 (Lactate)
+        0.25,  0.40,  0.08,      0.07,      -45;  % Replicate 0 (Urea)
+        0.50,  0.35,  0.08,      0.07,       90;  % Replicate 1 (Creatinine) - vertical
+        0.75,  0.40,  0.08,      0.07,       45   % Replicate 2 (Lactate)
     ];
 
     % === ELLIPSE LAYOUT PARAMETERS (legacy, for fallback) ===
