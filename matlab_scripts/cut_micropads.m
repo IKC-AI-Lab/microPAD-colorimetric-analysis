@@ -3210,7 +3210,7 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
     end
 
     rotation = guiData.totalRotation;
-    if ~isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+    if rotation == 0
         return;
     end
 
@@ -3225,13 +3225,34 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
         imageSize = imageSize(1:2);
     end
 
-    [basePolygons, newSize] = rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
+    if isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [basePolygons, newSize] = rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
 
+        if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
+            targetSize = guiData.baseImageSize(1:2);
+            if any(newSize ~= targetSize)
+                basePolygons = scalePolygonsForImageSize(basePolygons, newSize, targetSize, cfg.numSquares);
+            end
+        end
+        return;
+    end
+
+    % General-angle fallback: geometrically invert the loose imrotate transform
+    rotatedSize = imageSize;
+    targetSize = rotatedSize;
     if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
         targetSize = guiData.baseImageSize(1:2);
-        if any(newSize ~= targetSize)
-            basePolygons = scalePolygonsForImageSize(basePolygons, newSize, targetSize, cfg.numSquares);
-        end
+    end
+
+    numPolygons = size(displayPolygons, 1);
+    basePolygons = zeros(size(displayPolygons));
+
+    for i = 1:numPolygons
+        polyRot = squeeze(displayPolygons(i, :, :));
+        % Clamp first to avoid NaNs during transform
+        polyRot = clampPolygonToImage(polyRot, rotatedSize);
+        polyBase = inverseRotatePoints(polyRot, rotatedSize, targetSize, rotation, cfg.rotation.angleTolerance);
+        basePolygons(i, :, :) = clampPolygonToImage(polyBase, targetSize);
     end
 end
 
@@ -3241,11 +3262,25 @@ function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageS
         return;
     end
 
-    if rotation ~= 0 && isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [rotatedPolygons, rotatedSize] = rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
-    else
+    if rotation == 0
         rotatedPolygons = basePolygons;
         rotatedSize = baseImageSize;
+    elseif isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [rotatedPolygons, rotatedSize] = rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
+    else
+        % General-angle forward rotation: geometrically apply the imrotate transform
+        originalSize = baseImageSize(1:2);
+        rotatedSize = displayImageSize(1:2);
+
+        numPolygons = size(basePolygons, 1);
+        rotatedPolygons = zeros(size(basePolygons));
+
+        for i = 1:numPolygons
+            polyBase = squeeze(basePolygons(i, :, :));
+            polyBase = clampPolygonToImage(polyBase, originalSize);
+            polyRot = forwardRotatePoints(polyBase, originalSize, rotatedSize, rotation, cfg.rotation.angleTolerance);
+            rotatedPolygons(i, :, :) = clampPolygonToImage(polyRot, rotatedSize);
+        end
     end
 
     targetSize = displayImageSize(1:2);
@@ -3470,6 +3505,61 @@ function transformedPoints = inverseRotatePoints(points, rotatedSize, originalSi
         y_orig = -pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
 
         transformedPoints = [x_orig + centerOriginal(1), y_orig + centerOriginal(2)];
+    end
+end
+
+function transformedPoints = forwardRotatePoints(points, originalSize, rotatedSize, rotation, angleTolerance)
+    % Transform points from original image frame to rotated frame
+    % ROTATION CONVENTION: Positive rotation = clockwise in image coordinates
+    % TRANSFORMATION: original -> rotated (forward rotation)
+    % This is the mathematical inverse of inverseRotatePoints
+    if rotation == 0 || isempty(points)
+        transformedPoints = points;
+        return;
+    end
+
+    % Handle exact 90-degree rotations
+    if abs(mod(rotation, 90)) < angleTolerance
+        numRotations = mod(round(rotation / 90), 4);
+        H = originalSize(1);
+        W = originalSize(2);
+
+        switch numRotations
+            case 1  % 90 degrees clockwise
+                x_rot = H - points(:, 2) + 1;
+                y_rot = points(:, 1);
+            case 2  % 180 degrees
+                x_rot = W - points(:, 1) + 1;
+                y_rot = H - points(:, 2) + 1;
+            case 3  % 270 degrees clockwise (= 90 CCW)
+                x_rot = points(:, 2);
+                y_rot = W - points(:, 1) + 1;
+            otherwise  % 0 degrees
+                x_rot = points(:, 1);
+                y_rot = points(:, 2);
+        end
+
+        transformedPoints = [x_rot, y_rot];
+    else
+        % For non-90-degree rotations, use geometric transform (forward rotation)
+        % Forward rotation matrix in image coordinates (Y-axis down):
+        % [x']   [ cos(θ)  sin(θ)]   [x]
+        % [y'] = [-sin(θ)  cos(θ)]   [y]
+        % This is the inverse of the matrix used in inverseRotatePoints
+        theta = deg2rad(rotation);
+        cosTheta = cos(theta);
+        sinTheta = sin(theta);
+
+        % Centers of original and rotated images
+        centerOriginal = [originalSize(2)/2, originalSize(1)/2];
+        centerRotated = [rotatedSize(2)/2, rotatedSize(1)/2];
+
+        % Translate to origin, rotate, translate back
+        pointsCentered = points - centerOriginal;
+        x_rot = pointsCentered(:, 1) * cosTheta + pointsCentered(:, 2) * sinTheta;
+        y_rot = -pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
+
+        transformedPoints = [x_rot + centerRotated(1), y_rot + centerRotated(2)];
     end
 end
 
