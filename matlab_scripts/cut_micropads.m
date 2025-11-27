@@ -186,6 +186,10 @@ function cut_micropads(varargin)
     UI_CONST.layout.zoomValue = [0.79 0.42 0.16 0.28];
     UI_CONST.layout.zoomResetButton = [0.05 0.08 0.44 0.28];
     UI_CONST.layout.zoomAutoButton = [0.51 0.08 0.44 0.28];
+    UI_CONST.layout.ellipseZoomPrevButton = [0.05 0.42 0.18 0.28];
+    UI_CONST.layout.ellipseZoomIndicator = [0.25 0.42 0.35 0.28];
+    UI_CONST.layout.ellipseZoomNextButton = [0.62 0.42 0.18 0.28];
+    UI_CONST.layout.ellipseZoomResetButton = [0.25 0.08 0.50 0.28];
     UI_CONST.rotation = struct(...
         'range', [-180, 180], ...
         'quickAngles', [-90, 0, 90, 180]);
@@ -981,14 +985,12 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                     savedEllipseData = [];
                 end
 
-                % Preview mode
-                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, [], orientation);
+                % Preview mode (pass ellipse data directly to buildPreviewUI via clearAndRebuildUI)
+                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, [], orientation, savedEllipseData);
 
-                % Store rotation and polygon params in guiData for preview mode
+                % Store rotation in guiData for preview mode (ellipse data already stored by buildPreviewUI)
                 guiData = get(fig, 'UserData');
                 guiData.savedRotation = savedRotation;
-                guiData.savedPolygonParams = savedBasePolygons;
-                guiData.savedEllipseData = savedEllipseData;
                 set(fig, 'UserData', guiData);
 
                 [prevAction, ~, ~] = waitForUserAction(fig);
@@ -1023,8 +1025,12 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
     end
 end
 
-function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState, orientation)
+function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState, orientation, ellipseData)
     % Modes: 'editing' (polygon adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
+    if nargin < 12 || isempty(ellipseData)
+        ellipseData = [];
+    end
+
     if nargin < 11 || isempty(orientation)
         orientation = 'horizontal';
     end
@@ -1052,7 +1058,7 @@ function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonPar
             buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, orientation);
 
         case 'preview'
-            buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams);
+            buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, ellipseData);
     end
 
     if ~isempty(viewState)
@@ -1341,15 +1347,13 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     end
 end
 
-function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams)
+function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, ellipseData)
     % Build UI for preview mode
     set(fig, 'Name', sprintf('Preview - %s - %s', phoneName, imageName));
 
-    % Check if ellipse data was saved (from previous UI state)
-    tempGuiData = get(fig, 'UserData');
-    ellipseData = [];
-    if ~isempty(tempGuiData) && isstruct(tempGuiData) && isfield(tempGuiData, 'savedEllipseData')
-        ellipseData = tempGuiData.savedEllipseData;
+    % Handle optional ellipse data parameter
+    if nargin < 7
+        ellipseData = [];
     end
 
     guiData = struct();
@@ -1435,7 +1439,11 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     % Image display with polygons
     [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
 
-    % Draw all polygons (no highlighting, show all equally)
+    % Add double-click background reset callback
+    set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
+    set(guiData.imgHandle, 'HitTest', 'off');  % Allow clicks to pass through to axes
+
+    % Draw all polygons (clickable for zoom navigation, but not editable)
     numConcentrations = size(polygonParams, 1);
     guiData.polygonHandles = cell(numConcentrations, 1);
     for i = 1:numConcentrations
@@ -1443,7 +1451,13 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
         polygonColor = getConcentrationColor(i - 1, numConcentrations);
         guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
                                                 'Color', polygonColor, 'LineWidth', 2, ...
-                                                'FaceAlpha', 0.15, 'InteractionsAllowed', 'none');
+                                                'FaceAlpha', 0.15, 'InteractionsAllowed', 'translate', ...
+                                                'Tag', sprintf('polygon_%d', i));
+        % Add click callback for zoom
+        addlistener(guiData.polygonHandles{i}, 'ROIClicked', @(src, evt) zoomToPolygonCallback(src, fig, i, cfg));
+        % Prevent movement by resetting position when drag starts
+        originalVertices = vertices;
+        addlistener(guiData.polygonHandles{i}, 'MovingROI', @(src, ~) set(src, 'Position', originalVertices));
     end
 
     % Create ALL ellipses at once (21 total for 7 polygons × 3 replicates)
@@ -1524,10 +1538,11 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
         end
     end
 
-    % Zoom panel (reuse existing)
+    % Zoom panel (polygon-specific navigation)
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
-    [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
+    guiData.focusedPolygonIndex = 0;  % 0 = none/all, 1-N = specific polygon
+    [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = createEllipseZoomPanel(fig, cfg);
 
     % Action buttons panel
     guiData.ellipseButtonPanel = createEllipseEditingButtonPanel(fig, cfg);
@@ -1591,6 +1606,10 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     % Image display (NO polygon overlays in grid mode)
     [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
 
+    % Add double-click background reset callback
+    set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
+    set(guiData.imgHandle, 'HitTest', 'off');  % Allow clicks to pass through to axes
+
     % Create ellipses at default grid positions
     numReplicates = cfg.ellipse.replicatesPerMicropad;
     numGroups = cfg.numSquares;
@@ -1622,9 +1641,10 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
         end
     end
 
-    % Zoom panel
+    % Zoom panel (grid mode doesn't have polygons, so no polygon-specific zoom)
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
+    guiData.focusedPolygonIndex = 0;  % Always 0 in grid mode (no polygons)
     [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
 
     % Action buttons panel
@@ -2683,13 +2703,31 @@ end
 function resetZoom(fig, cfg)
     % Reset zoom to full image view
     guiData = get(fig, 'UserData');
-    if ~strcmp(guiData.mode, 'editing')
+    if ~strcmp(guiData.mode, 'editing') && ~strcmp(guiData.mode, 'ellipse_editing') && ~strcmp(guiData.mode, 'ellipse_editing_grid')
         return;
     end
 
     guiData.zoomLevel = 0;
-    set(guiData.zoomSlider, 'Value', 0);
-    set(guiData.zoomValue, 'String', '0%');
+
+    % Handle different UI controls for different modes
+    % Both 'editing' and 'ellipse_editing_grid' use slider-based zoom
+    if strcmp(guiData.mode, 'editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
+        if isfield(guiData, 'zoomSlider') && ishandle(guiData.zoomSlider)
+            set(guiData.zoomSlider, 'Value', 0);
+        end
+        if isfield(guiData, 'zoomValue') && ishandle(guiData.zoomValue)
+            set(guiData.zoomValue, 'String', '0%');
+        end
+    end
+
+    % Clear polygon focus for ellipse editing modes
+    if strcmp(guiData.mode, 'ellipse_editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
+        if isfield(guiData, 'focusedPolygonIndex')
+            guiData.focusedPolygonIndex = 0;
+            updatePolygonHighlight(fig, guiData, cfg);
+            updatePolygonIndicator(fig, guiData);
+        end
+    end
 
     % Apply zoom to axes
     applyZoomToAxes(guiData, cfg);
@@ -2704,12 +2742,21 @@ function applyAutoZoom(fig, guiData, cfg)
         return;
     end
 
-    if ~isfield(guiData, 'mode') || ~strcmp(guiData.mode, 'editing')
+    if ~isfield(guiData, 'mode') || (~strcmp(guiData.mode, 'editing') && ~strcmp(guiData.mode, 'ellipse_editing') && ~strcmp(guiData.mode, 'ellipse_editing_grid'))
         return;
     end
 
-    % Calculate bounding box of all polygons
-    [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+    % Calculate bounding box based on available handles
+    if strcmp(guiData.mode, 'ellipse_editing')
+        % Use polygonHandles for ellipse editing mode (has polygons)
+        [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+    elseif strcmp(guiData.mode, 'ellipse_editing_grid')
+        % Use ellipse handles for grid mode (no polygons, only ellipses)
+        [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
+    else
+        % Use polygons for editing mode
+        [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+    end
 
     if isempty(xmin)
         return;  % No valid polygons
@@ -2833,6 +2880,321 @@ function bounds = estimateSingleMicropadBounds(guiData, cfg)
     ymax = min(imgHeight + 0.5, centerY + stripHeight / 2);
 
     bounds = [xmin, xmax, ymin, ymax];
+end
+
+%% -------------------------------------------------------------------------
+%% Ellipse Editing Zoom Functions
+%% -------------------------------------------------------------------------
+
+function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoomPanel(fig, cfg)
+    % Create zoom panel with polygon navigation buttons for ellipse editing mode
+    zoomPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
+                       'Position', cfg.ui.positions.zoomPanel, ...
+                       'BackgroundColor', cfg.ui.colors.panel, ...
+                       'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
+                       'BorderWidth', 2);
+
+    % Panel label
+    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Polygon Zoom', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.zoomLabel, ...
+             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
+
+    % Previous button
+    prevButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
+             'String', '<', ...
+             'FontSize', cfg.ui.fontSize.button + 2, 'FontWeight', 'bold', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomPrevButton, ...
+             'BackgroundColor', [0.25 0.25 0.25], ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'Callback', @(~,~) navigateToPrevPolygon(fig, cfg));
+
+    % Polygon indicator text
+    zoomIndicator = uicontrol('Parent', zoomPanel, 'Style', 'text', ...
+                         'String', 'All', ...
+                         'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomIndicator, ...
+                         'FontSize', cfg.ui.fontSize.value, 'FontWeight', 'bold', ...
+                         'ForegroundColor', cfg.ui.colors.foreground, ...
+                         'BackgroundColor', cfg.ui.colors.panel, ...
+                         'HorizontalAlignment', 'center');
+
+    % Next button
+    nextButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
+             'String', '>', ...
+             'FontSize', cfg.ui.fontSize.button + 2, 'FontWeight', 'bold', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomNextButton, ...
+             'BackgroundColor', [0.25 0.25 0.25], ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'Callback', @(~,~) navigateToNextPolygon(fig, cfg));
+
+    % Reset button (full image view)
+    resetButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
+             'String', 'Reset View', ...
+             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomResetButton, ...
+             'BackgroundColor', [0.25 0.25 0.25], ...
+             'ForegroundColor', cfg.ui.colors.foreground, ...
+             'Callback', @(~,~) resetZoomEllipse(fig, cfg));
+end
+
+function zoomToPolygon(fig, polygonIndex, cfg)
+    % Zoom to a specific polygon with 5% margin
+    guiData = get(fig, 'UserData');
+
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        return;
+    end
+
+    numPolygons = numel(guiData.polygonHandles);
+    if polygonIndex < 1 || polygonIndex > numPolygons
+        return;
+    end
+
+    % Get vertices from polygon handle
+    if ~isvalid(guiData.polygonHandles{polygonIndex})
+        return;
+    end
+
+    vertices = guiData.polygonHandles{polygonIndex}.Position;
+
+    % Calculate bounding box with 5% margin
+    xmin = min(vertices(:, 1));
+    xmax = max(vertices(:, 1));
+    ymin = min(vertices(:, 2));
+    ymax = max(vertices(:, 2));
+
+    xmargin = (xmax - xmin) * 0.05;
+    ymargin = (ymax - ymin) * 0.05;
+
+    xmin = max(0.5, xmin - xmargin);
+    xmax = min(guiData.imageSize(2) + 0.5, xmax + xmargin);
+    ymin = max(0.5, ymin - ymargin);
+    ymax = min(guiData.imageSize(1) + 0.5, ymax + ymargin);
+
+    % Apply zoom to axes
+    xlim(guiData.imgAxes, [xmin, xmax]);
+    ylim(guiData.imgAxes, [ymin, ymax]);
+
+    % Update focused index
+    guiData.focusedPolygonIndex = polygonIndex;
+    set(fig, 'UserData', guiData);
+
+    % Update highlight and indicator
+    updatePolygonHighlight(fig, guiData, cfg);
+    updatePolygonIndicator(fig, guiData);
+end
+
+function updatePolygonHighlight(~, guiData, cfg)
+    % Update polygon visual highlighting based on focused index
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        return;
+    end
+
+    numPolygons = numel(guiData.polygonHandles);
+    focusedIdx = guiData.focusedPolygonIndex;
+
+    for i = 1:numPolygons
+        if ~isvalid(guiData.polygonHandles{i})
+            continue;
+        end
+
+        baseColor = getConcentrationColor(i - 1, numPolygons);
+
+        if focusedIdx == i
+            % Focused polygon: thicker line, original color
+            guiData.polygonHandles{i}.LineWidth = 3;
+            guiData.polygonHandles{i}.Color = baseColor;
+        elseif focusedIdx > 0
+            % Non-focused polygon when a polygon is focused: normal line, dimmed color
+            guiData.polygonHandles{i}.LineWidth = 2;
+            dimmedColor = baseColor * cfg.dimFactor + [1 1 1] * (1 - cfg.dimFactor);
+            guiData.polygonHandles{i}.Color = dimmedColor;
+        else
+            % No focus: normal line, original color
+            guiData.polygonHandles{i}.LineWidth = 2;
+            guiData.polygonHandles{i}.Color = baseColor;
+        end
+    end
+end
+
+function updatePolygonIndicator(~, guiData)
+    % Update indicator text showing current polygon focus
+    if ~isfield(guiData, 'zoomIndicator') || ~ishandle(guiData.zoomIndicator)
+        return;
+    end
+
+    if ~isfield(guiData, 'focusedPolygonIndex')
+        return;
+    end
+
+    % Grid mode has no polygonHandles - nothing to indicate
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        return;
+    end
+
+    focusedIdx = guiData.focusedPolygonIndex;
+
+    if focusedIdx == 0
+        set(guiData.zoomIndicator, 'String', 'All');
+    else
+        numPolygons = numel(guiData.polygonHandles);
+        set(guiData.zoomIndicator, 'String', sprintf('Polygon %d/%d', focusedIdx, numPolygons));
+    end
+end
+
+function navigateToPrevPolygon(fig, cfg)
+    % Navigate to previous polygon (wrap from 1 to last)
+    guiData = get(fig, 'UserData');
+
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        return;
+    end
+
+    numPolygons = numel(guiData.polygonHandles);
+    currentIdx = guiData.focusedPolygonIndex;
+
+    if currentIdx <= 1
+        % Wrap to last polygon
+        newIdx = numPolygons;
+    else
+        newIdx = currentIdx - 1;
+    end
+
+    zoomToPolygon(fig, newIdx, cfg);
+end
+
+function navigateToNextPolygon(fig, cfg)
+    % Navigate to next polygon (wrap from last to 1)
+    guiData = get(fig, 'UserData');
+
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        return;
+    end
+
+    numPolygons = numel(guiData.polygonHandles);
+    currentIdx = guiData.focusedPolygonIndex;
+
+    if currentIdx >= numPolygons || currentIdx == 0
+        % Wrap to first polygon
+        newIdx = 1;
+    else
+        newIdx = currentIdx + 1;
+    end
+
+    zoomToPolygon(fig, newIdx, cfg);
+end
+
+function resetZoomEllipse(fig, cfg)
+    % Reset zoom to fit all content for ellipse editing modes
+    % - ellipse_editing mode: fits all polygons
+    % - ellipse_editing_grid mode: fits all ellipses
+    guiData = get(fig, 'UserData');
+
+    % Clear polygon focus (if applicable)
+    if isfield(guiData, 'focusedPolygonIndex')
+        guiData.focusedPolygonIndex = 0;
+        set(fig, 'UserData', guiData);
+        updatePolygonHighlight(fig, guiData, cfg);
+        updatePolygonIndicator(fig, guiData);
+    end
+
+    % Apply auto-zoom to fit all content
+    applyAutoZoom(fig, guiData, cfg);
+end
+
+function zoomToPolygonCallback(~, fig, polygonIndex, cfg)
+    % Callback when polygon is clicked
+    zoomToPolygon(fig, polygonIndex, cfg);
+end
+
+function axesClickCallback(~, ~, fig, cfg)
+    % Handle double-click on axes background to reset zoom
+    if strcmp(get(fig, 'SelectionType'), 'open')  % Double-click
+        guiData = get(fig, 'UserData');
+        if strcmp(guiData.mode, 'ellipse_editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
+            resetZoomEllipse(fig, cfg);  % Auto-zoom to fit all content (polygons or ellipses)
+        else
+            resetZoom(fig, cfg);  % Reset to full image for other modes
+        end
+    end
+end
+
+function [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData)
+    % Calculate bounding box containing all polygon handles (for ellipse editing mode)
+    xmin = inf;
+    xmax = -inf;
+    ymin = inf;
+    ymax = -inf;
+
+    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+        xmin = [];
+        return;
+    end
+
+    for i = 1:numel(guiData.polygonHandles)
+        if isvalid(guiData.polygonHandles{i})
+            pos = guiData.polygonHandles{i}.Position;
+            xmin = min(xmin, min(pos(:, 1)));
+            xmax = max(xmax, max(pos(:, 1)));
+            ymin = min(ymin, min(pos(:, 2)));
+            ymax = max(ymax, max(pos(:, 2)));
+        end
+    end
+
+    if isinf(xmin)
+        xmin = [];
+        return;
+    end
+
+    % Add margin (10% of bounds size)
+    xmargin = (xmax - xmin) * 0.1;
+    ymargin = (ymax - ymin) * 0.1;
+
+    xmin = max(0.5, xmin - xmargin);
+    xmax = min(guiData.imageSize(2) + 0.5, xmax + xmargin);
+    ymin = max(0.5, ymin - ymargin);
+    ymax = min(guiData.imageSize(1) + 0.5, ymax + ymargin);
+end
+
+function [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData)
+    % Calculate bounding box containing all ellipses (for grid mode)
+    xmin = inf;
+    xmax = -inf;
+    ymin = inf;
+    ymax = -inf;
+
+    if ~isfield(guiData, 'ellipses') || isempty(guiData.ellipses)
+        xmin = [];
+        return;
+    end
+
+    for i = 1:numel(guiData.ellipses)
+        if isvalid(guiData.ellipses{i})
+            center = guiData.ellipses{i}.Center;
+            semiAxes = guiData.ellipses{i}.SemiAxes;
+            % Conservative bounds using maximum semi-axis (handles any rotation)
+            maxRadius = max(semiAxes);
+            xmin = min(xmin, center(1) - maxRadius);
+            xmax = max(xmax, center(1) + maxRadius);
+            ymin = min(ymin, center(2) - maxRadius);
+            ymax = max(ymax, center(2) + maxRadius);
+        end
+    end
+
+    if isinf(xmin)
+        xmin = [];
+        return;
+    end
+
+    % Add margin (10% of bounds size)
+    xmargin = (xmax - xmin) * 0.1;
+    ymargin = (ymax - ymin) * 0.1;
+
+    xmin = max(0.5, xmin - xmargin);
+    xmax = min(guiData.imageSize(2) + 0.5, xmax + xmargin);
+    ymin = max(0.5, ymin - ymargin);
+    ymax = min(guiData.imageSize(1) + 0.5, ymax + ymargin);
 end
 
 function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, cfg)
