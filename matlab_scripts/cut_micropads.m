@@ -2414,7 +2414,8 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
 
                 % Draw ellipse using parametric form
                 t = linspace(0, 2*pi, 100);
-                theta_rad = deg2rad(theta);
+                % Rotation angles are stored clockwise; negate for standard rotation matrix
+                theta_rad = deg2rad(-theta);
                 x_ellipse = a * cos(t);
                 y_ellipse = b * sin(t);
                 x_rot = x + x_ellipse * cos(theta_rad) - y_ellipse * sin(theta_rad);
@@ -2463,11 +2464,11 @@ function maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg)
 
                 % Create ellipse mask
                 [X, Y] = meshgrid(1:width, 1:height);
-                theta_rad = deg2rad(theta);
+                theta_rad = deg2rad(-theta);
                 dx = X - x;
                 dy = Y - y;
-                x_rot =  dx * cos(theta_rad) + dy * sin(theta_rad);
-                y_rot = -dx * sin(theta_rad) + dy * cos(theta_rad);
+                x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
+                y_rot =  dx * sin(theta_rad) + dy * cos(theta_rad);
 
                 ellipseMask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
                 totalMask = totalMask | ellipseMask;
@@ -4277,7 +4278,7 @@ function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
             theta = ellipseData(i, 7);
 
             % Calculate axis-aligned bounding box
-            theta_rad = deg2rad(theta);
+            theta_rad = deg2rad(-theta);
             ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
             uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
 
@@ -4298,8 +4299,8 @@ function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
 
             dx = Xpatch - centerX_patch;
             dy = Ypatch - centerY_patch;
-            x_rot =  dx * cos(theta_rad) + dy * sin(theta_rad);
-            y_rot = -dx * sin(theta_rad) + dy * cos(theta_rad);
+            x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
+            y_rot =  dx * sin(theta_rad) + dy * cos(theta_rad);
 
             ellipseMask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
 
