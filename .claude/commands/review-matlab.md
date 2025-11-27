@@ -12,7 +12,7 @@ Review MATLAB code for quality, style, and best practices using a complete revie
 
 Executes a comprehensive code quality workflow:
 1. Reviews code using the matlab-code-reviewer agent
-2. Fixes identified issues using the matlab-coder agent
+2. Claude fixes identified issues directly
 3. Re-reviews until all issues are resolved
 4. Performs final verification with MATLAB Code Analyzer
 
@@ -35,8 +35,7 @@ When you invoke this command, follow this orchestration workflow:
 
 ### Phase 2: Fix Issues (if found)
 3. If reviewer identifies issues:
-   - Delegate to `matlab-coder` agent with specific fix instructions from review
-   - Coder agent implements fixes without self-review
+   - Claude implements fixes directly based on review feedback
 4. Re-delegate to `matlab-code-reviewer` agent to verify fixes
 5. Repeat steps 3-4 until review is clean
 
@@ -100,4 +99,4 @@ The command provides multi-phase output:
 - This command follows the orchestration workflow defined in CLAUDE.md
 - Multiple review-fix iterations may occur until code is clean
 - MATLAB Code Analyzer provides final static analysis verification
-- All fixes are implemented by matlab-coder agent and independently reviewed
+- All fixes are implemented by Claude and independently reviewed
