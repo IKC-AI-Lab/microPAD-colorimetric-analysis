@@ -88,7 +88,7 @@ function cut_micropads(varargin)
     % Each row: [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
     % - x, y: center position (0,0 = top-left, 1,1 = bottom-right)
     % - semiMajorAxis, semiMinorAxis: fraction of micropad side length
-    % - rotationAngle: degrees, clockwise from horizontal
+    % - rotationAngle: degrees, counter-clockwise from horizontal (standard math convention)
     % These values define ellipse positions relative to an ideal square micropad.
     % The homography transform will adjust for perspective distortion.
     ELLIPSE_DEFAULT_RECORDS = [
@@ -2389,13 +2389,16 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
             plot(leftAxes, [poly(:,1); poly(1,1)], [poly(:,2); poly(1,2)], ...
                  'Color', polyColor, 'LineWidth', cfg.ui.polygon.lineWidth);
 
-            centerX = mean(poly(:,1));
-            centerY = mean(poly(:,2));
-            text(leftAxes, centerX, centerY, sprintf('con_%d', i-1), ...
-                 'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
+            % Position label at bottom-right of polygon
+            bottomRightX = max(poly(:,1));
+            bottomRightY = max(poly(:,2));
+            hText = text(leftAxes, bottomRightX, bottomRightY, sprintf('con_%d', i-1), ...
+                 'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
                  'FontSize', cfg.ui.fontSize.info, 'FontWeight', 'bold', ...
-                 'Color', cfg.ui.colors.info, 'BackgroundColor', [0 0 0], ...
-                 'EdgeColor', 'none');
+                 'Color', cfg.ui.colors.info, 'BackgroundColor', [0 0 0 0.6], ...
+                 'EdgeColor', 'none', 'Margin', 2);
+            % Ensure text renders above other elements
+            uistack(hText, 'top');
         end
     end
 
@@ -2414,14 +2417,14 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
 
                 % Draw ellipse using parametric form
                 t = linspace(0, 2*pi, 100);
-                % Rotation angles are stored clockwise; negate for standard rotation matrix
+                % In image coordinates (Y-down), negate theta to match drawellipse's visual CCW convention
                 theta_rad = deg2rad(-theta);
                 x_ellipse = a * cos(t);
                 y_ellipse = b * sin(t);
                 x_rot = x + x_ellipse * cos(theta_rad) - y_ellipse * sin(theta_rad);
                 y_rot = y + x_ellipse * sin(theta_rad) + y_ellipse * cos(theta_rad);
 
-                plot(leftAxes, x_rot, y_rot, 'Color', ellipseColor, 'LineWidth', 1.5, 'LineStyle', '--');
+                plot(leftAxes, x_rot, y_rot, 'Color', ellipseColor, 'LineWidth', 1.5);
             end
         end
     end
@@ -2462,9 +2465,10 @@ function maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg)
                 b = ellipseData(i, 6);
                 theta = ellipseData(i, 7);
 
-                % Create ellipse mask
+                % Create ellipse mask by transforming image coords to ellipse-local coords
+                % In Y-down image coords, use +theta with CCW matrix to invert visual CCW rotation
                 [X, Y] = meshgrid(1:width, 1:height);
-                theta_rad = deg2rad(-theta);
+                theta_rad = deg2rad(theta);
                 dx = X - x;
                 dy = Y - y;
                 x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
@@ -4278,7 +4282,8 @@ function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
             theta = ellipseData(i, 7);
 
             % Calculate axis-aligned bounding box
-            theta_rad = deg2rad(-theta);
+            % Note: sign of theta doesn't matter for bounding box since we square sin/cos
+            theta_rad = deg2rad(theta);
             ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
             uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
 
@@ -4291,7 +4296,8 @@ function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
             patchRegion = img(y1:y2, x1:x2, :);
             [patchH, patchW, ~] = size(patchRegion);
 
-            % Create elliptical mask
+            % Create elliptical mask by transforming patch coords to ellipse-local coords
+            % (reuses theta_rad: +theta with CCW matrix inverts visual CCW rotation in Y-down coords)
             [Xpatch, Ypatch] = meshgrid(1:patchW, 1:patchH);
 
             centerX_patch = x - x1 + 1;
