@@ -602,16 +602,9 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
                 fprintf('  Saved %d elliptical regions\n', size(ellipseData, 1));
             end
 
-            % Update memory for next image (Mode 3)
+            % Update memory for next image (Mode 3) - store base polygons
             if ~isempty(ellipseData)
-                if ~isempty(polygonParams)
-                    displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
-                    displayPolygonsMode3 = convertBasePolygonsToDisplay(polygonParams, [imageHeight, imageWidth], displaySize, initialRotation, cfg);
-                    memory = updateMemory(memory, displayPolygonsMode3, initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
-                else
-                    displaySize = computeDisplayImageSize([imageHeight, imageWidth], initialRotation, cfg);
-                    memory = updateMemory(memory, [], initialRotation, [imageHeight, imageWidth], displaySize, ellipseData, cfg);
-                end
+                memory = updateMemory(memory, polygonParams, initialRotation, [imageHeight, imageWidth], ellipseData, cfg);
             end
 
             success = true;
@@ -631,15 +624,14 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     end
 
     % Display GUI immediately with memory/default polygons and rotation
-    [polygonParams, displayPolygons, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation);
+    [polygonParams, ~, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation);
 
     % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
 
     if ~isempty(polygonParams)
         saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation);
-        % Update memory with exact display polygon shapes and rotation
-        displayImageSize = computeDisplayImageSize([imageHeight, imageWidth], rotation, cfg);
-        memory = updateMemory(memory, displayPolygons, rotation, [imageHeight, imageWidth], displayImageSize, ellipseData, cfg, orientation);
+        % Update memory with base polygon coordinates and rotation
+        memory = updateMemory(memory, polygonParams, rotation, [imageHeight, imageWidth], ellipseData, cfg, orientation);
 
         % Save ellipse data if ellipse editing was enabled
         if cfg.enableEllipseEditing && ~isempty(ellipseData)
@@ -5295,36 +5287,37 @@ function memory = initializeMemory()
     % Initialize empty memory structure
     memory = struct();
     memory.hasSettings = false;
-    memory.displayPolygons = [];  % Exact display coordinates (preserves quadrilateral shapes)
+    memory.basePolygons = [];     % Base (unrotated) coordinates
     memory.rotation = 0;          % Image rotation angle
-    memory.displayImageSize = [];
-    memory.baseImageSize = [];
+    memory.baseImageSize = [];    % Base image dimensions [height, width]
     memory.ellipses = {};         % Cell array indexed by concentration (0-based)
     memory.hasEllipseSettings = false;  % Boolean flag indicating if ellipse settings are saved
     memory.orientation = 'horizontal';  % Layout orientation: 'horizontal' or 'vertical'
 end
 
-function memory = updateMemory(memory, displayPolygons, rotation, baseImageSize, displayImageSize, ellipseData, cfg, orientation)
-    % Update memory with exact display polygon coordinates and rotation
-    % These preserve the exact quadrilateral shapes and rotation as seen by the user
+function memory = updateMemory(memory, basePolygons, rotation, baseImageSize, ellipseData, cfg, orientation)
+    % Update memory with base (unrotated) polygon coordinates and rotation
+    % When loading, we scale base→base then apply rotation to get display coords
     memory.hasSettings = true;
-    memory.displayPolygons = displayPolygons;
+    memory.basePolygons = basePolygons;
     memory.rotation = rotation;
-    memory.displayImageSize = displayImageSize;
     memory.baseImageSize = baseImageSize;
 
     % Store orientation if provided
-    if nargin >= 8 && ~isempty(orientation)
+    if nargin >= 7 && ~isempty(orientation)
         memory.orientation = orientation;
     end
 
-    % Store polygon params for ellipse scaling
-    if ~isempty(displayPolygons)
+    % Compute display polygons for ellipse scaling (needs display coordinates)
+    if ~isempty(basePolygons)
+        displayImageSize = computeDisplayImageSize(baseImageSize, rotation, cfg);
+        displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageSize, displayImageSize, rotation, cfg);
         memory.polygons = displayPolygons;
     end
 
     % Store ellipse data if provided
-    if nargin >= 7 && ~isempty(ellipseData)
+    if nargin >= 6 && ~isempty(ellipseData)
+        displayImageSize = computeDisplayImageSize(baseImageSize, rotation, cfg);
         ellipseDisplay = convertBaseEllipsesToDisplay(ellipseData, baseImageSize, displayImageSize, rotation, cfg);
         % Store ellipse data per concentration for memory persistence
         memory.ellipses = cell(1, max(ellipseDisplay(:, 1)) + 1);
@@ -5342,14 +5335,18 @@ end
 function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
     % Get initial polygons and rotation with progressive AI detection workflow
     % Priority: memory (if available) -> default -> AI updates later
+    %
+    % Memory stores base (unrotated) polygons. We:
+    % 1. Scale base polygons from old base size to new base size
+    % 2. Apply rotation to convert to display coordinates
 
     % Check memory FIRST (even when AI is enabled)
-    if memory.hasSettings && ~isempty(memory.displayPolygons) && ~isempty(memory.displayImageSize)
-        % Use exact display polygons and rotation from memory
-        scaledPolygons = scalePolygonsForImageSize(memory.displayPolygons, memory.displayImageSize, imageSize, cfg.numSquares);
+    if memory.hasSettings && ~isempty(memory.basePolygons) && ~isempty(memory.baseImageSize)
+        % Scale base polygons from old base size to new base size
+        scaledBasePolygons = scalePolygonsForImageSize(memory.basePolygons, memory.baseImageSize, imageSize, cfg.numSquares);
 
         % If polygon count mismatch, fall back to default geometry
-        if isempty(scaledPolygons)
+        if isempty(scaledBasePolygons)
             fprintf('  Memory polygon count mismatch - using default geometry\n');
             [imageHeight, imageWidth, ~] = size(img);
             initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
@@ -5358,9 +5355,12 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
             return;
         end
 
-        initialPolygons = scaledPolygons;
+        % Apply stored rotation to convert base→display coordinates
+        displaySize = computeDisplayImageSize(imageSize, memory.rotation, cfg);
+        initialPolygons = convertBasePolygonsToDisplay(scaledBasePolygons, imageSize, displaySize, memory.rotation, cfg);
+
         rotation = memory.rotation;
-        fprintf('  Using exact polygon shapes and rotation from memory (AI will update if enabled)\n');
+        fprintf('  Using polygon shapes and rotation from memory (AI will update if enabled)\n');
         source = 'memory';
         return;
     end
