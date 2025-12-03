@@ -60,7 +60,7 @@ function cut_micropads(varargin)
 
     % Error handling for deprecated format parameters
     if ~isempty(varargin) && (any(strcmpi(varargin(1:2:end), 'preserveFormat')) || any(strcmpi(varargin(1:2:end), 'jpegQuality')))
-        error('micropad:deprecated_parameter', ...
+        error('cut_micropads:deprecated_parameter', ...
               ['JPEG format no longer supported. Pipeline outputs PNG exclusively.\n' ...
                'Remove ''preserveFormat'' and ''jpegQuality'' parameters from function call.']);
     end
@@ -840,24 +840,25 @@ end
 
 function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState, orientation, ellipseData)
     % Modes: 'editing' (polygon adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
-    if nargin < 12 || isempty(ellipseData)
-        ellipseData = [];
-    end
-
-    if nargin < 11 || isempty(orientation)
-        orientation = 'horizontal';
-    end
-
-    if nargin < 10
-        viewState = [];
-    end
-
+    % Default argument handling (ordered from lowest to highest nargin)
     if nargin < 8
         initialRotation = 0;
     end
 
     if nargin < 9
         memory = initializeMemory();
+    end
+
+    if nargin < 10
+        viewState = [];
+    end
+
+    if nargin < 11 || isempty(orientation)
+        orientation = 'horizontal';
+    end
+
+    if nargin < 12 || isempty(ellipseData)
+        ellipseData = [];
     end
 
     guiData = get(fig, 'UserData');
@@ -945,6 +946,7 @@ function clearAllUIElements(fig, guiData)
                 try
                     stop(guiData.aiTimer);
                 catch
+                    % Ignore: timer may already be stopped/deleted
                 end
                 delete(guiData.aiTimer);
             end
@@ -997,6 +999,7 @@ function applyViewState(fig, viewState)
         try
             xlim(guiData.imgAxes, viewState.xlim);
         catch
+            % Ignore: axes may have been deleted during mode transition
         end
     end
 
@@ -1004,6 +1007,7 @@ function applyViewState(fig, viewState)
         try
             ylim(guiData.imgAxes, viewState.ylim);
         catch
+            % Ignore: axes may have been deleted during mode transition
         end
     end
 
@@ -1296,7 +1300,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     % Check if memory has ellipse settings from previous image
     hasMemory = false;
     if isfield(guiData, 'memory') && ~isempty(guiData.memory) && ...
-       isfield(guiData.memory, 'hasEllipseSettings') && isequal(guiData.memory.hasEllipseSettings, true)
+       isfield(guiData.memory, 'hasEllipseSettings') && guiData.memory.hasEllipseSettings
         hasMemory = true;
 
         % Check if polygon geometry changed (need to scale)
@@ -1695,6 +1699,7 @@ function guiData = stopAIBreathingTimer(guiData, ui)
             try
                 stop(guiData.aiBreathingTimer);
             catch
+                % Ignore: timer may already be stopped/deleted
             end
             delete(guiData.aiBreathingTimer);
         end
@@ -1775,7 +1780,7 @@ function animatePolygonBreathing(fig)
     drawnow limitrate;
 end
 
-function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
+function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, ~)
     % Synchronize drawpolygon handles with detection output preserving UI ordering
 
     if isempty(newPolygons)
@@ -3786,6 +3791,7 @@ function cleanupAndClose(fig)
                     try
                         stop(timerHandle);
                     catch
+                        % Ignore: timer may already be stopped/deleted
                     end
                     delete(timerHandle);
                 end
@@ -3801,6 +3807,7 @@ function cleanupAndClose(fig)
                 try
                     stop(guiData.asyncDetection.pollingTimer);
                 catch
+                    % Ignore: timer may already be stopped/deleted
                 end
                 delete(guiData.asyncDetection.pollingTimer);
             end

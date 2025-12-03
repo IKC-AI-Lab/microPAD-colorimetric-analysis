@@ -360,7 +360,7 @@ function featureStruct = extractFeaturesFromCoordinates(originalImage, labOrigin
     % Input validation
     validateattributes(originalImage, {'uint8'}, {'3d', 'size', [NaN, NaN, 3]}, mfilename, 'originalImage');
     validateattributes(patch, {'struct'}, {'scalar'}, mfilename, 'patch');
-    requiredFields = {'xCenter', 'yCenter', 'semiMajorAxis', 'semiMinorAxis', 'rotationAngle', 'concentration', 'patchID'};
+    requiredFields = {'xCenter', 'yCenter', 'semiMajorAxis', 'semiMinorAxis', 'rotationAngle', 'concentration', 'patchID', 'replicate'};
     if ~all(isfield(patch, requiredFields))
         error('extract_features:invalidPatch', 'patch struct missing required fields');
     end
@@ -385,7 +385,9 @@ function featureStruct = extractFeaturesFromCoordinates(originalImage, labOrigin
         featureStruct = struct( ...
             'PhoneType', phoneName, ...
             'ImageName', char(imageName), ...
-            'Concentration', patch.concentration);
+            'Concentration', patch.concentration, ...
+            'PatchID', patch.patchID, ...
+            'Replicate', patch.replicate);
 
         rowRange = bbox(1):bbox(2);
         colRange = bbox(3):bbox(4);
@@ -545,6 +547,7 @@ function featureStruct = extractAllFeatures(featureStruct, image, colorData, cfg
     for i = 1:length(registry.basicFeatureGroups)
         featureName = registry.basicFeatureGroups{i};
         if cfg.features.(featureName)
+            features = struct();  % Initialize to empty struct for safety
             switch featureName
                 case 'RGB'
                     features = safeExtract(@() extractBasicRGBFeatures(image, colorData), ...
@@ -2526,48 +2529,6 @@ function generateConsolidatedExcelFile(cfg)
     externalDeps.checkMemoryPressure = @checkMemoryPressure;
 
     featPipe.output.generateExcel(cfg, externalDeps);
-end
-
-function tableOut = pruneFeatureColumns(tableIn, cfg, groupColumn)
-    %% Prune feature columns (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    tableOut = featPipe.output.pruneColumns(tableIn, cfg, groupColumn);
-end
-
-function writeTableWithFormat(tableData, filePath, useExcelFormat)
-    %% Write table with format (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    featPipe.output.writeTableWithFormat(tableData, filePath, useExcelFormat);
-end
-
-function tf = isExcelFileExtension(ext)
-    %% Check Excel extension (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    tf = featPipe.output.isExcelExtension(ext);
-end
-
-function roundedTable = roundNumericColumns(inputTable, decimals)
-    %% Round numeric columns (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    roundedTable = featPipe.output.roundNumeric(inputTable, decimals);
-end
-
-function [trainTable, testTable] = splitFeatureTable(featureTable, testFraction, groupColumn, randomSeed)
-    %% Split feature table (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    [trainTable, testTable] = featPipe.output.splitTable(featureTable, testFraction, groupColumn, randomSeed);
-end
-
-function numVal = calculateValidationCount(numPhones)
-    %% Calculate validation count (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    numVal = featPipe.output.calculateValidationCount(numPhones);
-end
-
-function resolvedColumn = resolveSplitGroupColumn(featureTable, requestedColumn)
-    %% Resolve split group column (delegates to feature_pipeline helper)
-    featPipe = feature_pipeline();
-    resolvedColumn = featPipe.output.resolveSplitGroupColumn(featureTable, requestedColumn);
 end
 
 function handleError(ME, cfg)

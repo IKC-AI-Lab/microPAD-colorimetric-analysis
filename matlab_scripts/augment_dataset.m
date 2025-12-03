@@ -28,7 +28,7 @@ function augment_dataset(varargin)
     %   a) Shared perspective transformation (same for all regions from one paper)
     %   b) Shared rotation (same for all regions from one paper)
     %   c) Independent rotation (unique per region)
-    %   d) Random spatial translation (Gaussian-distributed, center-biased)
+    %   d) Random spatial translation (uniformly distributed within margins)
     %   e) Composite onto procedural background
     %
     % OUTPUT STRUCTURE:
@@ -1222,18 +1222,6 @@ function bg = generate_realistic_lab_surface(width, height, textureCfg, artifact
     bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
-function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
-    %% Add sparse artifacts (delegates to augmentation_synthesis helper)
-    augSynth = augmentation_synthesis();
-    bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
-end
-
-function mask = generate_polygon_mask(verticesPix, targetSize)
-    %% Generate polygon mask (delegates to augmentation_synthesis helper)
-    augSynth = augmentation_synthesis();
-    mask = augSynth.artifacts.generatePolygonMask(verticesPix, targetSize);
-end
-
 function bg = add_polygon_occlusions(bg, scenePolygons, probability)
     % Draw thin occlusions (e.g., hair/strap-like) across polygons with some probability.
     % Each occlusion is a soft line that slightly darkens or lightens the image beneath.
@@ -1612,9 +1600,21 @@ function entries = read_ellipse_coordinates(coordPath)
         entries(i).concentration = rawEntries(i).concentration;
         entries(i).replicate = rawEntries(i).replicate;
         entries(i).center = [rawEntries(i).x, rawEntries(i).y];  % Combine x,y -> center
-        entries(i).semiMajor = rawEntries(i).semiMajorAxis;  % Map semiMajorAxis -> semiMajor
-        entries(i).semiMinor = rawEntries(i).semiMinorAxis;  % Map semiMinorAxis -> semiMinor
-        entries(i).rotation = rawEntries(i).rotationAngle;   % Map rotationAngle -> rotation
+
+        % Validate ellipse axis constraint: semiMajor >= semiMinor
+        major = rawEntries(i).semiMajorAxis;
+        minor = rawEntries(i).semiMinorAxis;
+        rot = rawEntries(i).rotationAngle;
+        if minor > major
+            % Swap axes and rotate 90 degrees to maintain ellipse shape
+            entries(i).semiMajor = minor;
+            entries(i).semiMinor = major;
+            entries(i).rotation = rot + 90;
+        else
+            entries(i).semiMajor = major;
+            entries(i).semiMinor = minor;
+            entries(i).rotation = rot;
+        end
     end
 end
 
@@ -2058,6 +2058,8 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
         maskPreCuts = damagedAlpha;
     catch
+        % fitgeotrans can fail with near-singular matrices from extreme jitter
+        % Continue with undamaged polygon - no action needed
     end
 
     % 1.2 Nonlinear edge bending (minimalWarp and sideCollapse only)
@@ -2129,6 +2131,8 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
             [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
             maskPreCuts = damagedAlpha;
         catch
+            % fitgeotrans (lwm) can fail with degenerate control points
+            % Continue with undamaged polygon - no action needed
         end
     end
 
@@ -2417,11 +2421,17 @@ function edgeInfo = get_polygon_edges(quadCorners)
 
         % Direction vector and length
         edgeVec = endPt - startPt;
-        edgeInfo.lengths(i) = norm(edgeVec);
-        edgeInfo.directions(i, :) = edgeVec / edgeInfo.lengths(i);
-
-        % Inward normal (rotate direction 90 deg clockwise: [x,y] -> [y,-x])
-        edgeInfo.normals(i, :) = [edgeVec(2), -edgeVec(1)] / edgeInfo.lengths(i);
+        len = norm(edgeVec);
+        edgeInfo.lengths(i) = len;
+        if len > eps
+            edgeInfo.directions(i, :) = edgeVec / len;
+            % Inward normal (rotate direction 90 deg clockwise: [x,y] -> [y,-x])
+            edgeInfo.normals(i, :) = [edgeVec(2), -edgeVec(1)] / len;
+        else
+            % Degenerate edge (zero length) - use fallback unit vectors
+            edgeInfo.directions(i, :) = [1, 0];
+            edgeInfo.normals(i, :) = [0, -1];
+        end
     end
 
     % Verify normals point inward (toward polygon centroid)
