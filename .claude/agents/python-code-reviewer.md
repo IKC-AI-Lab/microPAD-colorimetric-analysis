@@ -10,7 +10,7 @@ color: cyan
 
 Review Python code for the microPAD AI pipeline, focusing on real issues that affect correctness, performance, and maintainability in machine learning and computer vision projects.
 
-**Orchestration Context**: This agent is invoked by the orchestration workflow defined in CLAUDE.md after python-coder completes implementation. Your role is to identify issues and report them - do NOT fix code directly. Report findings back to orchestrator, who will send issues back to python-coder for fixes if needed.
+**Orchestration Context**: This agent is invoked by the orchestration workflow defined in CLAUDE.md after implementation. Your role is to identify issues and report them - do NOT fix code directly. Report findings back to orchestrator, who will either fix simple issues directly (Claude) or delegate complex fixes to `python-coder` agent.
 
 ## What Matters
 
