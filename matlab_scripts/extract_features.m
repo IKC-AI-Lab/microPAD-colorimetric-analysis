@@ -21,10 +21,12 @@ function extract_features(varargin)
     %   No return value.
     %
     % Workflow:
-    % - Expects polygon crops in <ORIGINAL_IMAGES_FOLDER>/phone/con_*/
-    %   (default: augmented_2_micropads for augmented data, or 2_micropads for original data)
+    % - Primary mode: Original images in <ORIGINAL_IMAGES_FOLDER>/phone/ (flat structure)
+    %   Default: 1_dataset - images in 1_dataset/phone/*.jpg
+    % - Legacy mode: Polygon crops in <ORIGINAL_IMAGES_FOLDER>/phone/con_*/
+    %   Use 'augmented_2_micropads' for augmented data with con_* subfolders
     % - Uses elliptical patch coordinates from <COORDINATES_FOLDER>/phone/coordinates.txt
-    %   (default: augmented_3_elliptical_regions for augmented data, or 3_elliptical_regions for original data)
+    %   Default: 3_elliptical_regions (coordinates relative to original image frame)
     % - Extracts features per patch and aggregates results by concentration replicate
     %
     % ROTATION SEMANTICS:
@@ -53,9 +55,12 @@ function extract_features(varargin)
     %
     
     % === DATASET AND FOLDER STRUCTURE ===
-    ORIGINAL_IMAGES_FOLDER = 'augmented_2_micropads';  % Parent polygon images
-    COORDINATES_FOLDER = 'augmented_3_elliptical_regions';         % Coordinate data
-    OUTPUT_FOLDER = '4_extract_features';                    % Output features folder
+    % Primary mode: Process original images directly from 1_dataset
+    % with ellipse coordinates relative to original (unrotated) image frame.
+    % For augmented data, use 'augmented_2_micropads' and 'augmented_3_elliptical_regions'.
+    ORIGINAL_IMAGES_FOLDER = '1_dataset';           % Original images (flat structure)
+    COORDINATES_FOLDER = '3_elliptical_regions';    % Ellipse coordinate data
+    OUTPUT_FOLDER = '4_extract_features';           % Output features folder
 
     % === NAMING CONVENTIONS ===
     CONC_FOLDER_PREFIX = 'con_';                             % Concentration folder prefix (e.g., con_0)
@@ -169,7 +174,22 @@ function extract_features(varargin)
             custom_features = [];
         end
     end
-    
+
+    %% Add helper_scripts to path and load utility modules
+    scriptDir = fileparts(mfilename('fullpath'));
+    helperDir = fullfile(scriptDir, 'helper_scripts');
+    if exist(helperDir, 'dir')
+        addpath(helperDir);
+    end
+
+    % Load shared utility modules for coordinate I/O, image loading, and mask creation
+    coordIO = coordinate_io();
+    imageIO = image_io();
+    maskUtils = mask_utils();
+    pathUtils = path_utils();
+    colorAnalysis = color_analysis();
+    featPipe = feature_pipeline();
+
     cfg = createConfiguration(ORIGINAL_IMAGES_FOLDER, COORDINATES_FOLDER, OUTPUT_FOLDER, ...
                                         CHEMICAL_NAME, feature_preset, enable_caching, custom_features, ...
                                         MIN_PATCH_PIXELS, ...
@@ -184,6 +204,14 @@ function extract_features(varargin)
                                         CCT_MIN_KELVIN, CCT_MAX_KELVIN, RB_RATIO_TUNGSTEN_THRESHOLD, RB_RATIO_MIXED_THRESHOLD, ...
                                         CCT_TUNGSTEN_K, CCT_MIXED_K, CCT_DAYLIGHT_K);
 
+    % Store utility module handles in configuration for use throughout processing
+    cfg.modules = struct();
+    cfg.modules.coordIO = coordIO;
+    cfg.modules.imageIO = imageIO;
+    cfg.modules.maskUtils = maskUtils;
+    cfg.modules.pathUtils = pathUtils;
+    cfg.modules.colorAnalysis = colorAnalysis;
+    cfg.modules.featPipe = featPipe;
 
     displayConfigurationSummary(cfg, feature_preset);
     
@@ -197,183 +225,10 @@ function extract_features(varargin)
     end
 end
 
-function registry = createFeatureRegistry()
-    %% CENTRALIZED FEATURE GROUP DEFINITIONS
-    % Feature group arrays are defined here to avoid duplication throughout the script.
-    %
-    % TO ADD/MODIFY FEATURE GROUPS: Edit the registry.groups array below
-    % TO CHANGE PRESETS: Update the 'tier' assignment; preset membership is derived automatically.
-    % GROUPING: 'groupType' is one of {'background','patch','normalized'}
-
-    registry = struct();
-
-    % Feature groups with properties:
-    % - name: Feature group identifier
-    % - outputCols: Column names this feature generates in output
-    % - groupType: {'background','patch','normalized'}
-    % - isBasic: true for basic color features, false for extended features
-    % - tier: {'mustHave','bestScore','experimental','customOnly'} controls preset inclusion
-    registry.groups = {
-        % Background features (from original image / paper stats)
-        struct('name', 'Background', 'outputCols', {{'paper_R','paper_G','paper_B','paper_L','paper_a','paper_b','paper_tempK'}}, 'groupType', 'background', 'isBasic', false, 'tier', 'customOnly', 'presets', []); ...
-
-        % Patch features (computed on elliptical patch mask)
-        struct('name', 'RGB', 'outputCols', {{'R', 'G', 'B'}}, 'groupType', 'patch', 'isBasic', true, 'tier', 'experimental', 'presets', []); ...
-        struct('name', 'HSV', 'outputCols', {{'H', 'S', 'V'}}, 'groupType', 'patch', 'isBasic', true, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'Lab', 'outputCols', {{'L', 'a', 'b'}}, 'groupType', 'patch', 'isBasic', true, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'Skewness', 'outputCols', {{'R_skew', 'G_skew', 'B_skew', 'H_skew', 'S_skew', 'V_skew', 'L_skew', 'a_skew', 'b_skew'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'experimental', 'presets', []); ...
-        struct('name', 'Kurtosis', 'outputCols', {{'R_kurto', 'G_kurto', 'B_kurto', 'H_kurto', 'S_kurto', 'V_kurto', 'L_kurto', 'a_kurto', 'b_kurto'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'experimental', 'presets', []); ...
-        struct('name', 'GLCM', 'outputCols', {{'stripe_correlation', 'stripe_contrast', 'stripe_energy', 'stripe_homogeneity'}}, 'groupType', 'patch', 'isBasic', true, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'Entropy', 'outputCols', {{'entropyValue'}}, 'groupType', 'patch', 'isBasic', true, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'ColorRatios', 'outputCols', {{'RG_ratio', 'RB_ratio', 'GB_ratio'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'Chromaticity', 'outputCols', {{'r_chromaticity', 'g_chromaticity', 'chroma_magnitude', 'dominant_chroma', 'chromaticity_std'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'IlluminantInvariant', 'outputCols', {{'ab_magnitude', 'ab_angle', 'hue_circular_mean', 'saturation_mean'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'ColorUniformity', 'outputCols', {{'RGB_CV_R', 'RGB_CV_G', 'RGB_CV_B', 'Saturation_uniformity', 'Value_uniformity', 'L_uniformity', 'chroma_uniformity'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'RobustColorStats', 'outputCols', {{'L_median', 'L_iqr', 'a_median', 'a_iqr', 'b_median', 'b_iqr', 'S_median', 'S_iqr', 'V_median', 'V_iqr'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'ColorGradients', 'outputCols', {{'L_gradient_mean', 'L_gradient_std', 'L_gradient_max', 'a_gradient_mean', 'a_gradient_std', 'a_gradient_max', 'b_gradient_mean', 'b_gradient_std', 'b_gradient_max', 'edge_density'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'SpatialDistribution', 'outputCols', {{'L_spatial_std', 'a_spatial_std', 'b_spatial_std', 'radial_L_gradient', 'spatial_uniformity'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'RadialProfile', 'outputCols', {{'radial_L_inner', 'radial_L_outer', 'radial_L_ratio', 'radial_chroma_slope', 'radial_saturation_slope'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-        struct('name', 'ConcentrationMetrics', 'outputCols', {{'saturation_range', 'chroma_intensity', 'chroma_max', 'Lab_L_range', 'Lab_a_range', 'Lab_b_range'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'mustHave', 'presets', []); ...
-
-        struct('name', 'LogarithmicColorTransforms', 'outputCols', {{'log_RG', 'log_GB', 'log_RB', 'log_RGB_magnitude', 'log_RGB_angle'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'experimental', 'presets', []); ...
-        struct('name', 'FrequencyEnergy', 'outputCols', {{'fft_low_energy', 'fft_high_energy', 'fft_band_contrast'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'bestScore', 'presets', []); ...
-
-        struct('name', 'AdvancedColorAnalysis', 'outputCols', {{'absorption_estimate', 'hue_shift_from_paper', 'chroma_difference'}}, 'groupType', 'patch', 'isBasic', false, 'tier', 'experimental', 'presets', []); ...
-
-        struct('name', 'PaperNormalization', 'outputCols', {{'R_paper_ratio', 'G_paper_ratio', 'B_paper_ratio'}}, 'groupType', 'normalized', 'isBasic', false, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'EnhancedNormalization', 'outputCols', {{'L_corrected_mean', 'L_corrected_median', 'a_corrected_mean', 'a_corrected_median', 'b_corrected_mean', 'b_corrected_median', 'delta_E_from_paper', 'delta_E_median'}}, 'groupType', 'normalized', 'isBasic', false, 'tier', 'mustHave', 'presets', []); ...
-        struct('name', 'PaperNormalizationExtras', 'outputCols', {{'R_norm','G_norm','B_norm','R_reflectance','G_reflectance','B_reflectance','R_chromatic_adapted','G_chromatic_adapted','B_chromatic_adapted','L_norm','a_norm','b_norm'}}, 'groupType', 'normalized', 'isBasic', false, 'tier', 'customOnly', 'presets', [])
-    };
-
-    registry.tierLegend = createFeatureTierLegend();
-
-    for i = 1:numel(registry.groups)
-        registry.groups{i}.presets = tierToPresetVector(registry.groups{i}.tier);
-    end
-
-    registry.presetNames = {'minimal', 'robust', 'full'};
-    registry.presetDescriptions = struct( ...
-        'minimal', 'Must-have baseline features for reproducible signal capture.', ...
-        'robust', 'Adds validated feature groups that consistently improve cross-validation scores.', ...
-        'full', 'Superset with exploratory groups that may or may not improve models.' ...
-    );
-
-    registry = addDerivedFeatureData(registry);
-
-    minimalCount = sum(registry.presetMatrix(:, 1));
-    robustCount = sum(registry.presetMatrix(:, 2));
-    fullCount = sum(registry.presetMatrix(:, 3));
-
-    registry.presetLabels = {
-        sprintf('Minimal - Must-have (%d)', minimalCount), ...
-        sprintf('Robust - Best validation (%d)', robustCount), ...
-        sprintf('Full - Exploratory (%d)', fullCount), ...
-        'Custom'
-    };
-
-    function legend = createFeatureTierLegend()
-        legend = struct( ...
-            'mustHave', struct('tag', 'Must-have', 'description', 'Baseline coverage included in Minimal, Robust, and Full presets.'), ...
-            'bestScore', struct('tag', 'Best-score', 'description', 'Validated groups that lift model accuracy; included in Robust and Full.'), ...
-            'experimental', struct('tag', 'Exploratory', 'description', 'Higher variance metrics reserved for the Full preset.'), ...
-            'customOnly', struct('tag', 'Custom-only', 'description', 'Available when using the Custom preset; excluded from canned presets.') ...
-        );
-    end
-
-    function vec = tierToPresetVector(tier)
-        if isstring(tier)
-            tier = char(tier);
-        end
-        switch tier
-            case 'mustHave'
-                vec = [1, 1, 1];
-            case 'bestScore'
-                vec = [0, 1, 1];
-            case 'experimental'
-                vec = [0, 0, 1];
-            case 'customOnly'
-                vec = [0, 0, 0];
-            otherwise
-                error('extract_features:unknownTier', 'Unknown feature tier: %s', string(tier));
-        end
-    end
-end
-
-
 function registry = getFeatureRegistry()
-    %% Get centralized feature registry with persistent cache
-    persistent cachedRegistry;
-    
-    if isempty(cachedRegistry)
-        cachedRegistry = createFeatureRegistry();
-    end
-    
-    registry = cachedRegistry;
-end
-
-function registry = addDerivedFeatureData(registry)
-    %% Add computed feature data for easy access
-
-    % Extract feature group names
-    registry.featureNames = cellfun(@(x) x.name, registry.groups, 'UniformOutput', false);
-
-    % Create preset matrix
-    numFeatures = length(registry.groups);
-    numPresets = length(registry.presetNames);
-    registry.presetMatrix = zeros(numFeatures, numPresets);
-
-    for i = 1:numFeatures
-        registry.presetMatrix(i, :) = registry.groups{i}.presets;
-    end
-
-    registry.tiers = cell(numFeatures, 1);
-    registry.displayNames = cell(numFeatures, 1);
-
-    for i = 1:numFeatures
-        group = registry.groups{i};
-        if isfield(group, 'tier')
-            tierKey = char(string(group.tier));
-        else
-            tierKey = 'customOnly';
-        end
-        registry.tiers{i} = tierKey;
-
-        if isfield(registry, 'tierLegend') && isfield(registry.tierLegend, tierKey)
-            legendEntry = registry.tierLegend.(tierKey);
-            if isfield(legendEntry, 'tag')
-                tagText = char(string(legendEntry.tag));
-            else
-                tagText = tierKey;
-            end
-            registry.displayNames{i} = sprintf('%s [%s]', group.name, tagText);
-        else
-            registry.displayNames{i} = group.name;
-        end
-    end
-
-    % Categorize feature groups
-    registry.basicFeatureGroups = registry.featureNames(cellfun(@(x) x.isBasic, registry.groups));
-    registry.advancedFeatureGroups = registry.featureNames(~cellfun(@(x) x.isBasic, registry.groups));
-
-    % Grouping by Background/Patch/Normalized
-    registry.backgroundFeatureCols = {};
-    registry.patchFeatureCols = {};
-    registry.normalizedFeatureCols = {};
-
-    for i = 1:numFeatures
-        group = registry.groups{i};
-        switch lower(group.groupType)
-            case 'background'
-                registry.backgroundFeatureCols = [registry.backgroundFeatureCols, group.outputCols{:}];
-            case 'patch'
-                registry.patchFeatureCols = [registry.patchFeatureCols, group.outputCols{:}];
-            case 'normalized'
-                registry.normalizedFeatureCols = [registry.normalizedFeatureCols, group.outputCols{:}];
-        end
-    end
-
-    % All expected feature groups for validation
-    registry.allExpectedFeatureGroups = registry.featureNames;
+    %% Get centralized feature registry (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    registry = featPipe.registry.get();
 end
 
 function cfg = createConfiguration(originalImagesFolder, coordinatesFolder, outputFolder, ...
@@ -488,45 +343,15 @@ function cfg = createConfiguration(originalImagesFolder, coordinatesFolder, outp
 end
 
 function featureConfig = getFeatureConfiguration(presetName)
-    %% DATA-DRIVEN FEATURE CONFIGURATION - Uses centralized feature registry
-    
-    % Get centralized feature registry
-    registry = getFeatureRegistry();
-    
-    % Handle custom preset (should not reach here with custom, but just in case)
-    if strcmp(presetName, 'custom')
-        error('extract_features:customPresetUnsupported', 'Custom preset requires a features struct to be provided by the caller.');
-    end
-    
-    % Map preset name to column index
-    presetMap = containers.Map(registry.presetNames, {1, 2, 3});
-    
-    if ~isKey(presetMap, presetName)
-        error('extract_features:invalidPreset', 'Invalid preset name: %s', presetName);
-    end
-    
-    colIndex = presetMap(presetName);
-    
-    % Create configuration structure from registry
-    featureConfig = struct();
-    for i = 1:length(registry.featureNames)
-        featureName = registry.featureNames{i};
-        featureConfig.(featureName) = logical(registry.presetMatrix(i, colIndex));
-    end
+    %% Get feature configuration for preset (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    featureConfig = featPipe.registry.getConfiguration(presetName);
 end
 
 function out = completeFeatureSelection(in)
-    %% Ensure custom feature selection covers all feature groups
-    registry = getFeatureRegistry();
-    out = struct();
-    for i = 1:length(registry.featureNames)
-        featureName = registry.featureNames{i};
-        if isfield(in, featureName)
-            out.(featureName) = logical(in.(featureName));
-        else
-            out.(featureName) = false;
-        end
-    end
+    %% Complete partial feature selection (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    out = featPipe.registry.completeSelection(in);
 end
 
 function featureStruct = extractFeaturesFromCoordinates(originalImage, labOriginal, patch, paperStats, imageName, phoneName, cfg, imageColorCache)
@@ -2145,10 +1970,11 @@ end
 %% UTILITY FUNCTIONS
 
 function validImage = loadAndValidateImage(imageName)
+    % Load image without EXIF rotation (rotation handled via coordinates.txt)
     validImage = [];
-    
+
     try
-        img = imread_raw(imageName);
+        img = imread(imageName);
         
         if isempty(img)
             warning('extract_features:imageLoad', 'Could not load image: %s', imageName);
@@ -2288,32 +2114,15 @@ function displayFeatureSummary(cfg)
 end
 
 function outputConfig = createOutputConfiguration(chemicalName, outputDecimals, outputExtension, includeLabelInExcel, trainTestSplit, testSize, splitGroupColumn, randomSeed)
-    validateattributes(chemicalName, {'char', 'string'}, {'nonempty'}, 'createOutputConfiguration', 'chemicalName');
-    validateattributes(includeLabelInExcel, {'logical','numeric'}, {'scalar'}, 'createOutputConfiguration', 'includeLabelInExcel');
-    validateattributes(splitGroupColumn, {'char', 'string'}, {'nonempty'}, 'createOutputConfiguration', 'splitGroupColumn');
-
-    includeLabelFlag = logical(includeLabelInExcel);
-    trainSplitFlag = logical(trainTestSplit);
-    testSize = double(testSize);
-    if trainSplitFlag
-        validateattributes(testSize, {'double'}, {'scalar','>',0,'<',1}, ...
-            'createOutputConfiguration', 'testSize');
-    end
-
-    outputConfig = struct('excelExtension', outputExtension, 'roundDecimals', outputDecimals, ...
-                         'saveEmptyConcentrations', false, ...
-                         'includeLabelInExcel', includeLabelFlag, ...
-                         'chemicalName', char(chemicalName), ...
-                         'trainTestSplit', trainSplitFlag, ...
-                         'testSize', testSize, ...
-                         'splitGroupColumn', char(splitGroupColumn), ...
-                         'randomSeed', randomSeed);
+    %% Create output configuration (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    outputConfig = featPipe.output.createConfig(chemicalName, outputDecimals, outputExtension, includeLabelInExcel, trainTestSplit, testSize, splitGroupColumn, randomSeed);
 end
 
 function cfg = addPathConfiguration(cfg, originalImagesFolder, coordinatesFolder, outputFolder)
     %% Configure paths for coordinate-based processing
-    
-    projectRoot = findProjectRoot(originalImagesFolder);
+
+    projectRoot = cfg.modules.pathUtils.findProjectRoot(originalImagesFolder);
     cfg.projectRoot = projectRoot;
     cfg.originalImagesPath = fullfile(projectRoot, originalImagesFolder);
     cfg.coordinatesPath = fullfile(projectRoot, coordinatesFolder);
@@ -2323,34 +2132,11 @@ function cfg = addPathConfiguration(cfg, originalImagesFolder, coordinatesFolder
     cfg.outputFolder = outputFolder;
 end
 
-function projectRoot = findProjectRoot(inputFolder)
-    currentDir = pwd;
-    searchDir = currentDir;
-    maxLevels = 5;
-    
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-        
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-        
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-        searchDir = parentDir;
-    end
-    
-    warning('extract_features:projectRootFallback', 'Could not find input folder "%s". Using current directory as project root.', inputFolder);
-    projectRoot = currentDir;
-end
-
 function processAllFolders(cfg)
     %% Process all folders using coordinate-based approach
-    
+
     validatePaths(cfg);
-    phoneList = getSubFolders(cfg.originalImagesPath);
+    phoneList = cfg.modules.pathUtils.listSubfolders(cfg.originalImagesPath);
     
     if isempty(phoneList)
         error('extract_features:noPhoneFolders', 'No phone folders found in: %s', cfg.originalImagesPath);
@@ -2430,55 +2216,104 @@ function processPhone(phoneName, cfg, phoneIdx, totalPhones)
         return;
     end
 
-    executeInFolder(originalImagePath, @() processConcentrationsInPhone(phoneName, cfg, phoneCoordinates));
+    cfg.modules.pathUtils.executeInFolder(originalImagePath, @() processConcentrationsInPhone(phoneName, cfg, phoneCoordinates));
 end
 
 function processConcentrationsInPhone(phoneName, cfg, phoneCoordinates)
     %% Iterate through all concentration folders for the phone using phone-level coordinates
+    % Supports two modes:
+    %   1. Flat structure (1_dataset): Images in phone folder, concentrations in coordinates
+    %   2. Legacy structure (2_micropads): Images in con_* subfolders
     if nargin < 3 || ~isstruct(phoneCoordinates) || ~isfield(phoneCoordinates, 'isValid') || ~phoneCoordinates.isValid
         warning('extract_features:invalidPhoneCoordinates', 'Phone-level coordinates missing or invalid for %s', phoneName);
         return;
     end
-    
-    subFolders = getSubFolders('.');
-    if isempty(subFolders)
-        warning('extract_features:noConcentrations', 'No concentration folders for phone: %s', phoneName);
-        return;
-    end
-    
-    prefix = cfg.concFolderPrefix;
-    isConc = strncmpi(subFolders, prefix, numel(prefix));
-    concFolders = subFolders(isConc);
-    
-    if isempty(concFolders)
-        warning('extract_features:noConcentrations', 'No concentration folders (prefix %s) for phone: %s', prefix, phoneName);
-        return;
-    end
-    
-    totalConcs = numel(concFolders);
-    fprintf('  Concentrations (%d): %s\n', totalConcs, strjoin(concFolders, ' | '));
-    
-    allFeatureData = cell(totalConcs, 1);
-    featureCount = 0;
-    
-    for idx = 1:totalConcs
-        concName = concFolders{idx};
-        fprintf('  [%d/%d] Folder: %s -> ', idx, totalConcs, concName);
 
-        concFeatures = processConcentrationFolder(phoneName, concName, cfg, phoneCoordinates);
-        
-        if ~isempty(concFeatures)
-            featureCount = featureCount + 1;
-            allFeatureData{featureCount} = concFeatures;
-            numFeatures = numel(fieldnames(concFeatures(1)));
-            fprintf('OK (%d patches, %d features each)\n', numel(concFeatures), numFeatures);
-        else
-            fprintf('SKIP (no features extracted)\n');
+    pathUtils = cfg.modules.pathUtils;
+    subFolders = pathUtils.listSubfolders('.');
+    prefix = cfg.concFolderPrefix;
+
+    if ~isempty(subFolders)
+        isConc = strncmpi(subFolders, prefix, numel(prefix));
+        concFolders = subFolders(isConc);
+    else
+        concFolders = {};
+    end
+
+    % Check if we're in flat mode (no con_* folders) or legacy mode (with con_* folders)
+    if isempty(concFolders)
+        % Flat structure mode: process all images from current folder
+        % Concentrations are determined from coordinate file
+        fprintf('  Mode: Flat structure (images in phone folder)\n');
+        processPhoneFlatStructure(phoneName, cfg, phoneCoordinates);
+    else
+        % Legacy mode: process each con_* subfolder
+        totalConcs = numel(concFolders);
+        fprintf('  Mode: Legacy structure (%d concentration folders)\n', totalConcs);
+        fprintf('  Concentrations: %s\n', strjoin(concFolders, ' | '));
+
+        allFeatureData = cell(totalConcs, 1);
+        featureCount = 0;
+
+        for idx = 1:totalConcs
+            concName = concFolders{idx};
+            fprintf('  [%d/%d] Folder: %s -> ', idx, totalConcs, concName);
+
+            concFeatures = processConcentrationFolder(phoneName, concName, cfg, phoneCoordinates);
+
+            if ~isempty(concFeatures)
+                featureCount = featureCount + 1;
+                allFeatureData{featureCount} = concFeatures;
+                numFeatures = numel(fieldnames(concFeatures(1)));
+                fprintf('OK (%d patches, %d features each)\n', numel(concFeatures), numFeatures);
+            else
+                fprintf('SKIP (no features extracted)\n');
+            end
+        end
+
+        if featureCount > 0
+            allFeatureData = vertcat(allFeatureData{1:featureCount});
+            storePhoneFeatureData(phoneName, allFeatureData, cfg);
         end
     end
-    
-    if featureCount > 0
-        allFeatureData = vertcat(allFeatureData{1:featureCount});
+end
+
+function processPhoneFlatStructure(phoneName, cfg, phoneCoordinates)
+    %% Process all images from flat phone folder structure (1_dataset mode)
+    % Images are in the phone folder directly, concentrations come from coordinates
+
+    imageIO = cfg.modules.imageIO;
+    imageFiles = imageIO.listImageFiles('.');
+    if isempty(imageFiles)
+        fprintf('  No images found in flat folder for phone: %s\n', phoneName);
+        return;
+    end
+
+    fprintf('  Processing %d images from flat structure\n', numel(imageFiles));
+
+    allFeatures = cell(numel(imageFiles), 1);
+    validCount = 0;
+    totalPatches = 0;
+
+    for imgIdx = 1:numel(imageFiles)
+        imgName = imageFiles{imgIdx};
+
+        if phoneCoordinates.images.isKey(imgName)
+            patches = phoneCoordinates.images(imgName);
+            imageFeatures = processOriginalImageWithCoordinates(imgName, patches, phoneName, cfg);
+
+            if ~isempty(imageFeatures)
+                validCount = validCount + 1;
+                allFeatures{validCount} = imageFeatures;
+                totalPatches = totalPatches + numel(patches);
+            end
+        end
+    end
+
+    fprintf('  Processed %d images, %d patches total\n', validCount, totalPatches);
+
+    if validCount > 0
+        allFeatureData = vertcat(allFeatures{1:validCount});
         storePhoneFeatureData(phoneName, allFeatureData, cfg);
     end
 end
@@ -2490,7 +2325,8 @@ function featureData = processConcentrationFolder(phoneName, concName, cfg, phon
         featureData = [];
         return;
     end
-    
+
+    imageIO = cfg.modules.imageIO;
     concIndex = parseConcentrationFolderIndex(concName, cfg.concFolderPrefix);
     if isnan(concIndex)
         warning('extract_features:invalidConcentrationFolder', 'Unable to parse concentration index from folder: %s', concName);
@@ -2504,12 +2340,12 @@ function featureData = processConcentrationFolder(phoneName, concName, cfg, phon
         featureData = [];
         return;
     end
-    
+
     featureData = [];
-    executeInFolder(concName, @collectFeatures);
-    
+    cfg.modules.pathUtils.executeInFolder(concName, @collectFeatures);
+
     function collectFeatures()
-        imageFiles = getImageFiles('.');
+        imageFiles = imageIO.listImageFiles('.');
         if isempty(imageFiles)
             fprintf('No images found in %s/%s\n', phoneName, concName);
             return;
@@ -2666,589 +2502,72 @@ function allPatchFeatures = processOriginalImageWithCoordinates(imageName, patch
 end
 
 function storePhoneFeatureData(phoneName, featureData, cfg)
-    tempDir = fullfile(cfg.projectRoot, 'temp_feature_data');
-    if ~exist(tempDir, 'dir')
-        mkdir(tempDir);
-    end
-    
-    filename = fullfile(tempDir, [phoneName '_features.mat']);
-    save(filename, 'featureData');
-    
-    fprintf('  >> Stored: %s (%d records)\n', phoneName, length(featureData));
+    %% Store phone feature data (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    featPipe.output.storePhoneData(phoneName, featureData, cfg);
 end
 
 function debugVisualizeMaskIfEnabled(originalImage, mask, imageName, cfg)
-    % Save an overlay of paper mask on original image for a random subset when enabled
-    try
-        if ~isfield(cfg, 'debug') || ~isfield(cfg.debug, 'visualizeMasks') || ~cfg.debug.visualizeMasks
-            return;
-        end
-        if ~isfield(cfg.debug, 'sampleProb') || rand() > cfg.debug.sampleProb
-            return;
-        end
-        I = im2double(originalImage);
-        M = logical(mask);
-        if ~any(M(:))
-            return;
-        end
-        M3 = repmat(M, [1, 1, 3]);
-        green = cat(3, zeros(size(I,1), size(I,2)), ones(size(I,1), size(I,2)), zeros(size(I,1), size(I,2)));
-        overlay = I .* 0.6 + green .* 0.4 .* M3;
-        outImg = im2uint8(overlay);
-
-        if isfield(cfg.debug, 'saveToDisk') && cfg.debug.saveToDisk
-            outDir = fullfile(cfg.projectRoot, 'temp_masks');
-            if ~exist(outDir, 'dir'), mkdir(outDir); end
-            [~, base, ~] = fileparts(imageName);
-            outPath = fullfile(outDir, [base '_mask.png']);
-            imwrite(outImg, outPath);
-        else
-            figure('Visible', 'off'); imshow(outImg); drawnow; close(gcf);
-        end
-    catch
-        % Swallow any debug visualization errors silently
-    end
+    %% Debug visualization (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    featPipe.debug.visualizeMask(originalImage, mask, imageName, cfg);
 end
 
 function generateConsolidatedExcelFile(cfg)
-    fprintf('\n=== Consolidating Features from %s phones ===\n', num2str(length(getSubFolders(cfg.originalImagesPath))));
-    
-    tempDir = fullfile(cfg.projectRoot, 'temp_feature_data');
-    if ~exist(tempDir, 'dir')
-        fprintf('!! No feature data found. Skipping Excel generation.\n');
-        return;
-    end
-    
-    matFiles = dir(fullfile(tempDir, '*_features.mat'));
-    numFiles = length(matFiles);
-    fprintf('Processing %d feature files -> Excel...\n', numFiles);
-    
-    % Adaptive batch sizing based on dataset size and memory
-    if cfg.performance.adaptiveBatchSize && numFiles > 0
-        batchSize = calculateBatchSize(numFiles, cfg);
-    else
-        batchSize = cfg.performance.baseBatchSize;
-    end
-    
-    % Handle small datasets without batching overhead
-    if numFiles <= 3
-        fprintf('Loading %d files: ', numFiles);
-        allFeatureData = cell(numFiles, 1);
-        for i = 1:numFiles
-            loadedData = load(fullfile(tempDir, matFiles(i).name), 'featureData');
-            allFeatureData{i} = loadedData.featureData;
-            fprintf('%d ', i);
-        end
-        fprintf('OK\n');
-    else
-        % Large dataset: batch processing with dynamic capacity management
-        fprintf('Batch loading (%d files, batch=%d): ', numFiles, batchSize);
+    %% Generate consolidated Excel file (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    pathUtils = path_utils();
 
-        % Start with smaller pre-allocation, grow exponentially if needed
-        initialCapacity = min(20, ceil(numFiles / batchSize));
-        allFeatureData = cell(initialCapacity, 1);
-        batchCount = 0;
+    % Build external dependencies struct for helper
+    externalDeps = struct();
+    externalDeps.listSubfolders = @pathUtils.listSubfolders;
+    externalDeps.getFeatureRegistry = @getFeatureRegistry;
+    externalDeps.calculateBatchSize = @calculateBatchSize;
+    externalDeps.checkMemoryPressure = @checkMemoryPressure;
 
-        for batchStart = 1:batchSize:numFiles
-            batchEnd = min(batchStart + batchSize - 1, numFiles);
-            currentBatchSize = batchEnd - batchStart + 1;
-
-            % Pre-allocate batch data
-            batchData = cell(currentBatchSize, 1);
-
-            % Load current batch
-            for i = batchStart:batchEnd
-                loadedData = load(fullfile(tempDir, matFiles(i).name), 'featureData');
-                batchData{i - batchStart + 1} = loadedData.featureData;
-                if mod(i, 5) == 0 || i == batchEnd
-                    fprintf('.');
-                end
-            end
-
-            % Consolidate current batch
-            consolidatedBatch = vertcat(batchData{:});
-            batchCount = batchCount + 1;
-
-            % Grow capacity if needed (exponential growth)
-            if batchCount > length(allFeatureData)
-                newCapacity = min(ceil(numFiles / batchSize), length(allFeatureData) * 2);
-                allFeatureData{newCapacity, 1} = [];  % Grow array
-            end
-
-            allFeatureData{batchCount} = consolidatedBatch;
-
-            % Clear intermediate variables immediately
-            clear batchData loadedData consolidatedBatch;
-
-            % Memory monitoring and adaptive adjustment
-            if checkMemoryPressure(cfg.performance.memoryThreshold) && batchStart + batchSize < numFiles
-                newBatchSize = max(5, round(batchSize * 0.7));
-                if newBatchSize ~= batchSize
-                    fprintf('\n  Memory pressure - reducing batch size %d->%d\n', batchSize, newBatchSize);
-                    batchSize = newBatchSize;
-                end
-            end
-        end
-
-        % Trim to actual size
-        allFeatureData = allFeatureData(1:batchCount);
-        fprintf(' OK\n');
-    end
-    
-    if ~isempty(allFeatureData)
-        allFeatureData = vertcat(allFeatureData{:});
-    else
-        allFeatureData = [];
-    end
-    
-    if isempty(allFeatureData)
-        fprintf('No feature data to process.\n');
-        return;
-    end
-    
-    featureTable = struct2table(allFeatureData);
-
-    trainTable = [];
-    testTable = [];
-    requestedGroupColumn = '';
-    if isfield(cfg.output, 'splitGroupColumn') && ~isempty(cfg.output.splitGroupColumn)
-        requestedGroupColumn = char(cfg.output.splitGroupColumn);
-    end
-
-    if cfg.output.trainTestSplit
-        groupColumnResolved = resolveSplitGroupColumn(featureTable, requestedGroupColumn);
-        randomSeed = [];
-        if isfield(cfg.output, 'randomSeed')
-            randomSeed = cfg.output.randomSeed;
-        end
-        [trainTable, testTable] = splitFeatureTable(featureTable, cfg.output.testSize, groupColumnResolved, randomSeed);
-
-        % Display split information
-        if strcmpi(groupColumnResolved, 'PhoneType')
-            % Phone-level splitting with dynamic validation count
-            uniquePhones = unique(featureTable.(groupColumnResolved));
-            numPhones = length(uniquePhones);
-            numValPhones = calculateValidationCount(numPhones);
-
-            fprintf('\n=== Phone-Level Train/Validation Split ===\n');
-            fprintf('Using dynamic validation count formula: ceil(N/5)\n');
-            fprintf('Total phones: %d | Validation phones: %d (%.1f%%)\n', ...
-                numPhones, numValPhones, 100 * numValPhones / numPhones);
-
-            if numValPhones == 0
-                warning('extract_features:insufficientPhones', ...
-                    'Insufficient phones for validation split (need >= 3). Using all data for training.');
-            else
-                % Display train phone names
-                trainPhones = unique(trainTable.(groupColumnResolved));
-                if iscell(trainPhones)
-                    trainPhoneStr = strjoin(trainPhones, ', ');
-                else
-                    trainPhoneStr = strjoin(string(trainPhones), ', ');
-                end
-                fprintf('Train phones (%d): %s\n', length(trainPhones), trainPhoneStr);
-
-                % Display validation phone names
-                valPhones = unique(testTable.(groupColumnResolved));
-                if iscell(valPhones)
-                    valPhoneStr = strjoin(valPhones, ', ');
-                else
-                    valPhoneStr = strjoin(string(valPhones), ', ');
-                end
-                fprintf('Validation phones (%d): %s\n', length(valPhones), valPhoneStr);
-            end
-            fprintf('==========================================\n\n');
-        end
-    else
-        groupColumnResolved = requestedGroupColumn;
-    end
-
-    featureTable = pruneFeatureColumns(featureTable, cfg, groupColumnResolved);
-    if cfg.output.trainTestSplit
-        trainTable = pruneFeatureColumns(trainTable, cfg, groupColumnResolved);
-        testTable = pruneFeatureColumns(testTable, cfg, groupColumnResolved);
-    end
-    
-    if cfg.output.roundDecimals > 0
-        if ~isempty(featureTable) && width(featureTable) > 0
-            featureTable = roundNumericColumns(featureTable, cfg.output.roundDecimals);
-        end
-        if cfg.output.trainTestSplit
-            if ~isempty(trainTable) && width(trainTable) > 0
-                trainTable = roundNumericColumns(trainTable, cfg.output.roundDecimals);
-            end
-            if ~isempty(testTable) && width(testTable) > 0
-                testTable = roundNumericColumns(testTable, cfg.output.roundDecimals);
-            end
-        end
-    end
-    
-    if ~exist(cfg.outputPath, 'dir')
-        mkdir(cfg.outputPath);
-        fprintf('Created output directory: %s\n', cfg.outputPath);
-    end
-    
-    outputFilename = sprintf('%s_%s_%s_features%s', cfg.featurePreset, cfg.chemicalName, cfg.tNValue, cfg.output.excelExtension);
-    outputPath = fullfile(cfg.outputPath, outputFilename);
-    
-    isExcelFormat = isExcelFileExtension(cfg.output.excelExtension);
-    
-    try
-        writeTableWithFormat(featureTable, outputPath, isExcelFormat);
-        fprintf('\n>> Excel created: %s\n', outputFilename);
-        fprintf('   Records: %d | Features: %d\n', height(featureTable), width(featureTable));
-        
-        % Show feature groups present using registry
-        colNames = featureTable.Properties.VariableNames;
-        registry = getFeatureRegistry();
-        bgPresent = sum(ismember(registry.backgroundFeatureCols, colNames));
-        patchPresent = sum(ismember(registry.patchFeatureCols, colNames));
-        normPresent = sum(ismember(registry.normalizedFeatureCols, colNames));
-        fprintf('   Background: %d/%d | Patch: %d/%d | Normalized: %d/%d\n', ...
-            bgPresent, length(registry.backgroundFeatureCols), ...
-            patchPresent, length(registry.patchFeatureCols), ...
-            normPresent, length(registry.normalizedFeatureCols));
-
-        if isfield(cfg.output, 'trainTestSplit') && cfg.output.trainTestSplit
-            trainFilename = ['train_' outputFilename];
-            testFilename = ['test_' outputFilename];
-            trainPath = fullfile(cfg.outputPath, trainFilename);
-            testPath = fullfile(cfg.outputPath, testFilename);
-            try
-                writeTableWithFormat(trainTable, trainPath, isExcelFormat);
-                writeTableWithFormat(testTable, testPath, isExcelFormat);
-                fprintf('   Train/Test split saved -> %s (%d rows), %s (%d rows)\n', ...
-                    trainFilename, height(trainTable), testFilename, height(testTable));
-            catch splitME
-                warning('extract_features:trainTestSplit', ...
-                    'Failed to create train/test split: %s', splitME.message);
-            end
-        end
-        
-    catch ME
-        warning('extract_features:excelCreation', 'Failed to create feature file: %s', ME.message);
-        if isExcelFormat
-            fprintf('Attempting to save as CSV instead...\n');
-            csvPath = strrep(outputPath, cfg.output.excelExtension, '.csv');
-            try
-                writeTableWithFormat(featureTable, csvPath, false);
-                fprintf('>> CSV file created: %s\n', csvPath);
-            catch
-                warning('extract_features:saveFailed', 'Failed to save data in any format.');
-            end
-        else
-            warning('extract_features:saveFailed', 'Failed to save data in requested format and no fallback available.');
-        end
-    end
-    
-    try
-        rmdir(tempDir, 's');
-        fprintf('Cleaned up temporary files.\n');
-    catch
-        warning('extract_features:cleanupFailed', 'Could not clean up temporary directory: %s', tempDir);
-    end
+    featPipe.output.generateExcel(cfg, externalDeps);
 end
 
 function tableOut = pruneFeatureColumns(tableIn, cfg, groupColumn)
-    tableOut = tableIn;
-    if isempty(tableOut)
-        return;
-    end
-    
-    allColumns = tableOut.Properties.VariableNames;
-    columnsToRemove = {};
-    
-    metadataColumns = {'Concentration', 'PatchID', 'Replicate'};
-    columnsToRemove = [columnsToRemove, metadataColumns(ismember(metadataColumns, allColumns))];
-    
-    if ~cfg.output.includeLabelInExcel && any(strcmpi(allColumns, 'Label'))
-        columnsToRemove{end+1} = 'Label';
-    end
-
-    % Robust preset excludes spatial_uniformity from exports (computed internally only)
-    if isfield(cfg, 'featurePreset') && strcmpi(cfg.featurePreset, 'robust')
-        robustDropCols = {'spatial_uniformity'};
-        columnsToRemove = [columnsToRemove, robustDropCols(ismember(robustDropCols, allColumns))];
-    end
-    
-    if ~isempty(groupColumn)
-        keepMask = strcmpi(columnsToRemove, groupColumn);
-        if any(keepMask)
-            % Allow removal when user explicitly disables Label export
-            if strcmpi(groupColumn, 'Label') && isfield(cfg.output, 'includeLabelInExcel') && ~cfg.output.includeLabelInExcel
-                keepMask(strcmpi(columnsToRemove, groupColumn)) = false;
-            end
-            columnsToRemove(keepMask) = [];
-        end
-    end
-    
-    columnsToRemove = unique(columnsToRemove);
-    if ~isempty(columnsToRemove)
-        tableOut(:, columnsToRemove) = [];
-    end
+    %% Prune feature columns (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    tableOut = featPipe.output.pruneColumns(tableIn, cfg, groupColumn);
 end
 
 function writeTableWithFormat(tableData, filePath, useExcelFormat)
-    if useExcelFormat
-        writetable(tableData, filePath, 'Sheet', 'FeatureData');
-    else
-        writetable(tableData, filePath);
-    end
+    %% Write table with format (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    featPipe.output.writeTableWithFormat(tableData, filePath, useExcelFormat);
 end
 
 function tf = isExcelFileExtension(ext)
-    excelExtensions = {'.xls', '.xlsx', '.xlsm', '.xlsb'};
-    tf = any(strcmpi(ext, excelExtensions));
+    %% Check Excel extension (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    tf = featPipe.output.isExcelExtension(ext);
 end
 
 function roundedTable = roundNumericColumns(inputTable, decimals)
-    %% Round all numeric table variables to specified decimal places
-
-    % Use varfun to vectorize rounding across all numeric variables
-    roundedTable = varfun(@(x) round(x, decimals), inputTable, ...
-        'InputVariables', @isnumeric);
-
-    % Restore original variable names
-    roundedTable.Properties.VariableNames = inputTable.Properties.VariableNames(varfun(@isnumeric, inputTable, 'OutputFormat', 'uniform'));
-
-    % Add back non-numeric columns
-    nonNumericVars = inputTable.Properties.VariableNames(~varfun(@isnumeric, inputTable, 'OutputFormat', 'uniform'));
-    for i = 1:length(nonNumericVars)
-        roundedTable.(nonNumericVars{i}) = inputTable.(nonNumericVars{i});
-    end
-
-    % Restore original column order
-    roundedTable = roundedTable(:, inputTable.Properties.VariableNames);
+    %% Round numeric columns (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    roundedTable = featPipe.output.roundNumeric(inputTable, decimals);
 end
 
 function [trainTable, testTable] = splitFeatureTable(featureTable, testFraction, groupColumn, randomSeed)
-    %% Randomly split features into train/test partitions while keeping groups intact
-    %
-    % Inputs:
-    %   featureTable - Table to split
-    %   testFraction - Fraction of groups for test set (0-1)
-    %   groupColumn  - Column name for grouping (keeps all rows from same group together)
-    %   randomSeed   - Optional random seed for reproducibility (default: not set)
-    %
-    % Outputs:
-    %   trainTable - Training partition
-    %   testTable  - Test partition
-
-    validateattributes(featureTable, {'table'}, {'nonempty'}, 'splitFeatureTable', 'featureTable');
-    validateattributes(testFraction, {'double','single'}, {'scalar','>',0,'<',1}, ...
-        'splitFeatureTable', 'testFraction');
-
-    if nargin < 3 || isempty(groupColumn)
-        error('extract_features:splitMissingGroup', ...
-            'Provide a grouping column to keep related rows together when splitting.');
-    end
-
-    groupColumn = resolveSplitGroupColumn(featureTable, groupColumn);
-    groupData = featureTable.(groupColumn);
-    if ischar(groupData)
-        groupData = cellstr(groupData);
-    end
-
-    groupVector = groupData(:);
-    rowCount = height(featureTable);
-    if numel(groupVector) ~= rowCount
-        error('extract_features:splitGroupLength', ...
-            'Grouping column ''%s'' must contain one entry per table row.', groupColumn);
-    end
-
-    if iscell(groupVector)
-        emptyMask = cellfun(@isempty, groupVector);
-        if any(emptyMask)
-            error('extract_features:splitMissingValues', ...
-                'Grouping column ''%s'' contains missing entries. Populate it before splitting.', groupColumn);
-        end
-    elseif isstring(groupVector)
-        if any(ismissing(groupVector) | strlength(groupVector) == 0)
-            error('extract_features:splitMissingValues', ...
-                'Grouping column ''%s'' contains missing entries. Populate it before splitting.', groupColumn);
-        end
-    elseif iscategorical(groupVector)
-        if any(isundefined(groupVector))
-            error('extract_features:splitMissingValues', ...
-                'Grouping column ''%s'' contains missing entries. Populate it before splitting.', groupColumn);
-        end
-    elseif isnumeric(groupVector)
-        if any(isnan(groupVector))
-            error('extract_features:splitMissingValues', ...
-                'Grouping column ''%s'' contains missing entries. Populate it before splitting.', groupColumn);
-        end
-    end
-
-    try
-        [groupIds, ~] = findgroups(groupVector);
-    catch
-        groupVector = string(groupVector);
-        [groupIds, ~] = findgroups(groupVector);
-    end
-
-    if any(groupIds == 0)
-        error('extract_features:splitMissingValues', ...
-            'Grouping column ''%s'' contains missing entries. Populate it before splitting.', groupColumn);
-    end
-
-    numGroups = max(groupIds);
-
-    % Determine test group count based on grouping column type
-    if strcmpi(groupColumn, 'PhoneType')
-        % Phone-level splitting: use dynamic validation count formula
-        testGroupCount = calculateValidationCount(numGroups);
-
-        if testGroupCount == 0
-            % Zero validation case: return entire table as train, empty table as test
-            trainTable = featureTable;
-            testTable = featureTable([], :);
-            return;
-        end
-    else
-        % Non-phone splitting: use testFraction parameter (original behavior)
-        if numGroups < 2
-            error('extract_features:splitInsufficientGroups', ...
-                'Train/test split requires at least two unique groups in column ''%s''.', groupColumn);
-        end
-
-        testFraction = double(testFraction);
-        desiredGroups = max(1, round(testFraction * numGroups));
-        testGroupCount = min(desiredGroups, numGroups - 1);
-    end
-
-    % Set random seed if provided for reproducibility
-    if nargin >= 4 && ~isempty(randomSeed)
-        rng(randomSeed, 'twister');
-    end
-
-    selectedGroups = randperm(numGroups, testGroupCount);
-    testMask = ismember(groupIds, selectedGroups);
-    trainMask = ~testMask;
-
-    if ~any(testMask) || ~any(trainMask)
-        error('extract_features:splitEmptyPartition', ...
-            'Generated train/test partitions are empty. Adjust testSize or grouping.');
-    end
-
-    trainTable = featureTable(trainMask, :);
-    testTable = featureTable(testMask, :);
+    %% Split feature table (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    [trainTable, testTable] = featPipe.output.splitTable(featureTable, testFraction, groupColumn, randomSeed);
 end
 
 function numVal = calculateValidationCount(numPhones)
-    %% Calculate validation phone count using dynamic formula
-    %
-    % Inputs:
-    %   numPhones - Total number of phone directories (positive integer)
-    %
-    % Outputs:
-    %   numVal - Number of phones to use for validation (non-negative integer)
-    %
-    % Formula: ceil(numPhones / 5) when numPhones >= 3, otherwise 0
-
-    validateattributes(numPhones, {'numeric'}, {'scalar','integer','nonnegative'}, ...
-        'calculateValidationCount', 'numPhones');
-
-    numPhones = double(numPhones);
-
-    if numPhones >= 3
-        numVal = ceil(numPhones / 5);
-    else
-        numVal = 0;
-    end
+    %% Calculate validation count (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    numVal = featPipe.output.calculateValidationCount(numPhones);
 end
 
 function resolvedColumn = resolveSplitGroupColumn(featureTable, requestedColumn)
-    %% Resolve the grouping column for train/test splitting with flexible matching
-
-    varNames = featureTable.Properties.VariableNames;
-    requestedColumn = char(requestedColumn);
-
-    matchMask = strcmp(varNames, requestedColumn);
-    if ~any(matchMask)
-        matchMask = strcmpi(varNames, requestedColumn);
-    end
-
-    if ~any(matchMask)
-        normalizedName = matlab.lang.makeValidName(requestedColumn);
-        if ~strcmp(normalizedName, requestedColumn)
-            matchMask = strcmp(varNames, normalizedName);
-            if ~any(matchMask)
-                matchMask = strcmpi(varNames, normalizedName);
-            end
-        end
-    end
-
-    if ~any(matchMask)
-        if isempty(varNames)
-            availableColumns = '(none)';
-        else
-            availableColumns = strjoin(varNames, ', ');
-        end
-        error('extract_features:splitMissingGroup', ...
-            'Grouping column ''%s'' not found in feature table. Available columns: %s. Ensure metadata retention includes it.', ...
-            requestedColumn, availableColumns);
-    end
-
-    resolvedColumn = varNames{find(matchMask, 1)};
-end
-
-function executeInFolder(folder, func)
-    %% Change directory, run function, always restore directory
-    if isempty(folder)
-        folder = '.';
-    end
-    currentDir = pwd;
-    cd(folder);
-    restoreDir = onCleanup(@() cd(currentDir));
-    func();
-end
-
-function folders = getSubFolders(path)
-    items = dir(path);
-    isFolder = [items.isdir];
-    names = {items(isFolder).name};
-    folders = names(~ismember(names, {'.', '..'}));
-end
-
-function files = getImageFiles(path)
-    %% Get image files from directory
-
-    files = {};
-
-    try
-        % Single dir() call, filter by extension
-        allItems = dir(path);
-        if isempty(allItems)
-            return;
-        end
-
-        % Remove directories
-        allItems = allItems(~[allItems.isdir]);
-        if isempty(allItems)
-            return;
-        end
-
-        % Extract extensions and filter for valid image types
-        % Use lowercase comparison for case-insensitive matching
-        validExts = {'.png'};
-        [~, ~, fileExts] = cellfun(@fileparts, {allItems.name}, 'UniformOutput', false);
-        fileExtsLower = lower(fileExts);
-
-        % Create logical mask for valid extensions
-        isValidImage = false(size(fileExtsLower));
-        for i = 1:length(validExts)
-            isValidImage = isValidImage | strcmp(fileExtsLower, validExts{i});
-        end
-
-        % Extract valid filenames
-        if any(isValidImage)
-            files = {allItems(isValidImage).name};
-        end
-
-    catch ME
-        warning('extract_features:fileDiscovery', 'Error discovering image files in %s: %s', path, ME.message);
-        files = {};
-    end
+    %% Resolve split group column (delegates to feature_pipeline helper)
+    featPipe = feature_pipeline();
+    resolvedColumn = featPipe.output.resolveSplitGroupColumn(featureTable, requestedColumn);
 end
 
 function handleError(ME, cfg)
@@ -3284,12 +2603,14 @@ function validatePaths(cfg)
         error('extract_features:missingCoordinatesDir', 'Coordinates directory not found: %s\nPlease run cut_elliptical_regions() first.', cfg.coordinatesPath);
     end
 
-    phoneList = getSubFolders(cfg.originalImagesPath);
+    pathUtils = cfg.modules.pathUtils;
+    imageIO = cfg.modules.imageIO;
+    phoneList = pathUtils.listSubfolders(cfg.originalImagesPath);
     if isempty(phoneList)
         error('extract_features:noPhoneInOriginal', 'No phone folders found in original images. Expected structure: %s/phone/', cfg.originalImagesPath);
     end
 
-    coordPhoneList = getSubFolders(cfg.coordinatesPath);
+    coordPhoneList = pathUtils.listSubfolders(cfg.coordinatesPath);
     if isempty(coordPhoneList)
         error('extract_features:noPhoneInCoordinates', 'No phone folders found in coordinates. Expected structure: %s/phone/%s', cfg.coordinatesPath, cfg.coordinateFileName);
     end
@@ -3304,12 +2625,12 @@ function validatePaths(cfg)
 
         % Check for con_N subdirectories (the actual structure: phone/con_N/images)
         if exist(originalPhonePath, 'dir')
-            conFolders = getSubFolders(originalPhonePath);
+            conFolders = pathUtils.listSubfolders(originalPhonePath);
             if ~isempty(conFolders)
                 % Verify at least one con_N folder contains images
                 for j = 1:length(conFolders)
                     conPath = fullfile(originalPhonePath, conFolders{j});
-                    if ~isempty(getImageFiles(conPath))
+                    if ~isempty(imageIO.listImageFiles(conPath))
                         hasValidStructure = true;
                         break;
                     end
@@ -3833,9 +3154,9 @@ function paperStats = extractPaperBackgroundStatsFromMask(originalImage, paperBa
         paperLab = rgb2lab(paperRGB_normalized);
         paperStats.paperLab = squeeze(paperLab);
 
-        % Keep existing illuminant cues
-        paperStats.colorTemperature = estimateColorTemperature(paperStats.paperRGB, cfg);
-        paperStats.chromaticAdaptation = calculateChromaticAdaptation(paperStats.paperRGB);
+        % Keep existing illuminant cues (using color_analysis helper)
+        paperStats.colorTemperature = cfg.modules.colorAnalysis.estimateColorTemperature(paperStats.paperRGB);
+        paperStats.chromaticAdaptation = cfg.modules.colorAnalysis.calculateChromaticAdaptation(paperStats.paperRGB);
 
         paperStats.isValid = true;
 
@@ -4234,85 +3555,6 @@ function coordinateData = parseCoordinatesFile(coordinatesFilePath)
     end
 end
 
-function colorTemp = estimateColorTemperature(paperRGB, cfg)
-    %% Estimate color temperature from paper white point using McCamy's CCT approximation
-    %
-    % Inputs:
-    %   paperRGB - RGB values of paper white point [R, G, B] (0-255 scale)
-    %   cfg      - Configuration struct with colorTemp and defaults fields
-    %
-    % Output:
-    %   colorTemp - Estimated color temperature in Kelvin
-
-    fallbackK = cfg.defaults.paperTempK;
-
-    try
-        % Normalize to avoid absolute brightness effects
-        rgb_sum = sum(paperRGB);
-        if rgb_sum > 0
-            % Chromaticity coordinates
-            r_chrom = paperRGB(1) / rgb_sum;
-            g_chrom = paperRGB(2) / rgb_sum;
-
-            % McCamy's approximation for CCT from chromaticity
-            x = r_chrom;
-            y = g_chrom;
-
-            if y > 0
-                n = (x - cfg.colorTemp.mccamyXRef) / (cfg.colorTemp.mccamyYRef - y);
-                cct = cfg.colorTemp.mccamyCoeff3 * n^3 + ...
-                      cfg.colorTemp.mccamyCoeff2 * n^2 + ...
-                      cfg.colorTemp.mccamyCoeff1 * n + ...
-                      cfg.colorTemp.mccamyCoeff0;
-
-                % Clamp to reasonable range
-                colorTemp = min(max(cct, cfg.colorTemp.cctMinKelvin), cfg.colorTemp.cctMaxKelvin);
-            else
-                % Fallback to simple R/B ratio method
-                if paperRGB(3) > 0
-                    rb_ratio = paperRGB(1) / paperRGB(3);
-                    if rb_ratio > cfg.colorTemp.rbRatioTungstenThreshold
-                        colorTemp = cfg.colorTemp.cctTungstenK; % Tungsten
-                    elseif rb_ratio > cfg.colorTemp.rbRatioMixedThreshold
-                        colorTemp = cfg.colorTemp.cctMixedK; % Mixed
-                    else
-                        colorTemp = cfg.colorTemp.cctDaylightK; % Daylight
-                    end
-                else
-                    colorTemp = fallbackK;
-                end
-            end
-        else
-            colorTemp = fallbackK;
-        end
-
-    catch
-        colorTemp = fallbackK;
-    end
-end
-
-function chromaticAdaptation = calculateChromaticAdaptation(paperRGB)
-    %% Calculate chromatic adaptation factors
-    
-    try
-        % Normalize paper to its maximum component (preserve color ratios)
-        maxComponent = max(paperRGB);
-        if maxComponent > 10 % Avoid division by very small numbers
-            % von Kries-style adaptation: normalize by each component
-            % This preserves the relative color ratios while standardizing brightness
-            chromaticAdaptation = maxComponent ./ max(paperRGB, 1);
-            
-            % Clamp to physically reasonable range
-            chromaticAdaptation = min(max(chromaticAdaptation, 0.5), 2.0);
-        else
-            chromaticAdaptation = [1.0, 1.0, 1.0];
-        end
-        
-    catch
-        chromaticAdaptation = [1.0, 1.0, 1.0];
-    end
-end
-
 function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalImage, patches, cfg)
     %% Extract paper background mask by excluding all elliptical patch areas
     % Uses Otsu thresholding on the remaining pixels to isolate bright paper
@@ -4415,14 +3657,6 @@ function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalIma
         warning('extract_features:paperMaskExtraction', ...
                'Error extracting paper background mask: %s', ME.message);
     end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
 end
 
 function [mask, bbox] = createEllipticalPatchMask(imageSize, xCenter, yCenter, semiMajorAxis, semiMinorAxis, rotationAngle)

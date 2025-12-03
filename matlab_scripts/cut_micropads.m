@@ -88,7 +88,7 @@ function cut_micropads(varargin)
     % Each row: [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
     % - x, y: center position (0,0 = top-left, 1,1 = bottom-right)
     % - semiMajorAxis, semiMinorAxis: fraction of micropad side length
-    % - rotationAngle: degrees, counter-clockwise from horizontal (standard math convention)
+    % - rotationAngle: degrees, positive = clockwise from horizontal (matches image coordinates)
     % These values define ellipse positions relative to an ideal square micropad.
     % The homography transform will adjust for perspective distortion.
     ELLIPSE_DEFAULT_RECORDS = [
@@ -129,83 +129,23 @@ function cut_micropads(varargin)
     ALLOWED_IMAGE_EXTENSIONS = {'*.jpg','*.jpeg','*.png','*.bmp','*.tiff','*.tif'};
     CONC_FOLDER_PREFIX = 'con_';
 
-    % === UI CONSTANTS ===
-    UI_CONST = struct();
-    UI_CONST.fontSize = struct(...
-        'title', 16, ...
-        'path', 12, ...
-        'button', 13, ...
-        'info', 10, ...
-        'instruction', 10, ...
-        'preview', 14, ...
-        'label', 12, ...
-        'status', 13, ...
-        'value', 13);
-    UI_CONST.colors = struct(...
-        'background', 'black', ...
-        'foreground', 'white', ...
-        'panel', [0.15 0.15 0.15], ...
-        'stop', [0.85 0.2 0.2], ...
-        'accept', [0.2 0.75 0.3], ...
-        'retry', [0.9 0.75 0.2], ...
-        'skip', [0.75 0.25 0.25], ...
-        'polygon', [0.0 1.0 1.0], ...
-        'info', [1.0 1.0 0.3], ...
-        'path', [0.75 0.75 0.75], ...
-        'apply', [0.2 0.5 0.9]);
-    % UI positions use normalized coordinates [x, y, width, height]
-    % Origin: (0, 0) = bottom-left, (1, 1) = top-right
-    % Standard gap: 0.01 (1% of figure)
-    UI_CONST.positions = struct(...
-        'figure', [0 0 1 1], ...                      % Full window
-        'stopButton', [0.01 0.945 0.06 0.045], ...    % Top-left corner, 6% width
-        'title', [0.08 0.945 0.84 0.045], ...         % Top center bar (84% width)
-        'pathDisplay', [0.08 0.90 0.84 0.035], ...    % Below title, same width
-        'aiStatus', [0.25 0.905 0.50 0.035], ...      % Centered AI status label
-        'instructions', [0.01 0.855 0.98 0.035], ...  % Full-width instruction text
-        'image', [0.01 0.215 0.98 0.64], ...          % Primary image axes (64% height)
-        'runAIButton', [0.01 0.16 0.08 0.045], ...    % "RUN AI" button above rotation panel
-        'rotationPanel', [0.01 0.01 0.24 0.14], ...   % Left: rotation preset buttons
-        'zoomPanel', [0.26 0.01 0.26 0.14], ...       % Center: zoom slider + controls
-        'cutButtonPanel', [0.53 0.01 0.46 0.14], ...  % Right: APPLY/SKIP buttons (46% = 98%-24%-26%-2%)
-        'previewPanel', [0.25 0.01 0.50 0.14], ...    % Preview action buttons in main window
-        'previewTitle', [0.01 0.92 0.98 0.04], ...    % Preview window title bar
-        'previewMeta', [0.01 0.875 0.98 0.035], ...   % Preview metadata text below title
-        'previewLeft', [0.01 0.22 0.48 0.64], ...     % Left comparison image (48% width)
-        'previewRight', [0.50 0.22 0.49 0.64]);       % Right comparison image (49% width)
-    UI_CONST.polygon = struct(...
-        'lineWidth', 3, ...
-        'borderWidth', 2);
-    UI_CONST.dimFactor = 0.2;
-    UI_CONST.layout = struct();
-    UI_CONST.layout.rotationLabel = [0.05 0.78 0.90 0.18];
-    UI_CONST.layout.quickRotationRow1 = {[0.05 0.42 0.42 0.30], [0.53 0.42 0.42 0.30]};
-    UI_CONST.layout.quickRotationRow2 = {[0.05 0.08 0.42 0.30], [0.53 0.08 0.42 0.30]};
-    UI_CONST.layout.zoomLabel = [0.05 0.78 0.90 0.18];
-    UI_CONST.layout.zoomSlider = [0.05 0.42 0.72 0.28];
-    UI_CONST.layout.zoomValue = [0.79 0.42 0.16 0.28];
-    UI_CONST.layout.zoomResetButton = [0.05 0.08 0.44 0.28];
-    UI_CONST.layout.zoomAutoButton = [0.51 0.08 0.44 0.28];
-    UI_CONST.layout.ellipseZoomPrevButton = [0.05 0.42 0.18 0.28];
-    UI_CONST.layout.ellipseZoomIndicator = [0.25 0.42 0.35 0.28];
-    UI_CONST.layout.ellipseZoomNextButton = [0.62 0.42 0.18 0.28];
-    UI_CONST.layout.ellipseZoomResetButton = [0.25 0.08 0.50 0.28];
-    UI_CONST.rotation = struct(...
-        'range', [-180, 180], ...
-        'quickAngles', [-90, 0, 90, 180]);
-    UI_CONST.zoom = struct(...
-        'range', [0, 1], ...
-        'defaultValue', 0);
-
-    %% Add helper_scripts to path (contains homography_utils and other utilities)
+    %% Add helper_scripts to path (contains geometry_transform and other utilities)
     scriptDir = fileparts(mfilename('fullpath'));
     helperDir = fullfile(scriptDir, 'helper_scripts');
     if exist(helperDir, 'dir')
         addpath(helperDir);
     end
 
-    %% Load homography utilities for ellipse transformation
-    homography = homography_utils();
+    %% Load utility modules (geometry, I/O, UI, model integration)
+    geomTform = geometry_transform();
+    imageIO = image_io();
+    pathUtils = path_utils();
+    yoloUtils = yolo_integration();
+    fileIOMgr = file_io_manager();
+    micropadUI = micropad_ui();
+
+    % UI configuration from shared module
+    uiConfig = micropadUI.getDefaultUIConfig();
 
     %% Build configuration
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, OUTPUT_FOLDER_ELLIPSES, SAVE_COORDINATES, ...
@@ -215,7 +155,8 @@ function cut_micropads(varargin)
                               SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ELLIPSE_DEFAULT_RECORDS, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
-                              COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, UI_CONST, homography, varargin{:});
+                              COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, uiConfig, ...
+                              geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin{:});
 
     try
         processAllFolders(cfg);
@@ -236,7 +177,8 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
                                    semiMajorDefaultRatio, semiMinorDefaultRatio, ellipseDefaultRecords, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
                                    rotationAngleTolerance, ...
-                                   coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, UI_CONST, homography, varargin)
+                                   coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, uiConfig, ...
+                                   geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin)
     parser = inputParser;
     parser.addParameter('numSquares', defaultNumSquares, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',1,'<=',20}));
 
@@ -273,7 +215,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.pythonPath = parser.Results.pythonPath;
     cfg.inferenceSize = parser.Results.inferenceSize;
 
-    cfg = addPathConfiguration(cfg, parser.Results.inputFolder, parser.Results.outputFolder, outputFolderEllipses);
+    cfg = addPathConfiguration(cfg, parser.Results.inputFolder, parser.Results.outputFolder, outputFolderEllipses, pathUtils);
 
     cfg.output.saveCoordinates = parser.Results.saveCoordinates;
     cfg.output.supportedFormats = supportedFormats;
@@ -320,25 +262,32 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
               size(cfg.ellipse.defaultRecords, 2));
     end
 
-    % Store homography utilities for ellipse transformation
-    cfg.homography = homography;
+    % Store geometry transform utilities (homography + geometry operations)
+    cfg.geomTform = geomTform;
+
+    % Store pathUtils for directory operations
+    cfg.pathUtils = pathUtils;
+
+    % Store imageIO for image loading
+    cfg.imageIO = imageIO;
+
+    % Store yoloUtils for YOLO detection
+    cfg.yoloUtils = yoloUtils;
+
+    % Store fileIOMgr for file I/O operations
+    cfg.fileIOMgr = fileIOMgr;
 
     % Rotation configuration
     cfg.rotation.angleTolerance = rotationAngleTolerance;
 
     % UI configuration
-    cfg.ui.fontSize = UI_CONST.fontSize;
-    cfg.ui.colors = UI_CONST.colors;
-    cfg.ui.positions = UI_CONST.positions;
-    cfg.ui.polygon = UI_CONST.polygon;
-    cfg.ui.layout = UI_CONST.layout;
-    cfg.ui.rotation = UI_CONST.rotation;
-    cfg.ui.zoom = UI_CONST.zoom;
-    cfg.dimFactor = UI_CONST.dimFactor;
+    cfg.ui = uiConfig;
+    cfg.dimFactor = uiConfig.dimFactor;
+    cfg.micropadUI = micropadUI;
 end
 
-function cfg = addPathConfiguration(cfg, inputFolder, outputFolder, outputFolderEllipses)
-    projectRoot = find_project_root(inputFolder);
+function cfg = addPathConfiguration(cfg, inputFolder, outputFolder, outputFolderEllipses, pathUtils)
+    projectRoot = pathUtils.findProjectRoot(inputFolder);
 
     cfg.projectRoot = projectRoot;
     cfg.inputPath = fullfile(projectRoot, inputFolder);
@@ -373,29 +322,6 @@ function cfg = addPathConfiguration(cfg, inputFolder, outputFolder, outputFolder
     validatePaths(cfg);
 end
 
-function projectRoot = find_project_root(inputFolder)
-    searchPath = pwd;
-    maxLevels = 5;
-
-    for level = 1:maxLevels
-        candidatePath = fullfile(searchPath, inputFolder);
-        if isfolder(candidatePath)
-            projectRoot = searchPath;
-            return;
-        end
-        parentPath = fileparts(searchPath);
-        if strcmp(parentPath, searchPath)
-            break;
-        end
-        searchPath = parentPath;
-    end
-
-    warning('cut_micropads:no_input_folder', ...
-        'Could not find input folder "%s" within %d directory levels. Using current directory as project root.', ...
-        inputFolder, maxLevels);
-    projectRoot = pwd;
-end
-
 function validatePaths(cfg)
     if ~isfolder(cfg.inputPath)
         error('cut_micropads:missing_input', 'Input folder not found: %s', cfg.inputPath);
@@ -420,11 +346,11 @@ function processAllFolders(cfg)
     end
     fprintf('Regions per strip: %d\n\n', cfg.numSquares);
 
-    executeInFolder(cfg.inputPath, @() processPhones(cfg));
+    cfg.pathUtils.executeInFolder(cfg.inputPath, @() processPhones(cfg));
 end
 
 function processPhones(cfg)
-    phoneFolders = getSubFolders('.');
+    phoneFolders = cfg.pathUtils.listSubfolders('.');
     if isempty(phoneFolders)
         warning('cut_micropads:no_phones', 'No phone folders found in input directory');
         return;
@@ -437,7 +363,7 @@ end
 
 function processPhone(phoneName, cfg)
     fprintf('\n=== Processing Phone: %s ===\n', phoneName);
-    executeInFolder(phoneName, @() processImagesInPhone(phoneName, cfg));
+    cfg.pathUtils.executeInFolder(phoneName, @() processImagesInPhone(phoneName, cfg));
 end
 
 function processImagesInPhone(phoneName, cfg)
@@ -453,7 +379,7 @@ function processImagesInPhone(phoneName, cfg)
 
     % Setup Python environment once per phone if AI detection is enabled
     if cfg.useAIDetection
-        ensurePythonSetup(cfg.pythonPath);
+        cfg.yoloUtils.ensurePythonSetup(cfg.pythonPath);
     end
 
     persistentFig = [];
@@ -490,7 +416,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
     fprintf('  -> Processing: %s\n', imageName);
 
-    [img, isValid] = loadImage(imageName);
+    [img, isValid] = cfg.imageIO.loadImage(imageName);
     if ~isValid
         fprintf('  !! Failed to load image\n');
         return;
@@ -533,6 +459,11 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
                 imageName, polygonCoordFile, ellipseCoordFile);
         end
 
+        % Create figure if needed
+        if isempty(fig) || ~isvalid(fig)
+            fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
+        end
+
         % Build read-only preview UI
         buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, loadedPolygons, polygonsFound, ...
                               loadedEllipses, ellipsesFound, initialRotation);
@@ -541,7 +472,10 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         [action, ~, ~] = waitForUserAction(fig);
 
         if strcmp(action, 'stop')
-            return;
+            if isvalid(fig)
+                delete(fig);
+            end
+            error('User stopped execution');
         else
             % No save operation in preview mode - just advance to next image
             success = true;
@@ -551,6 +485,11 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
     % Mode 3: Ellipse-only editing
     if processingMode == 3
+        % Create figure if needed
+        if isempty(fig) || ~isvalid(fig)
+            fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
+        end
+
         % Try loading polygon coordinates for positioning context
         polygonCoordFile = fullfile(outputDirs.polygonDir, cfg.coordinateFileName);
         [loadedPolygons, polygonsFound] = loadPolygonCoordinates(polygonCoordFile, imageName, cfg.numSquares);
@@ -597,7 +536,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
                 % For Mode 3, we only save ellipse outputs
                 % Do NOT save polygon crops or polygon coordinates
-                saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg);
+                cfg.fileIOMgr.saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
 
                 fprintf('  Saved %d elliptical regions\n', size(ellipseData, 1));
             end
@@ -629,57 +568,17 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
 
     if ~isempty(polygonParams)
-        saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation);
+        cfg.fileIOMgr.saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation, cfg.fileIOMgr);
         % Update memory with base polygon coordinates and rotation
         memory = updateMemory(memory, polygonParams, rotation, [imageHeight, imageWidth], ellipseData, cfg, orientation);
 
         % Save ellipse data if ellipse editing was enabled
         if cfg.enableEllipseEditing && ~isempty(ellipseData)
-            saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg);
+            cfg.fileIOMgr.saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
         end
 
         success = true;
     end
-end
-
-function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
-    % Generate default polygon positions using geometry parameters
-    n = cfg.numSquares;
-
-    % Build world coordinates
-    aspect = cfg.geometry.aspectRatio;
-    aspect = max(aspect, eps);
-    totalGridWidth = 1.0;
-
-    % Compute gap size and individual rectangle width
-    gp = cfg.geometry.gapPercentWidth;
-    denom = n + max(n-1, 0) * gp;
-    if denom <= 0
-        denom = max(n, 1);
-    end
-    w = totalGridWidth / denom;
-    gapSizeWorld = gp * w;
-
-    % Calculate height based on individual rectangle width (not total grid width)
-    rectHeightWorld = w / aspect;
-
-    % Build world corners
-    worldCorners = zeros(n, 4, 2);
-    xi = -totalGridWidth / 2;
-    yi = -rectHeightWorld / 2;
-
-    for i = 1:n
-        worldCorners(i, :, :) = [
-            xi,       yi;
-            xi + w,   yi;
-            xi + w,   yi + rectHeightWorld;
-            xi,       yi + rectHeightWorld
-        ];
-        xi = xi + w + gapSizeWorld;
-    end
-
-    % Scale and center to image
-    polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg);
 end
 
 function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg, orientation, rotation)
@@ -722,7 +621,7 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
     end
 
     defaultRecords = cfg.ellipse.defaultRecords;
-    homography = cfg.homography;
+    geomTform = cfg.geomTform;
 
     % Transform default records based on micropad strip orientation
     % ELLIPSE_DEFAULT_RECORDS is defined for horizontal strip layout (reading position)
@@ -744,7 +643,7 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
     unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];
 
     % Compute homography from unit square to polygon
-    tform = homography.compute_homography_from_points(unitSquare, polygonVertices);
+    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, polygonVertices);
 
     % Compute polygon scale (average side length for axis scaling)
     sides = zeros(4, 1);
@@ -767,7 +666,7 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
         ellipseIn.valid = true;
 
         % Transform through homography
-        ellipseOut = homography.transform_ellipse(ellipseIn, tform);
+        ellipseOut = geomTform.homog.transformEllipse(ellipseIn, tform);
 
         if ellipseOut.valid
             % Scale axes by polygon size (normalized -> pixels)
@@ -779,7 +678,7 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
             ];
         else
             % Fallback: simple center transform without shape distortion
-            centerPt = homography.transform_polygon(defaultRecords(i, 1:2), tform);
+            centerPt = geomTform.homog.transformPolygon(defaultRecords(i, 1:2), tform);
             ellipseParams(i, :) = [
                 centerPt(1), centerPt(2), ...
                 defaultRecords(i, 3) * polygonScale, ...
@@ -797,89 +696,11 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
         end
 
         % Normalize rotation to [-180, 180]
-        ellipseParams(i, 5) = homography.normalizeAngle(ellipseParams(i, 5));
+        ellipseParams(i, 5) = geomTform.normalizeAngle(ellipseParams(i, 5));
     end
 end
 
-function bounds = computeEllipseAxisBounds(~, imageSize, cfg)
-    % Compute min/max semi-axis lengths allowed for ellipse editing
-    % No overlap safety - ellipses can be any size up to image extent
-    imgHeight = imageSize(1);
-    imgWidth = imageSize(2);
-    baseExtent = max(imgWidth, imgHeight);
-    minAxis = max(1, baseExtent * cfg.ellipse.minAxisPercent);
-    maxAxis = baseExtent;
-    bounds = struct('minAxis', minAxis, 'maxAxis', maxAxis);
-end
 
-function [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMajor, semiMinor, rotationAngle, bounds)
-    % Clamp ellipse axes to configured bounds and normalize rotation
-    if semiMinor > semiMajor
-        tmp = semiMajor;
-        semiMajor = semiMinor;
-        semiMinor = tmp;
-        rotationAngle = rotationAngle + 90;
-    end
-
-    if nargin < 4 || isempty(bounds)
-        rotationAngle = mod(rotationAngle + 180, 360) - 180;
-        return;
-    end
-
-    minAxis = bounds.minAxis;
-    maxAxis = bounds.maxAxis;
-
-    semiMajor = min(max(semiMajor, minAxis), maxAxis);
-    semiMinor = min(max(semiMinor, minAxis), semiMajor);
-    rotationAngle = mod(rotationAngle + 180, 360) - 180;
-end
-
-function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, ~, bounds)
-    % Helper to instantiate drawellipse overlays with consistent constraints
-    if nargin < 8
-        bounds = [];
-    end
-
-    [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMajor, semiMinor, rotationAngle, bounds);
-
-    ellipseHandle = drawellipse(axHandle, ...
-        'Center', center, ...
-        'SemiAxes', [semiMajor, semiMinor], ...
-        'RotationAngle', rotationAngle, ...
-        'Color', color, ...
-        'LineWidth', 2, ...
-        'FaceAlpha', 0.2, ...
-        'InteractionsAllowed', 'all');
-end
-
-function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg)
-    % Scale world coordinates to fit image with coverage factor
-    n = size(worldCorners, 1);
-    polygons = zeros(n, 4, 2);
-
-    % Find bounding box of all world corners (width only needed for scaling)
-    allX = worldCorners(:, :, 1);
-    minX = min(allX(:));
-    maxX = max(allX(:));
-
-    worldW = maxX - minX;
-
-    % Scale to fit image width with coverage factor
-    targetWidth = imageWidth * cfg.coverage;
-    scale = targetWidth / worldW;
-
-    % Center in image
-    centerX = imageWidth / 2;
-    centerY = imageHeight / 2;
-
-    for i = 1:n
-        corners = squeeze(worldCorners(i, :, :));
-        scaled = corners * scale;
-        scaled(:, 1) = scaled(:, 1) + centerX;
-        scaled(:, 2) = scaled(:, 2) + centerY;
-        polygons(i, :, :) = scaled;
-    end
-end
 
 %% -------------------------------------------------------------------------
 %% Interactive UI
@@ -894,7 +715,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
 
     % Create figure if needed
     if isempty(fig) || ~isvalid(fig)
-        fig = createFigure(imageName, phoneName, cfg);
+        fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
     end
 
     % Use rotation from memory (or 0 if no memory)
@@ -1118,7 +939,15 @@ function clearAllUIElements(fig, guiData)
     % Clean up timer if still running
     if ~isempty(guiData) && isstruct(guiData)
         if isfield(guiData, 'aiTimer')
-            safeStopTimer(guiData.aiTimer);
+            if isfield(guiData, 'cfg') && isfield(guiData.cfg, 'micropadUI')
+                guiData.cfg.micropadUI.safeStopTimer(guiData.aiTimer);
+            elseif isvalid(guiData.aiTimer)
+                try
+                    stop(guiData.aiTimer);
+                catch
+                end
+                delete(guiData.aiTimer);
+            end
             guiData.aiTimer = [];
         end
         if isfield(guiData, 'aiBreathingTimer')
@@ -1250,8 +1079,8 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.autoZoomBounds = [];
 
     % Title and path
-    guiData.titleHandle = createTitle(fig, phoneName, imageName, cfg);
-    guiData.pathHandle = createPathDisplay(fig, phoneName, imageName, cfg);
+    guiData.titleHandle = cfg.micropadUI.createTitle(fig, phoneName, imageName, cfg);
+    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
 
     % Image display (show image with initial rotation if any)
     if initialRotation ~= 0
@@ -1262,10 +1091,10 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
         guiData.currentImg = displayImg;
     end
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
-    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % Create editable polygons
-    guiData.polygons = createPolygons(initialPolygons, cfg, fig);
+    guiData.polygons = cfg.micropadUI.createPolygons(initialPolygons, cfg, @(src, evt) updatePolygonLabelsCallback(src, evt));
     [guiData.polygons, ~, guiData.orientation] = assignPolygonLabels(guiData.polygons);
 
     numInitialPolygons = numel(guiData.polygons);
@@ -1274,8 +1103,8 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     for idx = 1:numInitialPolygons
         polyHandle = guiData.polygons{idx};
         if isvalid(polyHandle)
-            baseColor = getConcentrationColor(idx - 1, totalForColor);
-            setPolygonColor(polyHandle, baseColor, 0.25);
+            baseColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
+            cfg.micropadUI.setPolygonColor(polyHandle, baseColor, 0.25);
             guiData.aiBaseColors(idx, :) = baseColor;
         else
             guiData.aiBaseColors(idx, :) = [NaN NaN NaN];
@@ -1296,22 +1125,25 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.asyncDetection.generation = 0;        % Generation counter to invalidate stale detections
 
     % Add concentration labels
-    guiData.polygonLabels = addPolygonLabels(guiData.polygons, guiData.imgAxes);
+    guiData.polygonLabels = cfg.micropadUI.addPolygonLabels(guiData.polygons, guiData.imgAxes);
 
     % Rotation panel (preset buttons only)
-    guiData.rotationPanel = createRotationButtonPanel(fig, cfg);
+    guiData.rotationPanel = cfg.micropadUI.createRotationButtonPanel(fig, cfg, @applyRotation_UI);
 
     % Run AI button sits above rotation controls for manual detection refresh
-    guiData.runAIButton = createRunAIButton(fig, cfg);
+    guiData.runAIButton = cfg.micropadUI.createRunAIButton(fig, cfg, @(~,~) rerunAIDetection(fig, cfg));
 
     % Zoom panel
-    [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
 
     % Buttons
-    guiData.cutButtonPanel = createEditButtonPanel(fig, cfg);
-    guiData.stopButton = createStopButton(fig, cfg);
-    guiData.instructionText = createInstructions(fig, cfg);
-    guiData.aiStatusLabel = createAIStatusLabel(fig, cfg);
+    guiData.cutButtonPanel = cfg.micropadUI.createEditButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'skip'));
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
+    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, []);
+    guiData.aiStatusLabel = cfg.micropadUI.createAIStatusLabel(fig, cfg);
 
     guiData.action = '';
 
@@ -1331,11 +1163,11 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
         t = timer('StartDelay', 0.1, ...
                   'TimerFcn', @(~,~) runDeferredAIDetection(fig, cfg), ...
                   'ExecutionMode', 'singleShot');
-        start(t);
 
-        % Store timer handle for cleanup
+        % Store timer handle before starting to prevent leak on error
         guiData.aiTimer = t;
         set(fig, 'UserData', guiData);
+        start(t);
     end
 end
 
@@ -1372,11 +1204,14 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, elli
                                   'HorizontalAlignment', 'center');
 
     % Preview axes fill the middle band between titles and bottom controls
-    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = createPreviewAxes(fig, img, polygonParams, ellipseData, cfg);
+    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, polygonParams, ellipseData, cfg);
 
     % Bottom controls
-    guiData.stopButton = createStopButton(fig, cfg);
-    guiData.buttonPanel = createPreviewButtons(fig, cfg);
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
+    guiData.buttonPanel = cfg.micropadUI.createPreviewButtons(fig, cfg, struct( ...
+        'accept', @(~,~) setAction(fig, 'accept'), ...
+        'retry', @(~,~) setAction(fig, 'retry'), ...
+        'skip', @(~,~) setAction(fig, 'skip')));
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
@@ -1429,7 +1264,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                           'HorizontalAlignment', 'center');
 
     % Image display with polygons
-    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % Add double-click background reset callback
     set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
@@ -1440,7 +1275,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.polygonHandles = cell(numConcentrations, 1);
     for i = 1:numConcentrations
         vertices = squeeze(guiData.displayPolygons(i, :, :));
-        polygonColor = getConcentrationColor(i - 1, numConcentrations);
+        polygonColor = cfg.micropadUI.getConcentrationColor(i - 1, numConcentrations);
         guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
                                                 'Color', polygonColor, 'LineWidth', 2, ...
                                                 'FaceAlpha', 0.15, 'InteractionsAllowed', 'translate', ...
@@ -1477,7 +1312,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     oldEllipses = guiData.memory.ellipses{concIdx};
 
                     % Scale ellipses to new polygon geometry
-                    scaledEllipses = scaleEllipsesForPolygonChange(oldPoly, newPoly, oldEllipses, cfg, guiData.imageSize);
+                    scaledEllipses = cfg.geomTform.geom.scaleEllipsesForPolygonChange(oldPoly, newPoly, oldEllipses, guiData.imageSize, cfg);
                     guiData.memory.ellipses{concIdx} = scaledEllipses;
                 end
             end
@@ -1486,11 +1321,11 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
 
     displayPolygons = guiData.displayPolygons;
     for concIdx = 1:numConcentrations
-        polygonColor = getConcentrationColor(concIdx - 1, numConcentrations);
+        polygonColor = cfg.micropadUI.getConcentrationColor(concIdx - 1, numConcentrations);
         currentPolygon = squeeze(displayPolygons(concIdx, :, :));
 
         % Compute axis bounds for this polygon
-        ellipseBounds = computeEllipseAxisBounds(currentPolygon, guiData.imageSize, cfg);
+        ellipseBounds = cfg.geomTform.geom.computeEllipseAxisBounds(currentPolygon, guiData.imageSize, cfg);
 
         % Check if we have memory for this concentration
         if hasMemory && concIdx <= numel(guiData.memory.ellipses) && ...
@@ -1514,8 +1349,8 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     ellipseRotation = ellipseParams(repIdx, 5);
                 end
 
-                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseCenter, ...
-                    ellipseSemiMajor, ellipseSemiMinor, ellipseRotation, polygonColor, cfg, ellipseBounds);
+                guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseCenter, ...
+                    ellipseSemiMajor, ellipseSemiMinor, ellipseRotation, polygonColor, ellipseBounds, cfg);
                 ellipseIdx = ellipseIdx + 1;
             end
         else
@@ -1523,8 +1358,8 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
             ellipseParams = transformDefaultEllipsesToPolygon(currentPolygon, cfg, orientation, rotation);
 
             for repIdx = 1:numReplicates
-                guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
-                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), polygonColor, cfg, ellipseBounds);
+                guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
+                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), polygonColor, ellipseBounds, cfg);
                 ellipseIdx = ellipseIdx + 1;
             end
         end
@@ -1534,11 +1369,13 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
     guiData.focusedPolygonIndex = 0;  % 0 = none/all, 1-N = specific polygon
-    [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = createEllipseZoomPanel(fig, cfg);
-
+            [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = cfg.micropadUI.createEllipseZoomPanel(fig, cfg, ...
+                @(~,~) navigateToPrevPolygon(fig, cfg), ...
+                @(~,~) navigateToNextPolygon(fig, cfg), ...
+                @(~,~) resetZoomEllipse(fig, cfg));
     % Action buttons panel
-    guiData.ellipseButtonPanel = createEllipseEditingButtonPanel(fig, cfg);
-    guiData.stopButton = createStopButton(fig, cfg);
+    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Instructions
     instructionText = 'Draw 21 ellipses (3 per micropad). Colors match polygons. Click DONE when finished.';
@@ -1596,7 +1433,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
                           'HorizontalAlignment', 'center');
 
     % Image display (NO polygon overlays in grid mode)
-    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % Add double-click background reset callback
     set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
@@ -1619,16 +1456,16 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     % In grid mode, use rotation angles from ELLIPSE_DEFAULT_RECORDS (no homography)
     defaultRotations = cfg.ellipse.defaultRecords(:, 5);  % Column 5 = rotation
     ellipseIdx = 1;
-    gridBounds = computeEllipseAxisBounds([], guiData.imageSize, cfg);
+    gridBounds = cfg.geomTform.geom.computeEllipseAxisBounds([], guiData.imageSize, cfg);
     for groupIdx = 1:numGroups
         % Use cold-to-hot color gradient
-        ellipseColor = getConcentrationColor(groupIdx - 1, numGroups);
+        ellipseColor = cfg.micropadUI.getConcentrationColor(groupIdx - 1, numGroups);
 
         for repIdx = 1:numReplicates
             centerPos = ellipsePositions(ellipseIdx, :);
 
-            guiData.ellipses{ellipseIdx} = createEllipseROI(guiData.imgAxes, centerPos, ...
-                defaultSemiMajor, defaultSemiMinor, defaultRotations(repIdx), ellipseColor, cfg, gridBounds);
+            guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, centerPos, ...
+                defaultSemiMajor, defaultSemiMinor, defaultRotations(repIdx), ellipseColor, gridBounds, cfg);
             ellipseIdx = ellipseIdx + 1;
         end
     end
@@ -1637,11 +1474,14 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
     guiData.focusedPolygonIndex = 0;  % Always 0 in grid mode (no polygons)
-    [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
 
     % Action buttons panel
-    guiData.ellipseButtonPanel = createEllipseEditingButtonPanel(fig, cfg);
-    guiData.stopButton = createStopButton(fig, cfg);
+    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Instructions
     instructionText = sprintf('Grid Mode: Draw %d ellipses (%d groups × %d replicates). Colors indicate groups. Click DONE when finished.', ...
@@ -1661,6 +1501,10 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
                                ellipseData, hasEllipses, rotation)
     % Build read-only preview UI for Mode 4 (both editing disabled)
     % Displays existing coordinate overlays without editing capability
+
+    % Clear previous UI elements before building new UI
+    oldGuiData = get(fig, 'UserData');
+    clearAllUIElements(fig, oldGuiData);
 
     set(fig, 'Name', sprintf('Preview Mode - %s - %s', phoneName, imageName));
 
@@ -1700,7 +1544,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
                           'HorizontalAlignment', 'center');
 
     % Image display
-    [guiData.imgAxes, guiData.imgHandle] = createImageAxes(fig, displayImg, cfg);
+    [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     displayPolygonsPreview = convertBasePolygonsToDisplay(polygonParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
     displayEllipsesPreview = convertBaseEllipsesToDisplay(ellipseData, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
@@ -1711,7 +1555,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
         guiData.polygonHandles = cell(numPolygons, 1);
         for i = 1:numPolygons
             vertices = squeeze(displayPolygonsPreview(i, :, :));
-            polygonColor = getConcentrationColor(i - 1, numPolygons);
+            polygonColor = cfg.micropadUI.getConcentrationColor(i - 1, numPolygons);
             guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
                                                     'Color', polygonColor, 'LineWidth', 2, ...
                                                     'FaceAlpha', 0.15, 'InteractionsAllowed', 'none');
@@ -1737,7 +1581,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
             else
                 numConcentrations = max(displayEllipsesPreview(:, 1)) + 1;
             end
-            ellipseColor = getConcentrationColor(concIdx - 1, numConcentrations);
+            ellipseColor = cfg.micropadUI.getConcentrationColor(concIdx - 1, numConcentrations);
 
             guiData.ellipseHandles{i} = drawellipse(guiData.imgAxes, ...
                 'Center', center, ...
@@ -1751,16 +1595,19 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     % Zoom panel
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
-    [guiData.zoomSlider, guiData.zoomValue] = createZoomPanel(fig, cfg);
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
 
     % NEXT button (replaces ACCEPT in read-only mode)
     uicontrol('Parent', fig, 'Style', 'pushbutton', 'String', 'NEXT', ...
               'Units', 'normalized', 'Position', [0.80 0.02 0.15 0.06], ...
               'FontSize', cfg.ui.fontSize.button, ...
-              'Callback', @(~,~) set(fig, 'UserData', setfield(get(fig, 'UserData'), 'action', 'accept')));
+              'Callback', @(~,~) setAction(fig, 'accept'));
 
     % STOP button
-    guiData.stopButton = createStopButton(fig, cfg);
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Instructions
     overlayInfo = '';
@@ -1784,328 +1631,6 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     set(fig, 'UserData', guiData);
 end
 
-%% -------------------------------------------------------------------------
-%% UI Components
-%% -------------------------------------------------------------------------
-
-function fig = createFigure(imageName, phoneName, cfg)
-    titleText = sprintf('microPAD Processor - %s - %s', phoneName, imageName);
-    fig = figure('Name', titleText, ...
-                'Units', 'normalized', 'Position', cfg.ui.positions.figure, ...
-                'MenuBar', 'none', 'ToolBar', 'none', ...
-                'Color', cfg.ui.colors.background, 'KeyPressFcn', @keyPressHandler, ...
-                'CloseRequestFcn', @(src, ~) cleanupAndClose(src));
-
-    drawnow limitrate;
-    pause(0.05);
-    set(fig, 'WindowState', 'maximized');
-    figure(fig);
-    drawnow limitrate;
-end
-
-function titleHandle = createTitle(fig, phoneName, imageName, cfg)
-    titleText = sprintf('%s - %s', phoneName, imageName);
-    titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                           'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
-                           'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                           'ForegroundColor', cfg.ui.colors.foreground, ...
-                           'BackgroundColor', cfg.ui.colors.background, ...
-                           'HorizontalAlignment', 'center');
-end
-
-function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
-    pathText = sprintf('Path: %s | Image: %s', phoneName, imageName);
-    pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
-                          'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                          'ForegroundColor', cfg.ui.colors.path, ...
-                          'BackgroundColor', cfg.ui.colors.background, ...
-                          'HorizontalAlignment', 'center');
-end
-
-function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
-    imgAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.image);
-    imgHandle = imshow(img, 'Parent', imgAxes, 'InitialMagnification', 'fit');
-    axis(imgAxes, 'image');
-    axis(imgAxes, 'tight');
-    hold(imgAxes, 'on');
-end
-
-function stopButton = createStopButton(fig, cfg)
-    stopButton = uicontrol('Parent', fig, 'Style', 'pushbutton', ...
-                          'String', 'STOP', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.stopButton, ...
-                          'BackgroundColor', cfg.ui.colors.stop, 'ForegroundColor', cfg.ui.colors.foreground, ...
-                          'Callback', @(~,~) stopExecution(fig));
-end
-
-function runAIButton = createRunAIButton(fig, cfg)
-    runAIButton = uicontrol('Parent', fig, 'Style', 'pushbutton', ...
-                           'String', 'RUN AI', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-                           'Units', 'normalized', 'Position', cfg.ui.positions.runAIButton, ...
-                           'BackgroundColor', [0.30 0.50 0.70], ...
-                           'ForegroundColor', cfg.ui.colors.foreground, ...
-                           'TooltipString', 'Run YOLO detection on the current view', ...
-                           'Callback', @(~,~) rerunAIDetection(fig, cfg));
-end
-
-function polygons = createPolygons(initialPolygons, cfg, ~)
-    % Create drawpolygon objects from initial positions with color gradient
-    n = size(initialPolygons, 1);
-    polygons = cell(1, n);
-
-    for i = 1:n
-        pos = squeeze(initialPolygons(i, :, :));
-
-        % Apply color gradient based on concentration index (zero-based)
-        concentrationIndex = i - 1;
-        polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
-
-        polygons{i} = drawpolygon('Position', pos, ...
-                                 'Color', polyColor, ...
-                                 'LineWidth', cfg.ui.polygon.lineWidth, ...
-                                 'MarkerSize', 8, ...
-                                 'Selected', false);
-
-        % Ensure consistent face styling even on releases that lack name-value support
-        setPolygonColor(polygons{i}, polyColor, 0.25);
-
-        % Store initial valid position
-        setappdata(polygons{i}, 'LastValidPosition', pos);
-
-        % Add listener for quadrilateral enforcement
-        listenerHandle = addlistener(polygons{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(polygons{i}));
-        setappdata(polygons{i}, 'ListenerHandle', listenerHandle);
-
-        % Add listener for label updates when user drags vertices
-        labelUpdateListener = addlistener(polygons{i}, 'ROIMoved', @(src, evt) updatePolygonLabelsCallback(src, evt));
-        setappdata(polygons{i}, 'LabelUpdateListener', labelUpdateListener);
-    end
-end
-
-function labelHandles = addPolygonLabels(polygons, axesHandle)
-    % Add text labels showing concentration number on each polygon
-    % Labels positioned at TOP edge of polygon (per user requirement)
-    %
-    % Inputs:
-    %   polygons - cell array of drawpolygon objects
-    %   axesHandle - axes where labels should be drawn
-    %
-    % Output:
-    %   labelHandles - cell array of text object handles
-
-    n = numel(polygons);
-    labelHandles = cell(1, n);
-
-    for i = 1:n
-        poly = polygons{i};
-        if ~isvalid(poly)
-            continue;
-        end
-
-        % Get polygon position
-        pos = poly.Position;
-        if isempty(pos) || size(pos, 1) < 3
-            continue;
-        end
-
-        % CHANGED: Position at TOP of polygon, not center
-        % Use image-relative units (polygon height fraction) instead of fixed pixels
-        % for zoom/rotation consistency
-        centerX = mean(pos(:, 1));
-        minY = min(pos(:, 2));  % Top edge (smallest Y value)
-        polyHeight = max(pos(:, 2)) - minY;
-        labelY = minY - max(15, polyHeight * 0.1);  % 10% of polygon height or 15px minimum
-
-        % Create label text
-        concentrationIndex = i - 1;  % Zero-based
-        labelText = sprintf('con_%d', concentrationIndex);
-
-        % Create text object with dark background for visibility
-        % NOTE: BackgroundColor only supports 3-element RGB (no alpha channel)
-        labelHandles{i} = text(axesHandle, centerX, labelY, labelText, ...
-                              'HorizontalAlignment', 'center', ...
-                              'VerticalAlignment', 'bottom', ...  % CHANGED: anchor bottom to position
-                              'FontSize', 12, ...
-                              'FontWeight', 'bold', ...
-                              'Color', [1 1 1], ...  % White text
-                              'BackgroundColor', [0.2 0.2 0.2], ...  % Dark gray (opaque)
-                              'EdgeColor', 'none', ...
-                              'Margin', 2);
-    end
-end
-
-function enforceQuadrilateral(polygon)
-    % Ensure polygon remains a quadrilateral by reverting invalid changes
-    if ~isvalid(polygon)
-        return;
-    end
-
-    pos = polygon.Position;
-    if size(pos, 1) ~= 4
-        % Revert to last valid state
-        lastValid = getappdata(polygon, 'LastValidPosition');
-        if ~isempty(lastValid)
-            polygon.Position = lastValid;
-        end
-        warning('cut_micropads:invalid_polygon', 'Polygon must have exactly 4 vertices. Reverting change.');
-    else
-        % Store valid state
-        setappdata(polygon, 'LastValidPosition', pos);
-    end
-end
-
-function color = getConcentrationColor(concentrationIndex, totalConcentrations)
-    % Generate spectrum gradient: blue (cold) → red (hot)
-    % Uses HSV color space for maximum visual distinction
-    %
-    % Inputs:
-    %   concentrationIndex - zero-based index (0 to totalConcentrations-1)
-    %   totalConcentrations - total number of concentration regions
-    %
-    % Output:
-    %   color - [R G B] triplet in range [0, 1]
-
-    if totalConcentrations <= 1
-        color = [0.0 0.5 1.0];  % Default blue for single region
-        return;
-    end
-
-    % Normalize index to [0, 1]
-    t = concentrationIndex / (totalConcentrations - 1);
-
-    % Interpolate hue from 240° (blue) to 0° (red) through spectrum
-    hue = (1 - t) * 240 / 360;  % 240° = blue, 0° = red
-    sat = 1.0;  % Full saturation
-    val = 1.0;  % Full value/brightness
-
-    % Convert HSV to RGB
-    color = hsv2rgb([hue, sat, val]);
-end
-
-function setPolygonColor(polygonHandle, colorValue, faceAlpha)
-    % Apply edge/face color updates with compatibility guards
-    if nargin < 3
-        faceAlpha = [];
-    end
-
-    if isempty(polygonHandle) || ~isvalid(polygonHandle)
-        return;
-    end
-
-    if ~isempty(colorValue) && all(isfinite(colorValue))
-        set(polygonHandle, 'Color', colorValue);
-        if isprop(polygonHandle, 'FaceColor')
-            set(polygonHandle, 'FaceColor', colorValue);
-        end
-    end
-
-    if ~isempty(faceAlpha) && isprop(polygonHandle, 'FaceAlpha')
-        set(polygonHandle, 'FaceAlpha', faceAlpha);
-    end
-end
-
-function cutButtonPanel = createEditButtonPanel(fig, cfg)
-    cutButtonPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                             'Position', cfg.ui.positions.cutButtonPanel, ...
-                             'BackgroundColor', cfg.ui.colors.panel, ...
-                             'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground);
-
-    % APPLY button
-    uicontrol('Parent', cutButtonPanel, 'Style', 'pushbutton', ...
-             'String', 'APPLY', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', [0.15 0.35 0.30 0.35], ...
-             'BackgroundColor', cfg.ui.colors.apply, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) setAction(fig, 'accept'));
-
-    % SKIP button
-    uicontrol('Parent', cutButtonPanel, 'Style', 'pushbutton', ...
-             'String', 'SKIP', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', [0.55 0.35 0.30 0.35], ...
-             'BackgroundColor', cfg.ui.colors.skip, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) setAction(fig, 'skip'));
-end
-
-function instructionText = createInstructions(fig, cfg)
-    instructionString = 'Mouse = Drag Vertices | Buttons = Rotate | RUN AI = Detect Polygons | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
-
-    instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionString, ...
-             'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
-             'FontSize', cfg.ui.fontSize.instruction, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'BackgroundColor', cfg.ui.colors.background, 'HorizontalAlignment', 'center');
-end
-
-function statusLabel = createAIStatusLabel(fig, cfg)
-    if nargin < 2 || isempty(cfg) || ~isfield(cfg, 'ui')
-        position = [0.25 0.905 0.50 0.035];
-        fontSize = 13;
-        infoColor = [1 1 0.3];
-        backgroundColor = 'black';
-    else
-        position = cfg.ui.positions.aiStatus;
-        fontSize = cfg.ui.fontSize.status;
-        infoColor = cfg.ui.colors.info;
-        backgroundColor = cfg.ui.colors.background;
-    end
-
-    statusLabel = uicontrol('Parent', fig, 'Style', 'text', ...
-                           'String', 'AI DETECTION RUNNING', ...
-                           'Units', 'normalized', ...
-                           'Position', position, ...
-                           'FontSize', fontSize, ...
-                           'FontWeight', 'bold', ...
-                           'ForegroundColor', infoColor, ...
-                           'BackgroundColor', backgroundColor, ...
-                           'HorizontalAlignment', 'center', ...
-                           'Visible', 'off');
-end
-
-function buttonPanel = createPreviewButtons(fig, cfg)
-    buttonPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                         'Position', cfg.ui.positions.previewPanel, ...
-                         'BackgroundColor', cfg.ui.colors.panel, ...
-                         'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
-                         'BorderWidth', cfg.ui.polygon.borderWidth);
-
-    buttons = {'ACCEPT', 'RETRY', 'SKIP'};
-    positions = {[0.05 0.25 0.25 0.50], [0.375 0.25 0.25 0.50], [0.70 0.25 0.25 0.50]};
-    colors = {cfg.ui.colors.accept, cfg.ui.colors.retry, cfg.ui.colors.skip};
-    actions = {'accept', 'retry', 'skip'};
-
-    for i = 1:numel(buttons)
-        uicontrol('Parent', buttonPanel, 'Style', 'pushbutton', ...
-                 'String', buttons{i}, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold', ...
-                 'Units', 'normalized', 'Position', positions{i}, ...
-                 'BackgroundColor', colors{i}, 'ForegroundColor', cfg.ui.colors.foreground, ...
-                 'Callback', @(~,~) setAction(fig, actions{i}));
-    end
-end
-
-function buttonPanel = createEllipseEditingButtonPanel(fig, cfg)
-    % Create button panel for ellipse editing mode (DONE, BACK)
-    buttonPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                         'Position', cfg.ui.positions.cutButtonPanel, ...
-                         'BackgroundColor', cfg.ui.colors.panel, ...
-                         'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground);
-
-    % DONE button (green, accepts ellipse data)
-    uicontrol('Parent', buttonPanel, 'Style', 'pushbutton', ...
-             'String', 'DONE', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', [0.15 0.35 0.30 0.35], ...
-             'BackgroundColor', cfg.ui.colors.accept, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) setAction(fig, 'accept'));
-
-    % BACK button (red, returns to polygon editing)
-    uicontrol('Parent', buttonPanel, 'Style', 'pushbutton', ...
-             'String', 'BACK', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', [0.55 0.35 0.30 0.35], ...
-             'BackgroundColor', cfg.ui.colors.retry, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) setAction(fig, 'back'));
-end
-
-
-
-
 function showAIProgressIndicator(fig, show)
     % Toggle AI detection status indicator and polygon breathing animation
     if ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
@@ -2116,24 +1641,21 @@ function showAIProgressIndicator(fig, show)
     if isempty(guiData) || ~isstruct(guiData) || ~strcmp(guiData.mode, 'editing')
         return;
     end
+    if ~isfield(guiData, 'cfg') || ~isfield(guiData.cfg, 'micropadUI')
+        return;
+    end
+
+    cfg = guiData.cfg;
+    ui = cfg.micropadUI;
+
+    % Delegate label handling to shared UI helper
+    ui.showAIProgressIndicator(fig, show, cfg);
+    guiData = get(fig, 'UserData');
 
     if show
-        % Ensure status label exists and is visible
-        if ~isfield(guiData, 'aiStatusLabel') || ~isvalid(guiData.aiStatusLabel)
-            cfgForLabel = [];
-            if isfield(guiData, 'cfg')
-                cfgForLabel = guiData.cfg;
-            end
-            guiData.aiStatusLabel = createAIStatusLabel(fig, cfgForLabel);
-        end
-        set(guiData.aiStatusLabel, 'String', 'AI DETECTION RUNNING', 'Visible', 'on');
-        uistack(guiData.aiStatusLabel, 'top');
+        guiData = stopAIBreathingTimer(guiData, ui);
+        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
 
-        % Capture current polygon colors as animation baseline
-        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
-
-        % Start breathing animation timer if polygons exist
-        guiData = stopAIBreathingTimer(guiData);
         if ~isempty(guiData.aiBaseColors)
             guiData.aiBreathingStart = tic;
             guiData.aiBreathingFrequency = 0.8;            % Hz (slow breathing cadence)
@@ -2141,7 +1663,7 @@ function showAIProgressIndicator(fig, show)
             guiData.aiBreathingDimFactor = 0.22;           % Max dim amount during exhale (22%)
             guiData.aiBreathingTimer = timer(...
                 'Name', 'microPAD-AI-breathing', ...
-                'Period', 1/45, ...                        % ~22 ms (≈45 FPS)
+                'Period', 1/45, ...                        % ~22 ms (~45 FPS)
                 'ExecutionMode', 'fixedRate', ...
                 'BusyMode', 'queue', ...
                 'TasksToExecute', Inf, ...
@@ -2151,35 +1673,31 @@ function showAIProgressIndicator(fig, show)
 
         drawnow limitrate;
     else
-        % Hide status label if present
-        if isfield(guiData, 'aiStatusLabel') && isvalid(guiData.aiStatusLabel)
-            set(guiData.aiStatusLabel, 'Visible', 'off');
-        end
-
-        % Stop animation timer and restore base colors
-        guiData = stopAIBreathingTimer(guiData);
-        if isfield(guiData, 'polygons') && iscell(guiData.polygons) && ~isempty(guiData.aiBaseColors)
-            numRestore = min(size(guiData.aiBaseColors, 1), numel(guiData.polygons));
-            for idx = 1:numRestore
-                poly = guiData.polygons{idx};
-                baseColor = guiData.aiBaseColors(idx, :);
-                if isvalid(poly) && all(isfinite(baseColor))
-                    setPolygonColor(poly, baseColor, 0.25);
-                end
-            end
-            drawnow limitrate;
-        end
-
-        % Refresh baseline colors to reflect final state
-        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+        guiData = stopAIBreathingTimer(guiData, ui);
+        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
     end
 
     set(fig, 'UserData', guiData);
 end
 
-function guiData = stopAIBreathingTimer(guiData)
-    if isfield(guiData, 'aiBreathingTimer')
-        safeStopTimer(guiData.aiBreathingTimer);
+function guiData = stopAIBreathingTimer(guiData, ui)
+    if nargin < 2 || isempty(ui)
+        ui = [];
+        if isfield(guiData, 'cfg') && isfield(guiData.cfg, 'micropadUI')
+            ui = guiData.cfg.micropadUI;
+        end
+    end
+
+    if isfield(guiData, 'aiBreathingTimer') && ~isempty(guiData.aiBreathingTimer)
+        if ~isempty(ui)
+            ui.safeStopTimer(guiData.aiBreathingTimer);
+        elseif isvalid(guiData.aiBreathingTimer)
+            try
+                stop(guiData.aiBreathingTimer);
+            catch
+            end
+            delete(guiData.aiBreathingTimer);
+        end
     end
     guiData.aiBreathingTimer = [];
     guiData.aiBreathingStart = [];
@@ -2191,25 +1709,6 @@ function guiData = stopAIBreathingTimer(guiData)
     end
     if isfield(guiData, 'aiBreathingDimFactor')
         guiData.aiBreathingDimFactor = [];
-    end
-end
-
-function baseColors = capturePolygonColors(polygons)
-    baseColors = [];
-    if isempty(polygons) || ~iscell(polygons)
-        return;
-    end
-
-    numPolygons = numel(polygons);
-    baseColors = nan(numPolygons, 3);
-
-    for idx = 1:numPolygons
-        if isvalid(polygons{idx})
-            color = get(polygons{idx}, 'Color');
-            if numel(color) == 3
-                baseColors(idx, :) = color;
-            end
-        end
     end
 end
 
@@ -2231,6 +1730,10 @@ function animatePolygonBreathing(fig)
     if ~isfield(guiData, 'aiBreathingStart') || isempty(guiData.aiBreathingStart)
         return;
     end
+    if ~isfield(guiData, 'cfg') || ~isfield(guiData.cfg, 'micropadUI')
+        return;
+    end
+    ui = guiData.cfg.micropadUI;
     defaultsUpdated = false;
     if ~isfield(guiData, 'aiBreathingFrequency') || isempty(guiData.aiBreathingFrequency)
         guiData.aiBreathingFrequency = 0.8;
@@ -2265,7 +1768,7 @@ function animatePolygonBreathing(fig)
         if isvalid(poly) && all(isfinite(baseColor))
             whitened = baseColor * (1 - brightenMix) + brightenMix;
             newColor = min(max(whitened * dimScale, 0), 1);
-            setPolygonColor(poly, newColor, []);
+            ui.setPolygonColor(poly, newColor, []);
         end
     end
 
@@ -2297,7 +1800,11 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
     reusePolygons = hasPolygons && all(validMask) && numel(guiData.polygons) == targetCount;
 
     if reusePolygons
-        updatePolygonPositions(guiData.polygons, newPolygons);
+        labelHandles = [];
+        if isfield(guiData, 'polygonLabels')
+            labelHandles = guiData.polygonLabels;
+        end
+        updatePolygonPositions(guiData.polygons, newPolygons, labelHandles, cfg.micropadUI);
     else
         % Clean up existing polygons if present
         if hasPolygons
@@ -2308,7 +1815,7 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
             end
         end
 
-        guiData.polygons = createPolygons(newPolygons, cfg, fig);
+        guiData.polygons = cfg.micropadUI.createPolygons(newPolygons, cfg, @(src, evt) updatePolygonLabelsCallback(src, evt));
     end
 
     % Reorder polygons to enforce gradient ordering
@@ -2331,7 +1838,7 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
                 end
             end
         end
-        guiData.polygonLabels = addPolygonLabels(guiData.polygons, guiData.imgAxes);
+        guiData.polygonLabels = cfg.micropadUI.addPolygonLabels(guiData.polygons, guiData.imgAxes);
     elseif ~isempty(order)
         guiData.polygonLabels = guiData.polygonLabels(order);
     end
@@ -2342,8 +1849,8 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
     for idx = 1:numPolygons
         polyHandle = guiData.polygons{idx};
         if isvalid(polyHandle)
-            gradColor = getConcentrationColor(idx - 1, totalForColor);
-            setPolygonColor(polyHandle, gradColor, 0.25);
+            gradColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
+            cfg.micropadUI.setPolygonColor(polyHandle, gradColor, 0.25);
 
         end
     end
@@ -2355,215 +1862,10 @@ function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig)
                 set(labelHandle, 'String', sprintf('con_%d', idx - 1));
             end
         end
-        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        cfg.micropadUI.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
     end
 
-    guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
-end
-
-function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxes(fig, img, polygonParams, ellipseData, cfg)
-    % Left: original with overlays
-    leftAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.previewLeft);
-    leftImgHandle = imshow(img, 'Parent', leftAxes, 'InitialMagnification', 'fit');
-    axis(leftAxes, 'image');
-    axis(leftAxes, 'tight');
-    title(leftAxes, 'Original Image', ...
-          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
-    hold(leftAxes, 'on');
-
-    % Draw polygon overlays
-    for i = 1:size(polygonParams, 1)
-        poly = squeeze(polygonParams(i,:,:));
-        if size(poly, 1) >= 3
-            concentrationIndex = i - 1;
-            polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
-
-            plot(leftAxes, [poly(:,1); poly(1,1)], [poly(:,2); poly(1,2)], ...
-                 'Color', polyColor, 'LineWidth', cfg.ui.polygon.lineWidth);
-
-            % Position label at bottom-right of polygon
-            bottomRightX = max(poly(:,1));
-            bottomRightY = max(poly(:,2));
-            hText = text(leftAxes, bottomRightX, bottomRightY, sprintf('con_%d', i-1), ...
-                 'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
-                 'FontSize', cfg.ui.fontSize.info, 'FontWeight', 'bold', ...
-                 'Color', cfg.ui.colors.info, 'BackgroundColor', [0 0 0 0.6], ...
-                 'EdgeColor', 'none', 'Margin', 2);
-            % Ensure text renders above other elements
-            uistack(hText, 'top');
-        end
-    end
-
-    % Draw ellipse overlays if ellipse editing was enabled
-    if ~isempty(ellipseData) && cfg.enableEllipseEditing
-        for i = 1:size(ellipseData, 1)
-            if ellipseData(i, 3) > 0
-                concIdx = ellipseData(i, 1);
-                x = ellipseData(i, 3);
-                y = ellipseData(i, 4);
-                a = ellipseData(i, 5);
-                b = ellipseData(i, 6);
-                theta = ellipseData(i, 7);
-
-                ellipseColor = getConcentrationColor(concIdx, cfg.numSquares);
-
-                % Draw ellipse using parametric form
-                t = linspace(0, 2*pi, 100);
-                % In image coordinates (Y-down), negate theta to match drawellipse's visual CCW convention
-                theta_rad = deg2rad(-theta);
-                x_ellipse = a * cos(t);
-                y_ellipse = b * sin(t);
-                x_rot = x + x_ellipse * cos(theta_rad) - y_ellipse * sin(theta_rad);
-                y_rot = y + x_ellipse * sin(theta_rad) + y_ellipse * cos(theta_rad);
-
-                plot(leftAxes, x_rot, y_rot, 'Color', ellipseColor, 'LineWidth', 1.5);
-            end
-        end
-    end
-
-    hold(leftAxes, 'off');
-
-    % Right: highlighted regions
-    rightAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.previewRight);
-    maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg);
-    rightImgHandle = imshow(maskedImg, 'Parent', rightAxes, 'InitialMagnification', 'fit');
-    axis(rightAxes, 'image');
-    axis(rightAxes, 'tight');
-    title(rightAxes, 'Masked Preview', ...
-          'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
-end
-
-function maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg)
-    [height, width, ~] = size(img);
-    totalMask = false(height, width);
-
-    % Add polygon masks
-    numRegions = size(polygonParams, 1);
-    for i = 1:numRegions
-        poly = squeeze(polygonParams(i,:,:));
-        if size(poly, 1) >= 3
-            regionMask = poly2mask(poly(:,1), poly(:,2), height, width);
-            totalMask = totalMask | regionMask;
-        end
-    end
-
-    % Add ellipse masks if ellipse editing was enabled
-    if ~isempty(ellipseData) && cfg.enableEllipseEditing
-        for i = 1:size(ellipseData, 1)
-            if ellipseData(i, 3) > 0
-                x = ellipseData(i, 3);
-                y = ellipseData(i, 4);
-                a = ellipseData(i, 5);
-                b = ellipseData(i, 6);
-                theta = ellipseData(i, 7);
-
-                % Create ellipse mask by transforming image coords to ellipse-local coords
-                % In Y-down image coords, use +theta with CCW matrix to invert visual CCW rotation
-                [X, Y] = meshgrid(1:width, 1:height);
-                theta_rad = deg2rad(theta);
-                dx = X - x;
-                dy = Y - y;
-                x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
-                y_rot =  dx * sin(theta_rad) + dy * cos(theta_rad);
-
-                ellipseMask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
-                totalMask = totalMask | ellipseMask;
-            end
-        end
-    end
-
-    dimFactor = cfg.dimFactor;
-    maskedImg = double(img);
-    dimMultiplier = double(totalMask) + (1 - double(totalMask)) * dimFactor;
-    maskedImg = maskedImg .* dimMultiplier;
-    maskedImg = uint8(maskedImg);
-end
-
-%% -------------------------------------------------------------------------
-%% Rotation and Zoom Panel Controls
-%% -------------------------------------------------------------------------
-
-function rotationPanel = createRotationButtonPanel(fig, cfg)
-    % Create rotation panel with preset angle buttons only
-    rotationPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                           'Position', cfg.ui.positions.rotationPanel, ...
-                           'BackgroundColor', cfg.ui.colors.panel, ...
-                           'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
-                           'BorderWidth', 2);
-
-    % Panel label
-    uicontrol('Parent', rotationPanel, 'Style', 'text', 'String', 'Rotation', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.rotationLabel, ...
-             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
-
-    % Rotation preset buttons
-    angles = cfg.ui.rotation.quickAngles;
-    positions = {cfg.ui.layout.quickRotationRow1{1}, cfg.ui.layout.quickRotationRow1{2}, ...
-                 cfg.ui.layout.quickRotationRow2{1}, cfg.ui.layout.quickRotationRow2{2}};
-
-    for i = 1:numel(angles)
-        uicontrol('Parent', rotationPanel, 'Style', 'pushbutton', ...
-                 'String', sprintf('%d%s', angles(i), char(176)), ...
-                 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-                 'Units', 'normalized', 'Position', positions{i}, ...
-                 'BackgroundColor', [0.25 0.25 0.25], ...
-                 'ForegroundColor', cfg.ui.colors.foreground, ...
-                 'Callback', @(~,~) applyRotation_UI(angles(i), fig, cfg));
-    end
-
-end
-
-function [zoomSlider, zoomValue] = createZoomPanel(fig, cfg)
-    % Create zoom panel with slider and control buttons
-    zoomPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                       'Position', cfg.ui.positions.zoomPanel, ...
-                       'BackgroundColor', cfg.ui.colors.panel, ...
-                       'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
-                       'BorderWidth', 2);
-
-    % Panel label
-    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Zoom', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.zoomLabel, ...
-             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
-
-    % Zoom slider
-    zoomSlider = uicontrol('Parent', zoomPanel, 'Style', 'slider', ...
-                          'Min', cfg.ui.zoom.range(1), 'Max', cfg.ui.zoom.range(2), ...
-                          'Value', cfg.ui.zoom.defaultValue, ...
-                          'Units', 'normalized', 'Position', cfg.ui.layout.zoomSlider, ...
-                          'BackgroundColor', cfg.ui.colors.panel, ...
-                          'Callback', @(src, ~) zoomSliderCallback(src, fig, cfg));
-
-    % Zoom value display
-    zoomValue = uicontrol('Parent', zoomPanel, 'Style', 'text', ...
-                         'String', '0%', ...
-                         'Units', 'normalized', 'Position', cfg.ui.layout.zoomValue, ...
-                         'FontSize', cfg.ui.fontSize.value, 'FontWeight', 'bold', ...
-                         'ForegroundColor', cfg.ui.colors.foreground, ...
-                         'BackgroundColor', cfg.ui.colors.panel, ...
-                         'HorizontalAlignment', 'center');
-
-    % Reset button (full image view)
-    uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
-             'String', 'Reset', ...
-             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.zoomResetButton, ...
-             'BackgroundColor', [0.25 0.25 0.25], ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) resetZoom(fig, cfg));
-
-    % Auto button (zoom to polygons)
-    uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
-             'String', 'Auto', ...
-             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.zoomAutoButton, ...
-             'BackgroundColor', [0.25 0.25 0.25], ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
+    guiData.aiBaseColors = cfg.micropadUI.capturePolygonColors(guiData.polygons);
 end
 
 function applyRotation_UI(angle, fig, cfg)
@@ -2648,8 +1950,8 @@ function applyRotation_UI(angle, fig, cfg)
     for idx = 1:numPolygons
         polyHandle = guiData.polygons{idx};
         if isvalid(polyHandle)
-            gradColor = getConcentrationColor(idx - 1, totalForColor);
-            setPolygonColor(polyHandle, gradColor, 0.25);
+            gradColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
+            cfg.micropadUI.setPolygonColor(polyHandle, gradColor, 0.25);
 
         end
 
@@ -2662,10 +1964,10 @@ function applyRotation_UI(angle, fig, cfg)
     end
 
     if hasLabels
-        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        cfg.micropadUI.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
     end
 
-    guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+    guiData.aiBaseColors = cfg.micropadUI.capturePolygonColors(guiData.polygons);
     guiData.autoZoomBounds = [];
 
     % Save guiData
@@ -2681,7 +1983,8 @@ end
 function zoomSliderCallback(slider, fig, cfg)
     % Handle zoom slider changes
     guiData = get(fig, 'UserData');
-    if ~strcmp(guiData.mode, 'editing')
+    validModes = {'editing', 'preview_readonly'};
+    if ~ismember(guiData.mode, validModes)
         return;
     end
 
@@ -2700,15 +2003,17 @@ end
 function resetZoom(fig, cfg)
     % Reset zoom to full image view
     guiData = get(fig, 'UserData');
-    if ~strcmp(guiData.mode, 'editing') && ~strcmp(guiData.mode, 'ellipse_editing') && ~strcmp(guiData.mode, 'ellipse_editing_grid')
+    validModes = {'editing', 'ellipse_editing', 'ellipse_editing_grid', 'preview_readonly'};
+    if ~ismember(guiData.mode, validModes)
         return;
     end
 
     guiData.zoomLevel = 0;
 
     % Handle different UI controls for different modes
-    % Both 'editing' and 'ellipse_editing_grid' use slider-based zoom
-    if strcmp(guiData.mode, 'editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
+    % 'editing', 'ellipse_editing_grid', and 'preview_readonly' use slider-based zoom
+    sliderModes = {'editing', 'ellipse_editing_grid', 'preview_readonly'};
+    if ismember(guiData.mode, sliderModes)
         if isfield(guiData, 'zoomSlider') && ishandle(guiData.zoomSlider)
             set(guiData.zoomSlider, 'Value', 0);
         end
@@ -2739,7 +2044,8 @@ function applyAutoZoom(fig, guiData, cfg)
         return;
     end
 
-    if ~isfield(guiData, 'mode') || (~strcmp(guiData.mode, 'editing') && ~strcmp(guiData.mode, 'ellipse_editing') && ~strcmp(guiData.mode, 'ellipse_editing_grid'))
+    validModes = {'editing', 'ellipse_editing', 'ellipse_editing_grid', 'preview_readonly'};
+    if ~isfield(guiData, 'mode') || ~ismember(guiData.mode, validModes)
         return;
     end
 
@@ -2750,6 +2056,15 @@ function applyAutoZoom(fig, guiData, cfg)
     elseif strcmp(guiData.mode, 'ellipse_editing_grid')
         % Use ellipse handles for grid mode (no polygons, only ellipses)
         [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
+    elseif strcmp(guiData.mode, 'preview_readonly')
+        % Use polygon handles if available, otherwise ellipse handles
+        if isfield(guiData, 'polygonHandles') && ~isempty(guiData.polygonHandles)
+            [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+        elseif isfield(guiData, 'ellipseHandles') && ~isempty(guiData.ellipseHandles)
+            [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
+        else
+            return;
+        end
     else
         % Use polygons for editing mode
         [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
@@ -2794,7 +2109,19 @@ function applyZoomToAxes(guiData, cfg)
             autoZoomBounds = guiData.autoZoomBounds;
         else
             % Calculate bounds from polygons if they exist
-            [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+            xmin = [];
+
+            % For preview_readonly mode, use polygonHandles or ellipseHandles
+            if isfield(guiData, 'mode') && strcmp(guiData.mode, 'preview_readonly')
+                if isfield(guiData, 'polygonHandles') && ~isempty(guiData.polygonHandles)
+                    [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+                elseif isfield(guiData, 'ellipseHandles') && ~isempty(guiData.ellipseHandles)
+                    [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
+                end
+            else
+                [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+            end
+
             if ~isempty(xmin)
                 % Use actual polygon bounds
                 autoZoomBounds = [xmin, xmax, ymin, ymax];
@@ -2883,57 +2210,7 @@ end
 %% Ellipse Editing Zoom Functions
 %% -------------------------------------------------------------------------
 
-function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoomPanel(fig, cfg)
-    % Create zoom panel with polygon navigation buttons for ellipse editing mode
-    zoomPanel = uipanel('Parent', fig, 'Units', 'normalized', ...
-                       'Position', cfg.ui.positions.zoomPanel, ...
-                       'BackgroundColor', cfg.ui.colors.panel, ...
-                       'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
-                       'BorderWidth', 2);
 
-    % Panel label
-    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Polygon Zoom', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.zoomLabel, ...
-             'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'BackgroundColor', cfg.ui.colors.panel, 'HorizontalAlignment', 'center');
-
-    % Previous button
-    prevButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
-             'String', '<', ...
-             'FontSize', cfg.ui.fontSize.button + 2, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomPrevButton, ...
-             'BackgroundColor', [0.25 0.25 0.25], ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) navigateToPrevPolygon(fig, cfg));
-
-    % Polygon indicator text
-    zoomIndicator = uicontrol('Parent', zoomPanel, 'Style', 'text', ...
-                         'String', 'All', ...
-                         'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomIndicator, ...
-                         'FontSize', cfg.ui.fontSize.value, 'FontWeight', 'bold', ...
-                         'ForegroundColor', cfg.ui.colors.foreground, ...
-                         'BackgroundColor', cfg.ui.colors.panel, ...
-                         'HorizontalAlignment', 'center');
-
-    % Next button
-    nextButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
-             'String', '>', ...
-             'FontSize', cfg.ui.fontSize.button + 2, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomNextButton, ...
-             'BackgroundColor', [0.25 0.25 0.25], ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) navigateToNextPolygon(fig, cfg));
-
-    % Reset button (full image view)
-    resetButton = uicontrol('Parent', zoomPanel, 'Style', 'pushbutton', ...
-             'String', 'Reset View', ...
-             'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-             'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomResetButton, ...
-             'BackgroundColor', [0.25 0.25 0.25], ...
-             'ForegroundColor', cfg.ui.colors.foreground, ...
-             'Callback', @(~,~) resetZoomEllipse(fig, cfg));
-end
 
 function zoomToPolygon(fig, polygonIndex, cfg)
     % Zoom to a specific polygon with 5% margin
@@ -2996,7 +2273,7 @@ function updatePolygonHighlight(~, guiData, cfg)
             continue;
         end
 
-        baseColor = getConcentrationColor(i - 1, numPolygons);
+        baseColor = cfg.micropadUI.getConcentrationColor(i - 1, numPolygons);
 
         if focusedIdx == i
             % Focused polygon: thicker line, original color
@@ -3222,8 +2499,8 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
         imageSize = imageSize(1:2);
     end
 
-    if isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [basePolygons, newSize] = rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
+    if cfg.geomTform.isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [basePolygons, newSize] = cfg.geomTform.geom.rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
 
         if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
             targetSize = guiData.baseImageSize(1:2);
@@ -3247,9 +2524,9 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
     for i = 1:numPolygons
         polyRot = squeeze(displayPolygons(i, :, :));
         % Clamp first to avoid NaNs during transform
-        polyRot = clampPolygonToImage(polyRot, rotatedSize);
-        polyBase = inverseRotatePoints(polyRot, rotatedSize, targetSize, rotation, cfg.rotation.angleTolerance);
-        basePolygons(i, :, :) = clampPolygonToImage(polyBase, targetSize);
+        polyRot = cfg.geomTform.geom.clampPolygonToImage(polyRot, rotatedSize);
+        polyBase = cfg.geomTform.geom.inverseRotatePoints(polyRot, rotatedSize, targetSize, rotation, cfg.rotation.angleTolerance);
+        basePolygons(i, :, :) = cfg.geomTform.geom.clampPolygonToImage(polyBase, targetSize);
     end
 end
 
@@ -3262,8 +2539,8 @@ function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageS
     if rotation == 0
         rotatedPolygons = basePolygons;
         rotatedSize = baseImageSize;
-    elseif isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [rotatedPolygons, rotatedSize] = rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
+    elseif cfg.geomTform.isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [rotatedPolygons, rotatedSize] = cfg.geomTform.geom.rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
     else
         % General-angle forward rotation: geometrically apply the imrotate transform
         originalSize = baseImageSize(1:2);
@@ -3274,9 +2551,9 @@ function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageS
 
         for i = 1:numPolygons
             polyBase = squeeze(basePolygons(i, :, :));
-            polyBase = clampPolygonToImage(polyBase, originalSize);
-            polyRot = forwardRotatePoints(polyBase, originalSize, rotatedSize, rotation, cfg.rotation.angleTolerance);
-            rotatedPolygons(i, :, :) = clampPolygonToImage(polyRot, rotatedSize);
+            polyBase = cfg.geomTform.geom.clampPolygonToImage(polyBase, originalSize);
+            polyRot = cfg.geomTform.geom.forwardRotatePoints(polyBase, originalSize, rotatedSize, rotation, cfg.rotation.angleTolerance);
+            rotatedPolygons(i, :, :) = cfg.geomTform.geom.clampPolygonToImage(polyRot, rotatedSize);
         end
     end
 
@@ -3322,107 +2599,14 @@ function rotatedImg = applyRotation(img, rotation, cfg)
     end
 end
 
-function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize, rotation)
-    % Rotate polygons by multiples of 90 degrees using the same conventions as rot90
-    imageSize = imageSize(1:2);
-    [numPolygons, numVertices, ~] = size(polygons);
-    rotatedPolygons = polygons;
-    newSize = imageSize;
-
-    if isempty(polygons)
-        return;
-    end
-
-    k = mod(round(rotation / 90), 4);
-    if k == 0
-        return;
-    end
-
-    H = imageSize(1);
-    W = imageSize(2);
-    rotatedPolygons = zeros(size(polygons));
-
-    switch k
-        case 1  % 90 degrees clockwise
-            newSize = [W, H];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
-                transformed = zeros(numVertices, 2);
-                transformed(:, 1) = H - poly(:, 2) + 1;
-                transformed(:, 2) = poly(:, 1);
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
-            end
-        case 2  % 180 degrees
-            newSize = [H, W];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
-                transformed = zeros(numVertices, 2);
-                transformed(:, 1) = W - poly(:, 1) + 1;
-                transformed(:, 2) = H - poly(:, 2) + 1;
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
-            end
-        case 3  % 270 degrees clockwise (or 90 counter-clockwise)
-            newSize = [W, H];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
-                transformed = zeros(numVertices, 2);
-                transformed(:, 1) = poly(:, 2);
-                transformed(:, 2) = W - poly(:, 1) + 1;
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
-            end
-    end
-end
-
-function [rotatedPoints, newSize] = rotatePointsDiscrete(points, imageSize, rotation)
-    rotatedPoints = points;
-    newSize = imageSize(1:2);
-
-    if isempty(points)
-        return;
-    end
-
-    k = mod(round(rotation / 90), 4);
-    if k == 0
-        return;
-    end
-
-    H = imageSize(1);
-    W = imageSize(2);
-    rotatedPoints = zeros(size(points));
-
-    switch k
-        case 1 % 90 degrees clockwise
-            newSize = [W, H];
-            rotatedPoints(:, 1) = H - points(:, 2) + 1;
-            rotatedPoints(:, 2) = points(:, 1);
-        case 2 % 180 degrees
-            newSize = [H, W];
-            rotatedPoints(:, 1) = W - points(:, 1) + 1;
-            rotatedPoints(:, 2) = H - points(:, 2) + 1;
-        case 3 % 270 degrees clockwise (90 ccw)
-            newSize = [W, H];
-            rotatedPoints(:, 1) = points(:, 2);
-            rotatedPoints(:, 2) = W - points(:, 1) + 1;
-    end
-end
-
-function tf = isMultipleOfNinety(angle, tolerance)
-    % Determine if an angle is effectively a multiple of 90 degrees
-    if isnan(angle) || isinf(angle)
-        tf = false;
-        return;
-    end
-    tf = abs(angle / 90 - round(angle / 90)) <= tolerance;
-end
-
 function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSize, displayImageSize, rotation, cfg)
     displayEllipses = ellipseData;
     if isempty(ellipseData)
         return;
     end
 
-    if rotation ~= 0 && isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [rotCenters, rotatedSize] = rotatePointsDiscrete(ellipseData(:, 3:4), baseImageSize, rotation);
+    if rotation ~= 0 && cfg.geomTform.isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
+        [rotCenters, rotatedSize] = cfg.geomTform.geom.rotatePointsDiscrete(ellipseData(:, 3:4), baseImageSize, rotation);
     else
         rotCenters = ellipseData(:, 3:4);
         rotatedSize = baseImageSize;
@@ -3438,162 +2622,6 @@ function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSi
 
     displayEllipses(:, 3:4) = rotCenters;
     displayEllipses(:, 7) = mod(ellipseData(:, 7) + rotation + 180, 360) - 180;
-end
-
-function clamped = clampPolygonToImage(poly, imageSize)
-    % Clamp polygon coordinates to lie within image extents
-    if isempty(poly)
-        clamped = poly;
-        return;
-    end
-    width = imageSize(2);
-    height = imageSize(1);
-    clamped = poly;
-    clamped(:, 1) = max(1, min(width, clamped(:, 1)));
-    clamped(:, 2) = max(1, min(height, clamped(:, 2)));
-end
-
-function transformedPoints = inverseRotatePoints(points, rotatedSize, originalSize, rotation, angleTolerance)
-    % Transform points from rotated image frame back to original frame
-    % ROTATION CONVENTION: Positive rotation = clockwise in image coordinates
-    % TRANSFORMATION: rotated -> original (inverse/reverse rotation)
-    if rotation == 0 || isempty(points)
-        transformedPoints = points;
-        return;
-    end
-
-    % Handle exact 90-degree rotations
-    if abs(mod(rotation, 90)) < angleTolerance
-        numRotations = mod(round(rotation / 90), 4);
-
-        % Map centers back through discrete rotations (with +1 for MATLAB 1-based indexing)
-        switch numRotations
-            case 1  % -90 degrees (rot90(..., -1))
-                x_orig = points(:, 2);
-                y_orig = rotatedSize(2) - points(:, 1) + 1;
-            case 2  % 180 degrees
-                x_orig = rotatedSize(2) - points(:, 1) + 1;
-                y_orig = rotatedSize(1) - points(:, 2) + 1;
-            case 3  % 90 degrees (rot90(..., 1))
-                x_orig = rotatedSize(1) - points(:, 2) + 1;
-                y_orig = points(:, 1);
-            otherwise  % 0 degrees
-                x_orig = points(:, 1);
-                y_orig = points(:, 2);
-        end
-
-        transformedPoints = [x_orig, y_orig];
-    else
-        % For non-90-degree rotations, use geometric transform (inverse rotation)
-        % Inverse rotation matrix for counter-clockwise in image coordinates (Y-axis down):
-        % [x']   [cos(θ)  -sin(θ)]   [x]
-        % [y'] = [sin(θ)   cos(θ)]   [y]
-        theta = -deg2rad(rotation);  % Inverse rotation
-        cosTheta = cos(theta);
-        sinTheta = sin(theta);
-
-        % Center of rotated image
-        centerRotated = [rotatedSize(2)/2, rotatedSize(1)/2];
-        centerOriginal = [originalSize(2)/2, originalSize(1)/2];
-
-        % Translate to origin, rotate, translate back
-        pointsCentered = points - centerRotated;
-        x_orig = pointsCentered(:, 1) * cosTheta + pointsCentered(:, 2) * sinTheta;
-        y_orig = -pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
-
-        transformedPoints = [x_orig + centerOriginal(1), y_orig + centerOriginal(2)];
-    end
-end
-
-function transformedPoints = forwardRotatePoints(points, originalSize, rotatedSize, rotation, angleTolerance)
-    % Transform points from original image frame to rotated frame
-    % ROTATION CONVENTION: Positive rotation = clockwise in image coordinates
-    % TRANSFORMATION: original -> rotated (forward rotation)
-    % This is the mathematical inverse of inverseRotatePoints
-    if rotation == 0 || isempty(points)
-        transformedPoints = points;
-        return;
-    end
-
-    % Handle exact 90-degree rotations
-    if abs(mod(rotation, 90)) < angleTolerance
-        numRotations = mod(round(rotation / 90), 4);
-        H = originalSize(1);
-        W = originalSize(2);
-
-        switch numRotations
-            case 1  % 90 degrees clockwise
-                x_rot = H - points(:, 2) + 1;
-                y_rot = points(:, 1);
-            case 2  % 180 degrees
-                x_rot = W - points(:, 1) + 1;
-                y_rot = H - points(:, 2) + 1;
-            case 3  % 270 degrees clockwise (= 90 CCW)
-                x_rot = points(:, 2);
-                y_rot = W - points(:, 1) + 1;
-            otherwise  % 0 degrees
-                x_rot = points(:, 1);
-                y_rot = points(:, 2);
-        end
-
-        transformedPoints = [x_rot, y_rot];
-    else
-        % For non-90-degree rotations, use geometric transform (forward rotation)
-        % Forward rotation matrix in image coordinates (Y-axis down):
-        % [x']   [ cos(θ)  sin(θ)]   [x]
-        % [y'] = [-sin(θ)  cos(θ)]   [y]
-        % This is the inverse of the matrix used in inverseRotatePoints
-        theta = deg2rad(rotation);
-        cosTheta = cos(theta);
-        sinTheta = sin(theta);
-
-        % Centers of original and rotated images
-        centerOriginal = [originalSize(2)/2, originalSize(1)/2];
-        centerRotated = [rotatedSize(2)/2, rotatedSize(1)/2];
-
-        % Translate to origin, rotate, translate back
-        pointsCentered = points - centerOriginal;
-        x_rot = pointsCentered(:, 1) * cosTheta + pointsCentered(:, 2) * sinTheta;
-        y_rot = -pointsCentered(:, 1) * sinTheta + pointsCentered(:, 2) * cosTheta;
-
-        transformedPoints = [x_rot + centerRotated(1), y_rot + centerRotated(2)];
-    end
-end
-
-function updatePolygonLabels(polygons, labelHandles)
-    % Update label positions to follow polygon top edges
-    %
-    % Inputs:
-    %   polygons - cell array of drawpolygon objects
-    %   labelHandles - cell array of text objects
-
-    n = numel(polygons);
-    if numel(labelHandles) ~= n
-        return;
-    end
-
-    for i = 1:n
-        poly = polygons{i};
-        label = labelHandles{i};
-
-        if ~isvalid(poly) || ~isvalid(label)
-            continue;
-        end
-
-        pos = poly.Position;
-        if isempty(pos) || size(pos, 1) < 3
-            continue;
-        end
-
-        % CHANGED: Position at TOP edge, not center
-        % Use image-relative units (polygon height fraction) for consistency
-        centerX = mean(pos(:, 1));
-        minY = min(pos(:, 2));
-        polyHeight = max(pos(:, 2)) - minY;
-        labelY = minY - max(15, polyHeight * 0.1);  % 10% of polygon height or 15px minimum
-
-        set(label, 'Position', [centerX, labelY, 0]);
-    end
 end
 
 function updatePolygonLabelsCallback(polygon, varargin)
@@ -3720,6 +2748,10 @@ function guiData = enforceConcentrationOrdering(guiData)
     if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons) || isempty(guiData.polygons)
         return;
     end
+    if ~isfield(guiData, 'cfg') || ~isfield(guiData.cfg, 'micropadUI')
+        return;
+    end
+    ui = guiData.cfg.micropadUI;
 
     [sortedPolygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
     guiData.orientation = newOrientation;  % Always update orientation based on current layout
@@ -3745,7 +2777,7 @@ function guiData = enforceConcentrationOrdering(guiData)
             end
         end
 
-        updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        ui.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
     end
 
     if needsReindex
@@ -3753,14 +2785,14 @@ function guiData = enforceConcentrationOrdering(guiData)
         for idx = 1:numPolygons
             polyHandle = guiData.polygons{idx};
             if isvalid(polyHandle)
-                gradColor = getConcentrationColor(idx - 1, totalForColor);
-                setPolygonColor(polyHandle, gradColor, 0.25);
+                gradColor = ui.getConcentrationColor(idx - 1, totalForColor);
+                ui.setPolygonColor(polyHandle, gradColor, 0.25);
             end
         end
     end
 
     if needsReindex || ~isfield(guiData, 'aiBaseColors') || isempty(guiData.aiBaseColors)
-        guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
     end
 end
 
@@ -3980,7 +3012,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 end
                 for concIdx = 1:numConcentrations
                     currentPolygon = squeeze(polygonSetForBounds(concIdx, :, :));
-                    boundsPerConcentration{concIdx} = computeEllipseAxisBounds(currentPolygon, guiData.imageSize, guiData.cfg);
+                    boundsPerConcentration{concIdx} = guiData.cfg.geomTform.geom.computeEllipseAxisBounds(currentPolygon, guiData.imageSize, guiData.cfg);
                 end
 
                 ellipseData = zeros(totalEllipses, 7);
@@ -3995,7 +3027,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             rotationAngle = ellipse.RotationAngle;
 
                             bounds = boundsPerConcentration{concIdx};
-                            [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, bounds);
+                            [semiMajor, semiMinor, rotationAngle] = guiData.cfg.geomTform.geom.enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, bounds);
 
                             ellipseData(ellipseIdx, :) = [concIdx-1, repIdx-1, round(center), semiMajor, semiMinor, rotationAngle];
                         end
@@ -4013,7 +3045,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             center = ellipseData(i, 3:4);
 
                             % Transform center from rotated display to original image
-                            originalCenter = inverseRotatePoints(center, rotatedImageSize, ...
+                            originalCenter = guiData.cfg.geomTform.geom.inverseRotatePoints(center, rotatedImageSize, ...
                                 originalImageSize, guiData.rotation, guiData.cfg.rotation.angleTolerance);
                             ellipseData(i, 3:4) = round(originalCenter);
 
@@ -4032,7 +3064,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 numGroups = guiData.cfg.numSquares;
                 numReplicates = guiData.cfg.ellipse.replicatesPerMicropad;
                 totalEllipses = numGroups * numReplicates;
-                gridBounds = computeEllipseAxisBounds([], guiData.imageSize, guiData.cfg);
+                gridBounds = guiData.cfg.geomTform.geom.computeEllipseAxisBounds([], guiData.imageSize, guiData.cfg);
 
                 ellipseData = zeros(totalEllipses, 7);
                 ellipseIdx = 1;
@@ -4045,7 +3077,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             semiAxes = ellipse.SemiAxes;
                             rotationAngle = ellipse.RotationAngle;
 
-                            [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, gridBounds);
+                            [semiMajor, semiMinor, rotationAngle] = guiData.cfg.geomTform.geom.enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, gridBounds);
 
                             ellipseData(ellipseIdx, :) = [groupIdx-1, repIdx-1, round(center), semiMajor, semiMinor, rotationAngle];
                         end
@@ -4063,7 +3095,7 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                             center = ellipseData(i, 3:4);
 
                             % Transform center from rotated display to original image
-                            originalCenter = inverseRotatePoints(center, rotatedImageSize, ...
+                            originalCenter = guiData.cfg.geomTform.geom.inverseRotatePoints(center, rotatedImageSize, ...
                                 originalImageSize, guiData.rotation, guiData.cfg.rotation.angleTolerance);
                             ellipseData(i, 3:4) = round(originalCenter);
 
@@ -4136,467 +3168,17 @@ function polygonParams = extractPolygonParameters(guiData)
 end
 
 %% -------------------------------------------------------------------------
-%% Image Cropping and Coordinate Saving
+%% Image Cropping and Coordinate Saving (delegating wrappers to file_io_manager)
 %% -------------------------------------------------------------------------
 
-function saveCroppedRegions(img, imageName, polygons, outputDir, cfg, rotation)
-    [~, baseName, ~] = fileparts(imageName);
-    outExt = '.png';
-
-    numRegions = size(polygons, 1);
-
-    for concentration = 0:(numRegions - 1)
-        polygon = squeeze(polygons(concentration + 1, :, :));
-
-        croppedImg = cropImageWithPolygon(img, polygon);
-
-        concFolder = sprintf('%s%d', cfg.concFolderPrefix, concentration);
-        concPath = fullfile(outputDir, concFolder);
-
-        outputName = sprintf('%s_con_%d%s', baseName, concentration, outExt);
-        outputPath = fullfile(concPath, outputName);
-
-        saveImageWithFormat(croppedImg, outputPath, outExt, cfg);
-
-        if cfg.output.saveCoordinates
-            appendPolygonCoordinates(outputDir, baseName, concentration, polygon, cfg, rotation);
-        end
-    end
-end
-
-function saveEllipseData(img, imageName, ~, ellipseData, outputDir, cfg)
-    % Save ellipse patches and coordinates to 3_elliptical_regions/
-    % ellipseData: Nx7 matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-
-    [~, baseName, ~] = fileparts(imageName);
-
-    % Save elliptical patches
-    saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg);
-
-    % Save ellipse coordinates to phone-level coordinates.txt
-    if cfg.output.saveCoordinates
-        appendEllipseCoordinates(outputDir, baseName, ellipseData, cfg);
-    end
-end
-
-function croppedImg = cropImageWithPolygon(img, polygonVertices)
-    x = polygonVertices(:, 1);
-    y = polygonVertices(:, 2);
-
-    minX = floor(min(x));
-    maxX = ceil(max(x));
-    minY = floor(min(y));
-    maxY = ceil(max(y));
-
-    [imgH, imgW, numChannels] = size(img);
-    minX = max(1, minX);
-    maxX = min(imgW, maxX);
-    minY = max(1, minY);
-    maxY = min(imgH, maxY);
-
-    % Create binary mask for the polygon
-    mask = poly2mask(x, y, imgH, imgW);
-
-    % Apply mask to each color channel (black out pixels outside polygon)
-    maskedImg = img;
-    for ch = 1:numChannels
-        channel = maskedImg(:, :, ch);
-        channel(~mask) = 0;
-        maskedImg(:, :, ch) = channel;
-    end
-
-    % Crop to bounding box
-    croppedImg = maskedImg(minY:maxY, minX:maxX, :);
-end
-
-function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, cfg, rotation)
-    % Append polygon vertex coordinates to phone-level coordinates file with atomic write
-    % Overwrites existing entry for same image/concentration combination
-
-    coordFolder = phoneOutputDir;
-    coordPath = fullfile(coordFolder, cfg.coordinateFileName);
-
-    if ~isnumeric(polygon) || size(polygon, 2) ~= 2
-        warning('cut_micropads:coord_polygon', 'Polygon must be an Nx2 numeric array. Skipping write for %s.', baseName);
-        return;
-    end
-
-    nVerts = size(polygon, 1);
-    if nVerts ~= 4
-        warning('cut_micropads:coord_vertices', ...
-            'Expected 4-vertex polygon; got %d. Proceeding may break downstream tools.', nVerts);
-    end
-
-    numericCount = 1 + 2 * nVerts + 1; % concentration, vertices, rotation
-
-    headerParts = cell(1, 2 + 2 * nVerts + 1);
-    headerParts{1} = 'image';
-    headerParts{2} = 'concentration';
-    for v = 1:nVerts
-        headerParts{2*v+1} = sprintf('x%d', v);
-        headerParts{2*v+2} = sprintf('y%d', v);
-    end
-    headerParts{end} = 'rotation';
-    header = strjoin(headerParts, ' ');
-
-    scanFmt = ['%s' repmat(' %f', 1, numericCount)];
-
-    writeSpecs = repmat({'%.6f'}, 1, numericCount);
-    writeSpecs{1} = '%.0f';   % concentration index
-    writeFmt = ['%s ' strjoin(writeSpecs, ' ') '\n'];
-
-    coords = reshape(polygon.', 1, []);
-    newNums = [concentration, coords, rotation];
-
-    [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount);
-    [existingNames, existingNums] = filterConflictingEntries(existingNames, existingNums, baseName, concentration);
-
-    allNames = [existingNames; {baseName}];
-    allNums = [existingNums; newNums];
-
-    atomicWriteCoordinates(coordPath, header, allNames, allNums, writeFmt, coordFolder);
-end
-
-function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
-    % Extract and save elliptical patches from original image
-    % ellipseData: Nx7 matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-
-    [imgH, imgW, numChannels] = size(img);
-
-    for i = 1:size(ellipseData, 1)
-        if ellipseData(i, 3) > 0
-            concIdx = ellipseData(i, 1);
-            repIdx = ellipseData(i, 2);
-            x = ellipseData(i, 3);
-            y = ellipseData(i, 4);
-            a = ellipseData(i, 5);
-            b = ellipseData(i, 6);
-            theta = ellipseData(i, 7);
-
-            % Calculate axis-aligned bounding box
-            % Note: sign of theta doesn't matter for bounding box since we square sin/cos
-            theta_rad = deg2rad(theta);
-            ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
-            uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
-
-            x1 = max(1, floor(x - ux));
-            y1 = max(1, floor(y - uy));
-            x2 = min(imgW, ceil(x + ux));
-            y2 = min(imgH, ceil(y + uy));
-
-            % Extract region
-            patchRegion = img(y1:y2, x1:x2, :);
-            [patchH, patchW, ~] = size(patchRegion);
-
-            % Create elliptical mask by transforming patch coords to ellipse-local coords
-            % (reuses theta_rad: +theta with CCW matrix inverts visual CCW rotation in Y-down coords)
-            [Xpatch, Ypatch] = meshgrid(1:patchW, 1:patchH);
-
-            centerX_patch = x - x1 + 1;
-            centerY_patch = y - y1 + 1;
-
-            dx = Xpatch - centerX_patch;
-            dy = Ypatch - centerY_patch;
-            x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
-            y_rot =  dx * sin(theta_rad) + dy * cos(theta_rad);
-
-            ellipseMask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
-
-            % Apply mask (zero out pixels outside ellipse)
-            ellipticalPatch = patchRegion;
-            inverseMask3D = repmat(~ellipseMask, [1, 1, numChannels]);
-            ellipticalPatch(inverseMask3D) = 0;
-
-            % Save patch
-            concFolder = fullfile(outputDir, sprintf('%s%d', cfg.concFolderPrefix, concIdx));
-            if ~exist(concFolder, 'dir')
-                mkdir(concFolder);
-            end
-
-            patchFileName = sprintf('%s_con%d_rep%d.png', baseName, concIdx, repIdx);
-            patchPath = fullfile(concFolder, patchFileName);
-            imwrite(ellipticalPatch, patchPath);
-        end
-    end
-end
-
-function appendEllipseCoordinates(phoneOutputDir, baseName, ellipseData, cfg)
-    % Append ellipse coordinates to phone-level coordinates file with atomic write
-    % ellipseData: Nx7 matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-
-    coordFolder = phoneOutputDir;
-    coordPath = fullfile(coordFolder, cfg.coordinateFileName);
-
-    header = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
-    numericCount = 7;
-
-    scanFmt = ['%s' repmat(' %f', 1, numericCount)];
-    writeFmt = '%s %.0f %.0f %.6f %.6f %.6f %.6f %.6f\n';
-
-    % Read existing entries
-    [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount);
-
-    % Filter out entries for this image (remove all existing rows for same image)
-    if ~isempty(existingNames)
-        existingNames = existingNames(:);
-        keepMask = ~strcmp(existingNames, baseName);
-        existingNames = existingNames(keepMask);
-        if ~isempty(existingNums)
-            existingNums = existingNums(keepMask, :);
-        end
-    end
-
-    % Build new rows for this image (only valid ellipses)
-    validMask = ellipseData(:, 3) > 0;
-    validData = ellipseData(validMask, :);
-
-    if isempty(validData)
-        return;
-    end
-
-    numValid = size(validData, 1);
-    newNames = cell(numValid, 1);
-    newNames(:) = {baseName};
-    newNums = validData;
-
-    % Combine and write atomically
-    allNames = [existingNames; newNames];
-    allNums = [existingNums; newNums];
-
-    atomicWriteCoordinates(coordPath, header, allNames, allNums, writeFmt, coordFolder);
-end
-
 function [polygonParams, found] = loadPolygonCoordinates(coordFile, imageName, numExpected)
-    % Load polygon coordinates from 2_micropads coordinates.txt file
-    %
-    % INPUTS:
-    %   coordFile   - Full path to coordinates.txt file
-    %   imageName   - Base image name to filter rows
-    %   numExpected - Expected number of polygons (concentrations)
-    %
-    % OUTPUTS:
-    %   polygonParams - Nx4x2 matrix of polygon vertices (N concentrations, 4 vertices, 2 coords)
-    %   found         - Boolean indicating if file exists and contains data
-
-    polygonParams = [];
-    found = false;
-
-    % Check if file exists
-    if ~isfile(coordFile)
-        return;
-    end
-
-    % Read file using atomic pattern
-    try
-        fid = fopen(coordFile, 'rt');
-        if fid == -1
-            return;
-        end
-
-        % Read header
-        headerLine = fgetl(fid);
-        if ~ischar(headerLine)
-            fclose(fid);
-            return;
-        end
-
-        % Read all data rows
-        allRows = {};
-        while ~feof(fid)
-            line = fgetl(fid);
-            if ischar(line) && ~isempty(line)
-                allRows{end+1} = line; %#ok<AGROW>
-            end
-        end
-        fclose(fid);
-
-        % Parse rows matching this image
-        [~, baseNameNoExt, ~] = fileparts(imageName);
-        matchingRows = {};
-
-        for i = 1:length(allRows)
-            parts = strsplit(strtrim(allRows{i}));
-            if length(parts) >= 11
-                rowImageName = parts{1};
-                [~, rowBaseNoExt, ~] = fileparts(rowImageName);
-
-                if strcmpi(rowBaseNoExt, baseNameNoExt)
-                    matchingRows{end+1} = allRows{i}; %#ok<AGROW>
-                end
-            end
-        end
-
-        if isempty(matchingRows)
-            return;
-        end
-
-        % Parse matching rows into polygon matrix
-        numRows = length(matchingRows);
-        polygonParams = zeros(numRows, 4, 2);
-
-        for i = 1:numRows
-            parts = strsplit(strtrim(matchingRows{i}));
-            if length(parts) >= 11
-                % Parse: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
-                concIdx = str2double(parts{2});
-                
-                % Validate concentration index
-                if ~isempty(numExpected) && (concIdx < 0 || concIdx >= numExpected)
-                    warning('cut_micropads:invalid_concentration', ...
-                        'Invalid concentration index %.0f (expected 0-%d) for image %s - skipping row', ...
-                        concIdx, numExpected - 1, imageName);
-                    continue;
-                end
-                
-                % Extract vertices (columns 3-10)
-                x1 = str2double(parts{3});
-                y1 = str2double(parts{4});
-                x2 = str2double(parts{5});
-                y2 = str2double(parts{6});
-                x3 = str2double(parts{7});
-                y3 = str2double(parts{8});
-                x4 = str2double(parts{9});
-                y4 = str2double(parts{10});
-                
-                % Validate coordinates are finite
-                coords = [x1 y1 x2 y2 x3 y3 x4 y4];
-                if any(~isfinite(coords))
-                    warning('cut_micropads:invalid_coordinates', ...
-                        'Invalid polygon coordinates for image %s, concentration %d - skipping row', ...
-                        imageName, concIdx);
-                    continue;
-                end
-
-                % Store as 4x2 matrix: [x1 y1; x2 y2; x3 y3; x4 y4]
-                polygonParams(i, :, :) = [x1 y1; x2 y2; x3 y3; x4 y4];
-            end
-        end
-
-        found = true;
-
-        % Validate polygon count matches expected
-        if ~isempty(numExpected) && size(polygonParams, 1) ~= numExpected
-            warning('cut_micropads:polygon_count_mismatch', ...
-                'Expected %d polygons, found %d for image %s', ...
-                numExpected, size(polygonParams, 1), imageName);
-        end
-
-    catch ME
-        warning('cut_micropads:polygon_load_error', ...
-            'Failed to load polygon coordinates from %s: %s', coordFile, ME.message);
-        polygonParams = [];
-        found = false;
-    end
+    fileIO = file_io_manager();
+    [polygonParams, found] = fileIO.loadPolygonCoordinates(coordFile, imageName, numExpected);
 end
 
 function [ellipseData, found] = loadEllipseCoordinates(coordFile, imageName)
-    % Load ellipse coordinates from 3_elliptical_regions coordinates.txt file
-    %
-    % INPUTS:
-    %   coordFile  - Full path to coordinates.txt file
-    %   imageName  - Base image name to filter rows
-    %
-    % OUTPUTS:
-    %   ellipseData - Nx7 matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-    %   found       - Boolean indicating if file exists and contains data
-
-    ellipseData = [];
-    found = false;
-
-    % Check if file exists
-    if ~isfile(coordFile)
-        return;
-    end
-
-    % Read file using atomic pattern
-    try
-        fid = fopen(coordFile, 'rt');
-        if fid == -1
-            return;
-        end
-
-        % Read header
-        headerLine = fgetl(fid);
-        if ~ischar(headerLine)
-            fclose(fid);
-            return;
-        end
-
-        % Read all data rows
-        allRows = {};
-        while ~feof(fid)
-            line = fgetl(fid);
-            if ischar(line) && ~isempty(line)
-                allRows{end+1} = line; %#ok<AGROW>
-            end
-        end
-        fclose(fid);
-
-        % Parse rows matching this image
-        [~, baseNameNoExt, ~] = fileparts(imageName);
-        matchingRows = {};
-
-        for i = 1:length(allRows)
-            parts = strsplit(strtrim(allRows{i}));
-            if length(parts) >= 8
-                rowImageName = parts{1};
-                [~, rowBaseNoExt, ~] = fileparts(rowImageName);
-
-                if strcmpi(rowBaseNoExt, baseNameNoExt)
-                    matchingRows{end+1} = allRows{i}; %#ok<AGROW>
-                end
-            end
-        end
-
-        if isempty(matchingRows)
-            return;
-        end
-
-        % Parse matching rows into ellipse matrix
-        numRows = length(matchingRows);
-        ellipseData = zeros(numRows, 7);
-
-        for i = 1:numRows
-            parts = strsplit(strtrim(matchingRows{i}));
-            if length(parts) >= 8
-                % Parse: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-                concIdx = str2double(parts{2});
-                repIdx = str2double(parts{3});
-                x = str2double(parts{4});
-                y = str2double(parts{5});
-                semiMajor = str2double(parts{6});
-                semiMinor = str2double(parts{7});
-                rotation = str2double(parts{8});
-                
-                % Validate all numeric values are finite
-                values = [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation];
-                if any(~isfinite(values))
-                    warning('cut_micropads:invalid_ellipse', ...
-                        'Invalid ellipse data for image %s, concentration %.0f, replicate %.0f - skipping row', ...
-                        imageName, concIdx, repIdx);
-                    continue;
-                end
-                
-                % Validate ellipse geometry
-                if semiMajor <= 0 || semiMinor <= 0
-                    warning('cut_micropads:invalid_ellipse_axes', ...
-                        'Invalid ellipse axes (semiMajor=%.2f, semiMinor=%.2f) for image %s - skipping row', ...
-                        semiMajor, semiMinor, imageName);
-                    continue;
-                end
-
-                ellipseData(i, :) = [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation];
-            end
-        end
-
-        found = true;
-
-    catch ME
-        warning('cut_micropads:ellipse_load_error', ...
-            'Failed to load ellipse coordinates from %s: %s', coordFile, ME.message);
-        ellipseData = [];
-        found = false;
-    end
+    fileIO = file_io_manager();
+    [ellipseData, found] = fileIO.loadEllipseCoordinates(coordFile, imageName);
 end
 
 function ellipsePositions = createDefaultEllipseGrid(imageSize, numGroups, replicatesPerGroup, cfg)
@@ -4665,618 +3247,18 @@ function ellipsePositions = createDefaultEllipseGrid(imageSize, numGroups, repli
     end
 end
 
-function [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount)
-    existingNames = {};
-    existingNums = zeros(0, numericCount);
-
-    if ~isfile(coordPath)
-        return;
-    end
-
-    fid = fopen(coordPath, 'rt');
-    if fid == -1
-        warning('cut_micropads:coord_read', 'Cannot open coordinates file for reading: %s', coordPath);
-        return;
-    end
-
-    firstLine = fgetl(fid);
-    if ischar(firstLine)
-        trimmed = strtrim(firstLine);
-        expectedPrefix = 'image concentration';
-        if ~strncmpi(trimmed, expectedPrefix, numel(expectedPrefix))
-            fseek(fid, 0, 'bof');
-        end
-    else
-        fseek(fid, 0, 'bof');
-    end
-
-    data = textscan(fid, scanFmt, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, 'CollectOutput', true);
-    fclose(fid);
-
-    if ~isempty(data)
-        if numel(data) >= 1 && ~isempty(data{1})
-            existingNames = data{1};
-        end
-        if numel(data) >= 2 && ~isempty(data{2})
-            nums = data{2};
-
-            % Validate coordinate format (no migration - project is in active development)
-            if size(nums, 2) ~= numericCount
-                error('cut_micropads:invalid_coord_format', ...
-                    ['Coordinate file has invalid format: %d numeric columns found, expected %d.\n' ...
-                     'File: %s\n' ...
-                     'NOTE: This project is in active development mode with no backward compatibility.\n' ...
-                     'Delete the corrupted file and rerun the stage to regenerate.'], ...
-                    size(nums, 2), numericCount, coordPath);
-            end
-
-            existingNums = nums;
-
-            % Validate numeric content (skip rotation column for NaN check)
-            % Polygon format (10 cols): cols 2:9 are x1,y1,x2,y2,x3,y3,x4,y4
-            % Ellipse format (7 cols): cols 3:6 are x,y,semiMajor,semiMinor
-            if numericCount == 10
-                coordCols = 2:9;
-            elseif numericCount == 7
-                coordCols = 3:6;
-            else
-                coordCols = 2:(numericCount-1);
-            end
-            invalidRows = any(~isfinite(existingNums(:, coordCols)), 2);
-            if any(invalidRows)
-                warning('cut_micropads:corrupt_coords', ...
-                    'Found %d rows with invalid coordinates in %s. Skipping corrupted entries.', ...
-                    sum(invalidRows), coordPath);
-                validMask = ~invalidRows;
-                existingNames = existingNames(validMask);
-                existingNums = existingNums(validMask, :);
-            end
-        end
-    end
-
-    if ~isempty(existingNames) && ~isempty(existingNums)
-        rows = min(numel(existingNames), size(existingNums, 1));
-        if size(existingNums, 1) ~= numel(existingNames)
-            existingNames = existingNames(1:rows);
-            existingNums = existingNums(1:rows, :);
-        end
-
-        if iscell(existingNames)
-            emptyMask = cellfun(@(s) isempty(strtrim(s)), existingNames);
-        else
-            emptyMask = arrayfun(@(s) isempty(strtrim(s)), existingNames);
-        end
-        if any(emptyMask)
-            existingNames = existingNames(~emptyMask);
-            existingNums = existingNums(~emptyMask, :);
-        end
-    end
-end
-
-function [filteredNames, filteredNums] = filterConflictingEntries(existingNames, existingNums, newName, concentration)
-    if isempty(existingNames)
-        filteredNames = existingNames;
-        filteredNums = existingNums;
-        return;
-    end
-
-    existingNames = existingNames(:);
-    sameImageMask = strcmp(existingNames, newName);
-    sameConcentrationMask = false(size(sameImageMask));
-    if ~isempty(existingNums)
-        sameConcentrationMask = sameImageMask & (existingNums(:, 1) == concentration);
-    end
-    keepMask = ~sameConcentrationMask;
-
-    filteredNames = existingNames(keepMask);
-    if isempty(existingNums)
-        filteredNums = existingNums;
-    else
-        filteredNums = existingNums(keepMask, :);
-    end
-end
-
-function atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder)
-    tmpPath = tempname(coordFolder);
-
-    fid = fopen(tmpPath, 'wt');
-    if fid == -1
-        error('cut_micropads:coord_write_failed', ...
-              'Cannot open temp coordinates file for writing: %s\nCheck folder permissions.', tmpPath);
-    end
-
-    fprintf(fid, '%s\n', header);
-
-    for j = 1:numel(names)
-        rowVals = nums(j, :);
-        rowVals(isnan(rowVals)) = 0;
-        fprintf(fid, writeFmt, names{j}, rowVals);
-    end
-
-    fclose(fid);
-
-    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
-    if ~ok
-        warning('cut_micropads:coord_move', ...
-            'Failed to move temp file to coordinates.txt: %s (%s). Attempting fallback copy.', msg, msgid);
-        [copied, cmsg, ~] = copyfile(tmpPath, coordPath, 'f');
-        if ~copied
-            if isfile(tmpPath)
-                delete(tmpPath);
-            end
-            error('cut_micropads:coord_write_fail', ...
-                'Cannot write coordinates to %s: movefile failed (%s), copyfile failed (%s).', ...
-                coordPath, msg, cmsg);
-        end
-        if isfile(tmpPath)
-            delete(tmpPath);
-        end
-    end
-end
-
 %% -------------------------------------------------------------------------
-%% File I/O Utilities
+%% File I/O Utilities (delegating wrappers to file_io_manager)
 %% -------------------------------------------------------------------------
-
-function [img, isValid] = loadImage(imageName)
-    isValid = false;
-    img = [];
-
-    if ~isfile(imageName)
-        warning('cut_micropads:missing_file', 'Image file not found: %s', imageName);
-        return;
-    end
-
-    try
-        img = imread_raw(imageName);
-        isValid = true;
-    catch ME
-        warning('cut_micropads:read_error', 'Failed to read image %s: %s', imageName, ME.message);
-    end
-end
-
-function saveImageWithFormat(img, outPath, ~, ~)
-    imwrite(img, outPath);
-end
 
 function outputDirs = createOutputDirectory(basePathPolygons, basePathEllipses, phoneName, numConcentrations, concFolderPrefix)
-    % Create polygon output directories
-    phoneOutputDirPolygons = fullfile(basePathPolygons, phoneName);
-    if ~isfolder(phoneOutputDirPolygons)
-        mkdir(phoneOutputDirPolygons);
-    end
-
-    for i = 0:(numConcentrations - 1)
-        concFolder = sprintf('%s%d', concFolderPrefix, i);
-        concPath = fullfile(phoneOutputDirPolygons, concFolder);
-        if ~isfolder(concPath)
-            mkdir(concPath);
-        end
-    end
-
-    % Create ellipse output directories
-    phoneOutputDirEllipses = fullfile(basePathEllipses, phoneName);
-    if ~isfolder(phoneOutputDirEllipses)
-        mkdir(phoneOutputDirEllipses);
-    end
-
-    for i = 0:(numConcentrations - 1)
-        concFolder = sprintf('%s%d', concFolderPrefix, i);
-        concPath = fullfile(phoneOutputDirEllipses, concFolder);
-        if ~isfolder(concPath)
-            mkdir(concPath);
-        end
-    end
-
-    % Return both directories as struct
-    outputDirs = struct();
-    outputDirs.polygonDir = phoneOutputDirPolygons;
-    outputDirs.ellipseDir = phoneOutputDirEllipses;
-end
-
-function folders = getSubFolders(dirPath)
-    items = dir(dirPath);
-    folders = {items([items.isdir]).name};
-    folders = folders(~ismember(folders, {'.', '..'}));
+    fileIO = file_io_manager();
+    outputDirs = fileIO.createOutputDirectory(basePathPolygons, basePathEllipses, phoneName, numConcentrations, concFolderPrefix);
 end
 
 function files = getImageFiles(dirPath, extensions)
-    % Collect files for each extension efficiently
-    fileList = cell(numel(extensions), 1);
-    for i = 1:numel(extensions)
-        foundFiles = dir(fullfile(dirPath, extensions{i}));
-        if ~isempty(foundFiles)
-            fileList{i} = {foundFiles.name}';
-        else
-            fileList{i} = {};
-        end
-    end
-
-    % Concatenate and get unique files
-    files = unique(vertcat(fileList{:}));
-end
-
-function executeInFolder(folder, func)
-    origDir = pwd;
-    cleanupObj = onCleanup(@() cd(origDir));
-    cd(folder);
-    func();
-end
-
-%% -------------------------------------------------------------------------
-%% YOLO Auto-Detection Integration
-%% -------------------------------------------------------------------------
-
-function ensurePythonSetup(pythonPath)
-    persistent setupComplete
-    if ~isempty(setupComplete) && setupComplete
-        return;
-    end
-
-    try
-        pythonPath = char(pythonPath);
-
-        % Check environment variable first
-        envPath = getenv('MICROPAD_PYTHON');
-        if ~isempty(envPath)
-            pythonPath = envPath;
-        end
-
-        % If still empty, try platform-specific search paths
-        if isempty(pythonPath)
-            pythonPath = searchForPython();
-        end
-
-        % Validate Python path is provided
-        if isempty(pythonPath)
-            error('cut_micropads:python_not_configured', ...
-                ['Python path not configured! Options:\n', ...
-                 '  1. Set MICROPAD_PYTHON environment variable\n', ...
-                 '  2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''path/to/python'')\n', ...
-                 '  3. Ensure Python is in system PATH']);
-        end
-
-        if ~isfile(pythonPath)
-            error('cut_micropads:python_missing', ...
-                'Python executable not found at: %s', pythonPath);
-        end
-
-        fprintf('Python configured: %s\n', pythonPath);
-        setupComplete = true;
-    catch ME
-        setupComplete = [];
-        rethrow(ME);
-    end
-end
-
-function pythonPath = searchForPython()
-    % Search for Python executable in common platform-specific locations
-    pythonPath = '';
-
-    if ispc()
-        % Windows: check common conda/miniconda locations
-        commonPaths = {
-            fullfile(getenv('USERPROFILE'), 'miniconda3\envs\microPAD-python-env\python.exe')
-            fullfile(getenv('USERPROFILE'), 'anaconda3\envs\microPAD-python-env\python.exe')
-            fullfile(getenv('LOCALAPPDATA'), 'Programs\Python\Python*\python.exe')
-        };
-    elseif ismac()
-        % macOS: check common conda/homebrew locations
-        commonPaths = {
-            fullfile(getenv('HOME'), 'miniconda3/envs/microPAD-python-env/bin/python')
-            fullfile(getenv('HOME'), 'anaconda3/envs/microPAD-python-env/bin/python')
-            '/usr/local/bin/python3'
-            '/opt/homebrew/bin/python3'
-        };
-    else
-        % Linux: check common conda/system locations
-        commonPaths = {
-            fullfile(getenv('HOME'), 'miniconda3/envs/microPAD-python-env/bin/python')
-            fullfile(getenv('HOME'), 'anaconda3/envs/microPAD-python-env/bin/python')
-            '/usr/bin/python3'
-        };
-    end
-
-    % Check each path
-    for i = 1:numel(commonPaths)
-        if isfile(commonPaths{i})
-            pythonPath = commonPaths{i};
-            return;
-        end
-    end
-
-    % Try system PATH as fallback
-    if ispc()
-        [status, result] = system('where python');
-    else
-        [status, result] = system('which python3');
-    end
-
-    if status == 0
-        lines = strsplit(strtrim(result), newline);
-        if ~isempty(lines)
-            pythonPath = char(lines{1});
-        end
-    end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
-end
-
-function [quads, confidences, outputFile, imgPath] = detectQuadsYOLO(img, cfg, varargin)
-    % Run YOLO detection via Python helper script (subprocess interface)
-    %
-    % Inputs:
-    %   img - input image array
-    %   cfg - configuration struct
-    %   varargin - optional name-value pairs:
-    %     'async' - if true, launch non-blocking and return immediately
-    %               returns empty quads/confidences, non-empty outputFile
-    %
-    % Outputs:
-    %   quads - detected quadrilaterals (Nx4x2 array) or [] if async
-    %   confidences - detection confidences (Nx1 array) or [] if async
-    %   outputFile - path to output file for async mode, empty otherwise
-    %   imgPath - path to temp image file (for caller cleanup in async mode)
-
-    % Extract image dimensions for validation
-    [imageHeight, imageWidth, ~] = size(img);
-
-    p = inputParser;
-    addParameter(p, 'async', false, @islogical);
-    parse(p, varargin{:});
-    asyncMode = p.Results.async;
-
-    % Save image to temporary file
-    tmpDir = tempdir;
-    [~, tmpName] = fileparts(tempname);
-    tmpImgPath = fullfile(tmpDir, sprintf('%s_micropad_detect.png', tmpName));
-    imwrite(img, tmpImgPath);
-
-    % Ensure cleanup even if error occurs (only in blocking mode)
-    if ~asyncMode
-        cleanupObj = onCleanup(@() cleanupTempFile(tmpImgPath));
-    end
-
-    % Initialize output variables
-    outputFile = '';
-    imgPath = '';
-
-    % Create output file for async mode
-    if asyncMode
-        outputFile = fullfile(tmpDir, sprintf('%s_detection_output.txt', tmpName));
-    end
-
-    % Build command with platform-specific syntax
-    if asyncMode
-        % Platform-specific background execution
-        if ispc
-            % Windows: Build command with proper quote handling for cmd /c
-            innerCmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d', ...
-                cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
-                cfg.minConfidence, cfg.inferenceSize);
-
-            % Escape quotes with double-quote for cmd /c context
-            escapedOutput = strrep(outputFile, '"', '""');
-
-            % Construct command: double-quotes work inside cmd /c "..."
-            cmd = sprintf('start /B "" cmd /c "%s > ""%s"" 2>&1"', innerCmd, escapedOutput);
-        else
-            % Unix/macOS: Use '&' suffix for background execution
-            cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d > "%s" 2>&1 &', ...
-                cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
-                cfg.minConfidence, cfg.inferenceSize, outputFile);
-        end
-    else
-        % Blocking mode: redirect stderr to stdout to capture all output
-        cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d 2>&1', ...
-            cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
-            cfg.minConfidence, cfg.inferenceSize);
-    end
-
-    % Run detection
-    if asyncMode
-        % Launch background process and return immediately
-        system(cmd);
-        quads = [];
-        confidences = [];
-        imgPath = tmpImgPath;  % Return temp image path for caller cleanup
-        return;
-    end
-
-    % Blocking mode: continue with original code
-    [status, output] = system(cmd);
-
-    if status ~= 0
-        error('cut_micropads:detection_failed', 'Python detection failed (exit code %d): %s', status, output);
-    end
-
-    % Parse output (split by newlines - R2019b compatible)
-    lines = strsplit(output, {'\n', '\r\n', '\r'}, 'CollapseDelimiters', false);
-    lines = lines(~cellfun(@isempty, lines));
-    [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth);
-end
-
-function [isComplete, quads, confidences, errorMsg] = checkDetectionComplete(outputFile, img)
-    % Check if async detection has completed and parse results
-    %
-    % Inputs:
-    %   outputFile - path to detection output file
-    %   img - input image for dimension validation
-    %
-    % Outputs:
-    %   isComplete - true if detection finished (success or error)
-    %   quads - detected quadrilaterals (Nx4x2) or [] if not complete/failed
-    %   confidences - detection confidences (Nx1) or [] if not complete/failed
-    %   errorMsg - error message string if parsing failed, empty otherwise
-
-    isComplete = false;
-    quads = [];
-    confidences = [];
-    errorMsg = '';
-
-    % Extract image dimensions for validation
-    [imageHeight, imageWidth, ~] = size(img);
-
-    % Check if output file exists and has content
-    if ~exist(outputFile, 'file')
-        return;
-    end
-
-    % Try to read the file
-    try
-        fid = fopen(outputFile, 'rt');
-        if fid < 0
-            return;
-        end
-
-        % Read all content
-        content = fread(fid, '*char')';
-        fclose(fid);
-
-        % Empty file means process hasn't written yet
-        if isempty(content)
-            return;
-        end
-
-        % Check for error patterns using single regexp
-        isError = ~isempty(regexp(content, '(ERROR:|Traceback|Exception|FileNotFoundError)', 'once', 'ignorecase'));
-
-        if isError
-            % Extract first 200 characters for error context (simple and reliable)
-            errorMsg = content;
-            if length(errorMsg) > 200
-                errorMsg = [errorMsg(1:200) '...'];
-            end
-            isComplete = true;
-            return;
-        end
-
-        % Parse output
-        lines = strsplit(content, {'\n', '\r\n', '\r'}, 'CollapseDelimiters', false);
-        lines = lines(~cellfun(@isempty, lines));
-
-        % Check for incomplete writes (detection count > 0 but no valid detections parsed)
-        if ~isempty(lines)
-            numDetections = str2double(lines{1});
-            if numDetections > 0 && length(lines) < numDetections + 1
-                % Incomplete write - Python still writing output
-                return;
-            end
-        end
-
-        [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth);
-
-        % Additional check: if count > 0 but parsing returned nothing, might be incomplete
-        if ~isempty(lines)
-            numDetections = str2double(lines{1});
-            if numDetections > 0 && isempty(quads)
-                return;
-            end
-        end
-
-        % Successfully parsed - mark complete
-        isComplete = true;
-
-    catch ME
-        % Error reading or parsing - consider complete but failed
-        isComplete = true;
-        errorMsg = sprintf('Failed to parse detection output: %s', ME.message);
-        warning('cut_micropads:detection_parse_error', '%s', errorMsg);
-    end
-end
-
-function [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWidth)
-    % Parse YOLO detection output format into polygon arrays
-    %
-    % Inputs:
-    %   lines - cell array of text lines (first line = count, rest = detections)
-    %   imageHeight - image height for bounds validation
-    %   imageWidth - image width for bounds validation
-    %
-    % Outputs:
-    %   quads - detected quadrilaterals [N x 4 x 2]
-    %   confidences - detection confidence scores [N x 1]
-    %
-    % Format: Each detection line contains 9 space-separated values:
-    %   x1 y1 x2 y2 x3 y3 x4 y4 confidence
-    %   (0-based coordinates from Python, converted to 1-based for MATLAB)
-
-    quads = [];
-    confidences = [];
-
-    if isempty(lines)
-        return;
-    end
-
-    numDetections = str2double(lines{1});
-
-    if numDetections == 0 || isnan(numDetections)
-        return;
-    end
-
-    quads = zeros(numDetections, 4, 2);
-    confidences = zeros(numDetections, 1);
-
-    for i = 1:numDetections
-        if i+1 > length(lines)
-            break;
-        end
-
-        parts = str2double(split(lines{i+1}));
-        if length(parts) < 9 || any(isnan(parts)) || any(isinf(parts))
-            warning('cut_micropads:invalid_detection', ...
-                    'Skipping detection %d: invalid numeric data', i);
-            continue;
-        end
-
-        % Parse: x1 y1 x2 y2 x3 y3 x4 y4 confidence (0-based from Python)
-        % Convert to MATLAB 1-based indexing
-        vertices = parts(1:8) + 1;
-
-        % Validate vertices are within reasonable bounds (2× image size for rotations)
-        if any(vertices < 0) || any(vertices > max([imageHeight, imageWidth]) * 2)
-            warning('cut_micropads:out_of_bounds', ...
-                    'Skipping detection %d: vertices out of bounds', i);
-            continue;
-        end
-
-        quad = reshape(vertices, 2, 4)';  % Reshape to 4x2 matrix
-        quads(i, :, :) = quad;
-        confidences(i) = parts(9);
-    end
-
-    % Filter out empty detections (where confidence = 0)
-    validMask = confidences > 0;
-    quads = quads(validMask, :, :);
-    confidences = confidences(validMask);
-
-    % NOTE: Polygon ordering is handled by sortPolygonArrayByX in caller
-    % (adaptive orientation-aware sorting for horizontal vs vertical strips)
-end
-
-function safeStopTimer(timerObj)
-    % Safely stop and delete timer without generating warnings
-    %
-    % Input:
-    %   timerObj - timer object to stop and delete
-    %
-    % Behavior:
-    %   - Checks if timer exists and is valid
-    %   - Only calls stop() if timer is currently running
-    %   - Always calls delete() to free resources
-
-    if ~isempty(timerObj) && isvalid(timerObj)
-        if strcmp(timerObj.Running, 'on')
-            stop(timerObj);
-        end
-        delete(timerObj);
-    end
+    fileIO = file_io_manager();
+    files = fileIO.getImageFiles(dirPath, extensions);
 end
 
 %% -------------------------------------------------------------------------
@@ -5349,7 +3331,7 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
         if isempty(scaledBasePolygons)
             fprintf('  Memory polygon count mismatch - using default geometry\n');
             [imageHeight, imageWidth, ~] = size(img);
-            initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+            initialPolygons = cfg.geomTform.geom.calculateDefaultPolygons(imageWidth, imageHeight, cfg);
             rotation = 0;
             source = 'default';
             return;
@@ -5368,7 +3350,7 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
     % No memory available: use default geometry for immediate display
     [imageHeight, imageWidth, ~] = size(img);
     fprintf('  Using default geometry (AI will update if enabled)\n');
-    initialPolygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+    initialPolygons = cfg.geomTform.geom.calculateDefaultPolygons(imageWidth, imageHeight, cfg);
     rotation = 0;
     source = 'default';
 
@@ -5424,95 +3406,7 @@ function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, 
     end
 end
 
-function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, oldEllipses, cfg, imageSize)
-    % Scale ellipse positions when polygon geometry changes between images
-    % Preserves relative positions within polygon bounds
-    %
-    % Inputs:
-    %   oldCorners - 4x2 matrix of old polygon vertices
-    %   newCorners - 4x2 matrix of new polygon vertices
-    %   oldEllipses - Nx7 matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-    %
-    % Outputs:
-    %   scaledEllipses - Nx7 matrix of scaled ellipse parameters (same format as input)
 
-    if isempty(oldEllipses)
-        scaledEllipses = oldEllipses;
-        return;
-    end
-
-    % Calculate old polygon centroid and dimensions
-    oldCentroid = mean(oldCorners, 1);
-    oldMinX = min(oldCorners(:, 1));
-    oldMaxX = max(oldCorners(:, 1));
-    oldMinY = min(oldCorners(:, 2));
-    oldMaxY = max(oldCorners(:, 2));
-    oldWidth = oldMaxX - oldMinX;
-    oldHeight = oldMaxY - oldMinY;
-
-    % Calculate new polygon centroid and dimensions
-    newCentroid = mean(newCorners, 1);
-    newMinX = min(newCorners(:, 1));
-    newMaxX = max(newCorners(:, 1));
-    newMinY = min(newCorners(:, 2));
-    newMaxY = max(newCorners(:, 2));
-    newWidth = newMaxX - newMinX;
-    newHeight = newMaxY - newMinY;
-
-    % Validate polygon dimensions (prevent division by zero)
-    if oldWidth <= 0 || oldHeight <= 0 || newWidth <= 0 || newHeight <= 0
-        warning('scaleEllipsesForPolygonChange:DegeneratePolygon', ...
-                'Polygon has zero or negative dimensions - returning empty ellipses');
-        scaledEllipses = [];
-        return;
-    end
-
-    % Compute uniform scale factor using geometric mean
-    scaleX = newWidth / oldWidth;
-    scaleY = newHeight / oldHeight;
-    axisScale = sqrt(scaleX * scaleY);
-
-    % Scale ellipse parameters
-    numEllipses = size(oldEllipses, 1);
-    scaledEllipses = zeros(size(oldEllipses));
-
-    bounds = computeEllipseAxisBounds(newCorners, imageSize, cfg);
-
-    for i = 1:numEllipses
-        % Extract from Nx7 format: [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
-        concIdx = oldEllipses(i, 1);
-        repIdx = oldEllipses(i, 2);
-        oldX = oldEllipses(i, 3);
-        oldY = oldEllipses(i, 4);
-        oldSemiMajor = oldEllipses(i, 5);
-        oldSemiMinor = oldEllipses(i, 6);
-        oldRotation = oldEllipses(i, 7);
-
-        % Transform centers relative to polygon centroid using uniform scaling
-        newX = (oldX - oldCentroid(1)) * axisScale + newCentroid(1);
-        newY = (oldY - oldCentroid(2)) * axisScale + newCentroid(2);
-
-        % Scale axes uniformly
-        newSemiMajor = oldSemiMajor * axisScale;
-        newSemiMinor = oldSemiMinor * axisScale;
-
-        % Enforce constraint: semiMajor >= semiMinor
-        if newSemiMinor > newSemiMajor
-            temp = newSemiMajor;
-            newSemiMajor = newSemiMinor;
-            newSemiMinor = temp;
-            newRotation = mod(oldRotation + 90, 360);
-        else
-            newRotation = oldRotation;
-        end
-
-        % Enforce configured limits
-        [newSemiMajor, newSemiMinor, newRotation] = enforceEllipseAxisLimits(newSemiMajor, newSemiMinor, newRotation, bounds);
-
-        % Preserve concIdx and repIdx in output (Nx7 format)
-        scaledEllipses(i, :) = [concIdx, repIdx, newX, newY, newSemiMajor, newSemiMinor, newRotation];
-    end
-end
 
 function runDeferredAIDetection(fig, cfg)
     % Run AI detection asynchronously and update polygons when complete
@@ -5555,7 +3449,7 @@ function runDeferredAIDetection(fig, cfg)
         % Launch async detection on BASE (unrotated) image
         % AI works on original image frame, coordinates are then rotated to match display
         img = guiData.baseImg;
-        [~, ~, outputFile, imgPath] = detectQuadsYOLO(img, cfg, 'async', true);
+        [~, ~, outputFile, imgPath] = cfg.yoloUtils.detectQuadsYOLO(img, cfg, 'async', true);
 
         % Store detection state
         guiData.asyncDetection.active = true;
@@ -5618,7 +3512,7 @@ function pollDetectionStatus(fig, cfg)
     end
 
     % Check if detection completed (validate against base image dimensions)
-    [isComplete, quads, confidences, errorMsg] = checkDetectionComplete(...
+    [isComplete, quads, confidences, errorMsg] = cfg.yoloUtils.checkDetectionComplete(...
         guiData.asyncDetection.outputFile, ...
         guiData.baseImg);
 
@@ -5667,7 +3561,7 @@ function pollDetectionStatus(fig, cfg)
 
             % Transform base-frame detections to current display frame
             % AI worked on baseImg, so quads are in base frame - rotate forward to match display
-            [newPolygons, ~] = rotatePolygonsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
+            [newPolygons, ~] = cfg.geomTform.geom.rotatePolygonsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
             
             % Sort by display-frame X coordinate for consistent labeling
             [newPolygons, newOrientation] = sortPolygonArrayByX(newPolygons);
@@ -5737,7 +3631,7 @@ function cleanupAsyncDetection(fig, guiData, success, cfg)
 
     % Stop and delete polling timer
     if ~isempty(guiData.asyncDetection.pollingTimer)
-        safeStopTimer(guiData.asyncDetection.pollingTimer);
+        cfg.micropadUI.safeStopTimer(guiData.asyncDetection.pollingTimer);
     end
 
     % Clean up output file
@@ -5807,7 +3701,7 @@ function cancelActiveDetection(fig, guiData, cfg)
     cleanupAsyncDetection(fig, guiData, false, cfg);
 end
 
-function updatePolygonPositions(polygonHandles, newPositions, labelHandles)
+function updatePolygonPositions(polygonHandles, newPositions, labelHandles, ui)
     % Update drawpolygon positions smoothly without recreating objects
     %
     % Inputs:
@@ -5839,7 +3733,9 @@ function updatePolygonPositions(polygonHandles, newPositions, labelHandles)
 
     % NEW: Update labels after polygon positions change
     if nargin >= 3 && ~isempty(labelHandles)
-        updatePolygonLabels(polygonHandles, labelHandles);
+        if nargin >= 4 && ~isempty(ui)
+            ui.updatePolygonLabels(polygonHandles, labelHandles);
+        end
     end
 
     drawnow limitrate;
@@ -5863,17 +3759,6 @@ function handleError(ME)
     rethrow(ME);
 end
 
-function cleanupTempFile(tmpPath)
-    % Helper to clean up temporary detection image file
-    if isfile(tmpPath)
-        try
-            delete(tmpPath);
-        catch
-            % Silently ignore cleanup errors
-        end
-    end
-end
-
 function cleanupAndClose(fig)
     % Clean up timers and progress indicators before closing figure
 
@@ -5886,18 +3771,39 @@ function cleanupAndClose(fig)
 
     % Cleanup all timers without cfg dependency (prevents leak on early errors)
     if isstruct(guiData)
+        ui = [];
+        if isfield(guiData, 'cfg') && isfield(guiData.cfg, 'micropadUI')
+            ui = guiData.cfg.micropadUI;
+        end
         % Direct timer fields
         timerFields = {'aiTimer', 'aiBreathingTimer'};
         for i = 1:numel(timerFields)
             if isfield(guiData, timerFields{i})
-                safeStopTimer(guiData.(timerFields{i}));
+                timerHandle = guiData.(timerFields{i});
+                if ~isempty(ui)
+                    ui.safeStopTimer(timerHandle);
+                elseif isvalid(timerHandle)
+                    try
+                        stop(timerHandle);
+                    catch
+                    end
+                    delete(timerHandle);
+                end
             end
         end
 
         % Async detection polling timer (nested field)
         if isfield(guiData, 'asyncDetection') && isstruct(guiData.asyncDetection) && ...
            isfield(guiData.asyncDetection, 'pollingTimer')
-            safeStopTimer(guiData.asyncDetection.pollingTimer);
+            if ~isempty(ui)
+                ui.safeStopTimer(guiData.asyncDetection.pollingTimer);
+            elseif isvalid(guiData.asyncDetection.pollingTimer)
+                try
+                    stop(guiData.asyncDetection.pollingTimer);
+                catch
+                end
+                delete(guiData.asyncDetection.pollingTimer);
+            end
         end
     end
 

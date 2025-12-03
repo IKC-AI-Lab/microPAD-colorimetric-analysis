@@ -8,10 +8,9 @@ function preview_augmented_overlays(varargin)
 %   matching the workflow of preview_overlays.m but for augmented data.
 %
 %   COORDINATE FORMATS:
-%   - Stage 2 (augmented_2_micropads): 10 columns without rotation
-%     Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4
-%     Note: Differs from regular pipeline coordinates.txt which includes
-%           rotation as 11th column. Augmented data omits rotation.
+%   - Stage 2 (augmented_2_micropads): 11 columns with rotation
+%     Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+%     Note: Matches standard pipeline coordinates.txt format.
 %   - Stage 3 (augmented_3_elliptical_regions): 8 columns
 %     Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
 %
@@ -30,8 +29,8 @@ ELLIPSE_RENDER_POINTS = 72;
 OVERLAY_COLOR_RGB = [0.48, 0.99, 0.00];  % Fluorescent green
 SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
 
-% Coordinate column name constants
-STAGE2_COORD_COLUMNS = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4'};
+% Coordinate column name constants (11 columns for stage 2, matching standard pipeline format)
+STAGE2_COORD_COLUMNS = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4','rotation'};
 STAGE3_COORD_COLUMNS = {'image','concentration','replicate','x','y','semiMajorAxis','semiMinorAxis','rotationAngle'};
 
 parser = inputParser;
@@ -173,7 +172,7 @@ draw_current();
                 draw_augmented_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
                 hold(st.ax, 'off');
             else
-                img = imread_raw(entry.imagePath);
+                img = imread(entry.imagePath);
                 imshow(img, 'Parent', st.ax);
                 hold(st.ax, 'on');
                 draw_augmented_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
@@ -338,37 +337,24 @@ if ~isempty(plan)
 end
 end
 
-function imgPath = find_image_file(phoneDir, baseName, supportedExts)
+function imgPath = find_image_file(phoneDir, baseName, ~)
 % Search for image file matching baseName with any supported extension
-imgPath = '';
-if ~isfolder(phoneDir)
-    return;
+%
+% Delegates to image_io.findImageFile for consistent file discovery
+% across all scripts. Uses persistent cache for performance.
+%
+% Note: Third argument (supportedExts) is ignored - image_io uses its
+% built-in list of supported extensions for consistency.
+%
+% See also: image_io.findImageFile
+
+persistent imageIO cache
+if isempty(imageIO)
+    imageIO = image_io();
+    cache = imageIO.createCaches();
 end
 
-% Try each extension
-for i = 1:length(supportedExts)
-    candidate = fullfile(phoneDir, [baseName, supportedExts{i}]);
-    if isfile(candidate)
-        imgPath = candidate;
-        return;
-    end
-end
-
-% Fallback: case-insensitive search
-dirInfo = dir(phoneDir);
-files = dirInfo(~[dirInfo.isdir]);
-for i = 1:length(files)
-    [~, fbase, fext] = fileparts(files(i).name);
-    if strcmpi(fbase, baseName)
-        % Check if extension is supported
-        for j = 1:length(supportedExts)
-            if strcmpi(fext, supportedExts{j})
-                imgPath = fullfile(phoneDir, files(i).name);
-                return;
-            end
-        end
-    end
-end
+imgPath = imageIO.findImageFile(phoneDir, baseName, cache);
 end
 
 function draw_augmented_overlays(ax, entry, ellipseRenderPoints, overlayColor)
@@ -445,92 +431,40 @@ isPhone = [entries.isdir] & ~ismember({entries.name}, {'.', '..'});
 names = string({entries(isPhone).name});
 end
 
-function tbl = read_polygon_table(coordPath, expectedColumns)
-% Read concentration polygon coordinate table (robust to missing header)
-if ~isfile(coordPath)
-    tbl = table();
-    return;
+function tbl = read_polygon_table(coordPath, ~)
+% Read concentration polygon coordinate table using coordinate_io
+%
+% Delegates to coordinate_io.parsePolygonCoordinateFileAsTable for consistent
+% parsing across all scripts. See coordinate_io.m for authoritative format docs.
+%
+% Note: Second argument (expectedColumns) is ignored - coordinate_io uses
+% standardized column names for consistency.
+%
+% See also: coordinate_io.parsePolygonCoordinateFileAsTable
+
+persistent coordIO
+if isempty(coordIO)
+    coordIO = coordinate_io();
 end
 
-% Detect header by peeking first non-empty line
-fid = fopen(coordPath, 'rt');
-if fid == -1
-    tbl = table();
-    return;
+tbl = coordIO.parsePolygonCoordinateFileAsTable(coordPath);
 end
 
-% Initialize firstLine to default header in case file is empty
-firstLine = strjoin(expectedColumns, ' ');
-while true
-    line = fgetl(fid);
-    if ~ischar(line)
-        % EOF reached - firstLine retains default header
-        break;
-    end
-    if ~isempty(strtrim(line))
-        firstLine = line;
-        break;
-    end
-end
-fclose(fid);
+function tbl = read_ellipse_table(coordPath, ~)
+% Read ellipse metadata table using coordinate_io
+%
+% Delegates to coordinate_io.parseEllipseCoordinateFileAsTable for consistent
+% parsing across all scripts. See coordinate_io.m for authoritative format docs.
+%
+% Note: Second argument (expectedColumns) is ignored - coordinate_io uses
+% standardized column names for consistency.
+%
+% See also: coordinate_io.parseEllipseCoordinateFileAsTable
 
-lowerFirst = lower(string(strtrim(firstLine)));
-hasHeader = contains(lowerFirst, "image") && contains(lowerFirst, "concentration");
-
-tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
-    'TextType', 'string', 'ReadVariableNames', hasHeader);
-
-% Assign standard variable names when header is missing
-if ~hasHeader
-    n = min(numel(expectedColumns), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
-end
+persistent coordIO
+if isempty(coordIO)
+    coordIO = coordinate_io();
 end
 
-function tbl = read_ellipse_table(coordPath, expectedColumns)
-% Read ellipse metadata table (robust to missing header)
-if ~isfile(coordPath)
-    tbl = table();
-    return;
-end
-
-fid = fopen(coordPath, 'rt');
-if fid == -1
-    tbl = table();
-    return;
-end
-
-% Initialize firstLine to default header in case file is empty
-firstLine = strjoin(expectedColumns, ' ');
-while true
-    line = fgetl(fid);
-    if ~ischar(line)
-        % EOF reached - firstLine retains default header
-        break;
-    end
-    if ~isempty(strtrim(line))
-        firstLine = line;
-        break;
-    end
-end
-fclose(fid);
-
-lowerFirst = lower(string(strtrim(firstLine)));
-hasHeader = contains(lowerFirst, "image") && contains(lowerFirst, "concentration");
-
-tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
-    'TextType', 'string', 'ReadVariableNames', hasHeader);
-
-if ~hasHeader
-    n = min(numel(expectedColumns), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
-end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
+tbl = coordIO.parseEllipseCoordinateFileAsTable(coordPath);
 end

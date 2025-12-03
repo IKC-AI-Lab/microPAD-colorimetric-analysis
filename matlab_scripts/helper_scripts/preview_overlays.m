@@ -49,8 +49,12 @@ function preview_overlays(varargin)
     coordsRootIn = char(parser.Results.coordsFolder);
     ellipseRootIn = char(parser.Results.ellipseFolder);
 
-    % Resolve paths relative to repo root using standard findProjectRoot
-    repoRoot = findProjectRoot(datasetRootIn, PROJECT_ROOT_SEARCH_DEPTH);
+    % Resolve paths relative to repo root using canonical findProjectRoot from path_utils
+    persistent pathUtilsModule
+    if isempty(pathUtilsModule)
+        pathUtilsModule = path_utils();
+    end
+    repoRoot = pathUtilsModule.findProjectRoot(datasetRootIn, PROJECT_ROOT_SEARCH_DEPTH);
     datasetRoot = resolve_folder(repoRoot, datasetRootIn);
     coordsRoot = resolve_folder(repoRoot, coordsRootIn);
     ellipseRoot = resolve_folder(repoRoot, ellipseRootIn);
@@ -156,7 +160,7 @@ function preview_overlays(varargin)
                 draw_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
                 hold(st.ax, 'off');
             else
-                img = imread_raw(entry.imagePath);
+                img = imread(entry.imagePath);
                 imshow(img, 'Parent', st.ax);
                 hold(st.ax, 'on');
                 draw_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
@@ -410,52 +414,18 @@ end
 %% -------------------------------------------------------------------------
 
 function T = read_polygon_coordinates_table(coordFile)
-    %% Read polygon coordinates from 2_micropads
-    %% Format: image concentration x1 y1 x2 y2 x3 y4 x4 y4 rotation
-    T = [];
-    try
-        opts = detectImportOptions(coordFile, 'FileType', 'text');
-        opts.Delimiter = {' ', '\t'};
-        opts.ConsecutiveDelimitersRule = 'join';
-        T = readtable(coordFile, opts);
-    catch ME
-        warning('preview_overlays:polygon_read_fallback', ...
-            'Import failed for %s: %s\nFalling back to manual read.', coordFile, ME.message);
-        % Fallback manual read
-        fid = fopen(coordFile, 'rt');
-        if fid == -1
-            warning('preview_overlays:polygon_open', ...
-                'Cannot open coordinates file: %s\nCheck file permissions and path.', coordFile);
-            return;
-        end
-        try
-            C = textscan(fid, '%s %f %f %f %f %f %f %f %f %f %f', 'HeaderLines', 1, ...
-                           'Delimiter', {' ', '	'}, 'MultipleDelimsAsOne', true);
-        catch ME2
-            fclose(fid);
-            warning('preview_overlays:polygon_textscan_error', ...
-                'Failed to parse coordinates file: %s\nError: %s', coordFile, ME2.message);
-            return;
-        end
-        fclose(fid);
-        if isempty(C) || isempty(C{1})
-            return;
-        end
-        if numel(C) < 11
-            warning('preview_overlays:polygon_parse', ...
-                'Unexpected coordinate format in %s\nExpected 11 columns: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation', coordFile);
-            return;
-        end
-        % Validate all columns have equal row counts
-        rowCounts = cellfun(@length, C);
-        if any(rowCounts ~= rowCounts(1))
-            warning('preview_overlays:polygon_parse', ...
-                'Inconsistent row counts in %s\nColumn counts: %s', coordFile, mat2str(rowCounts));
-            return;
-        end
-        T = table(C{1}, C{2}, C{3}, C{4}, C{5}, C{6}, C{7}, C{8}, C{9}, C{10}, C{11}, ...
-                  'VariableNames', {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4','rotation'});
+    %% Read polygon coordinates from 2_micropads using coordinate_io
+    %% Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+    %
+    % Delegates to coordinate_io.parsePolygonCoordinateFileAsTable for consistent
+    % parsing across all scripts. See coordinate_io.m for authoritative format docs.
+
+    persistent coordIO
+    if isempty(coordIO)
+        coordIO = coordinate_io();
     end
+
+    T = coordIO.parsePolygonCoordinateFileAsTable(coordFile);
 end
 
 function T = standardize_polygon_coord_vars(T, sourceName)
@@ -490,51 +460,18 @@ function T = standardize_polygon_coord_vars(T, sourceName)
 end
 
 function T = read_ellipse_coordinates_table(coordFile)
-    %% Read elliptical patch coordinates.txt files
+    %% Read elliptical patch coordinates.txt files using coordinate_io
     %% Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-    T = [];
-    try
-        opts = detectImportOptions(coordFile, 'FileType', 'text');
-        opts.Delimiter = {' ', '\t'};
-        opts.ConsecutiveDelimitersRule = 'join';
-        T = readtable(coordFile, opts);
-    catch ME
-        warning('preview_overlays:ellipse_read_fallback', ...
-            'Import failed for ellipse coordinates %s: %s\nFalling back to manual read.', coordFile, ME.message);
-        % Fallback manual read
-        fid = fopen(coordFile, 'rt');
-        if fid == -1
-            warning('preview_overlays:ellipse_coord_open', ...
-                'Cannot open ellipse coordinates file: %s\nCheck file permissions and path.', coordFile);
-            return;
-        end
-        try
-            C = textscan(fid, '%s %f %f %f %f %f %f %f', 'HeaderLines', 1);
-        catch ME2
-            fclose(fid);
-            warning('preview_overlays:ellipse_textscan_error', ...
-                'Failed to parse ellipse coordinates file: %s\nError: %s', coordFile, ME2.message);
-            return;
-        end
-        fclose(fid);
-        if isempty(C) || isempty(C{1})
-            return;
-        end
-        if numel(C) < 8
-            warning('preview_overlays:ellipse_coord_parse', ...
-                'Unexpected ellipse coordinate format in %s\nExpected 8 columns: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle', coordFile);
-            return;
-        end
-        % Validate all columns have equal row counts
-        rowCounts = cellfun(@length, C);
-        if any(rowCounts ~= rowCounts(1))
-            warning('preview_overlays:ellipse_coord_parse', ...
-                'Inconsistent row counts in %s\nColumn counts: %s', coordFile, mat2str(rowCounts));
-            return;
-        end
-        T = table(C{1}, C{2}, C{3}, C{4}, C{5}, C{6}, C{7}, C{8}, ...
-                  'VariableNames', {'image','concentration','replicate','x','y','semiMajorAxis','semiMinorAxis','rotationAngle'});
+    %
+    % Delegates to coordinate_io.parseEllipseCoordinateFileAsTable for consistent
+    % parsing across all scripts. See coordinate_io.m for authoritative format docs.
+
+    persistent coordIO
+    if isempty(coordIO)
+        coordIO = coordinate_io();
     end
+
+    T = coordIO.parseEllipseCoordinateFileAsTable(coordFile);
 end
 
 function T = standardize_ellipse_coord_vars(T, sourceName)
@@ -832,94 +769,24 @@ function absFolder = resolve_folder(repoRoot, folderIn)
     % Leave as original (caller will error)
 end
 
-function projectRoot = findProjectRoot(inputFolder, maxLevels)
-    %% Find project root by searching upward from current directory
-    currentDir = pwd;
-    searchDir = currentDir;
-
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-
-        searchDir = parentDir;
-    end
-
-    projectRoot = currentDir;
-end
-
-function imgPath = find_image_file(phoneDir, baseName, supportedExts)
+function imgPath = find_image_file(phoneDir, baseName, ~)
     %% Search for image file matching baseName with supported extension
-    persistent dirCache validExtSet;
-    if isempty(dirCache)
-        dirCache = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    end
-    if isempty(validExtSet)
-        validExtSet = containers.Map();
-        for i = 1:length(supportedExts)
-            validExtSet(lower(supportedExts{i})) = true;
-        end
-    end
+    %
+    % Delegates to image_io.findImageFile for consistent file discovery
+    % across all scripts. Uses persistent cache for performance.
+    %
+    % Note: Third argument (supportedExts) is ignored - image_io uses its
+    % built-in list of supported extensions for consistency.
+    %
+    % See also: image_io.findImageFile
 
-    imgPath = '';
-    if ~isfolder(phoneDir), return; end
-
-    % Try direct matches first (fastest path)
-    for i = 1:length(supportedExts)
-        candidate = fullfile(phoneDir, [baseName supportedExts{i}]);
-        if isfile(candidate)
-            imgPath = candidate;
-            return;
-        end
+    persistent imageIO cache
+    if isempty(imageIO)
+        imageIO = image_io();
+        cache = imageIO.createCaches();
     end
 
-    % Fallback: case-insensitive search using cached directory listings
-    if ~isKey(dirCache, phoneDir)
-        % Cache directory contents with optimized parsing
-        dirInfo = dir(phoneDir);
-        files = dirInfo(~[dirInfo.isdir]);
-
-        if ~isempty(files)
-            fileNames = {files.name};
-            % Vectorized fileparts decomposition
-            numFiles = length(fileNames);
-            bases = cell(numFiles, 1);
-            fileExts = cell(numFiles, 1);
-            for i = 1:numFiles
-                [~, bases{i}, fileExts{i}] = fileparts(fileNames{i});
-            end
-            dirCache(phoneDir) = struct('fileNames', {fileNames}, 'bases', {bases}, 'exts', {fileExts});
-        else
-            dirCache(phoneDir) = struct('fileNames', {{}}, 'bases', {{}}, 'exts', {{}});
-        end
-    end
-
-    cached = dirCache(phoneDir);
-    if isempty(cached.bases), return; end
-
-    % Find matching base names (case-insensitive)
-    baseMatches = strcmpi(cached.bases, baseName);
-
-    % Find matching extensions using pre-computed set (faster than cellfun)
-    extMatches = false(size(cached.exts));
-    for i = 1:length(cached.exts)
-        extMatches(i) = isKey(validExtSet, lower(cached.exts{i}));
-    end
-
-    % Find files that match both criteria
-    validFiles = baseMatches & extMatches;
-
-    if any(validFiles)
-        matchIdx = find(validFiles, 1); % Get first match
-        imgPath = fullfile(phoneDir, cached.fileNames{matchIdx});
-    end
+    imgPath = imageIO.findImageFile(phoneDir, baseName, cache);
 end
 
 function draw_overlays(ax, entry, ellipseRenderPoints, overlayColor)
@@ -981,14 +848,6 @@ function name = compute_display_name(root, pathStr)
         name = pathStr; % fallback to original
     end
     name = strrep(name, '/', filesep);
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
 end
 
 function concValues = extract_concentration_column(T)

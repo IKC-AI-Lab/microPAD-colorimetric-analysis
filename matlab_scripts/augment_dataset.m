@@ -228,11 +228,20 @@ function augment_dataset(varargin)
     customBgHeight = ~ismember('backgroundHeight', defaultsUsed);
     customScenePrefix = ~ismember('scenePrefix', defaultsUsed);
 
-    % Load homography utilities from helper script
-    homography = homography_utils();
+    %% Load utility modules
+    geomTform = geometry_transform();
+    imageIO = image_io();
+    pathUtils = path_utils();
+    augSynth = augmentation_synthesis();
+    coordIO = coordinate_io();  % Authoritative source for coordinate I/O
 
     % Build configuration
     cfg = struct();
+    cfg.geomTform = geomTform;
+    cfg.pathUtils = pathUtils;
+    cfg.imageIO = imageIO;
+    cfg.augSynth = augSynth;
+    cfg.coordIO = coordIO;
     cfg.numAugmentations = opts.numAugmentations;
     cfg.backgroundOverride = struct( ...
         'useWidth', customBgWidth, ...
@@ -335,7 +344,7 @@ function augment_dataset(varargin)
     cfg.damage.rngSeed = opts.damageSeed;
 
     % Resolve paths
-    projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
+    projectRoot = pathUtils.findProjectRoot(DEFAULT_INPUT_STAGE1);
     cfg.projectRoot = projectRoot;
     cfg.paths = struct( ...
         'stage1Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE1), ...
@@ -364,7 +373,7 @@ function augment_dataset(varargin)
     requestedPhones = string(opts.phones);
     requestedPhones = requestedPhones(requestedPhones ~= "");
 
-    phoneList = list_phones(cfg.paths.stage1Input);
+    phoneList = pathUtils.listSubfolders(cfg.paths.stage1Input);
     if isempty(phoneList)
         error('augmentDataset:noPhones', 'No phone folders found in %s', cfg.paths.stage1Input);
     end
@@ -465,11 +474,11 @@ function augment_phone(phoneName, cfg)
     stage1PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage1Output, phoneName);
     stage2PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage2Output, phoneName);
     stage3PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage3Output, phoneName);
-    ensure_folder(stage1PhoneOut);
-    ensure_folder(stage2PhoneOut);
+    cfg.pathUtils.ensureFolder(stage1PhoneOut);
+    cfg.pathUtils.ensureFolder(stage2PhoneOut);
     % Only create stage3 output folder if we have ellipse data
     if hasEllipses
-        ensure_folder(stage3PhoneOut);
+        cfg.pathUtils.ensureFolder(stage3PhoneOut);
     end
 
     % Get unique paper names
@@ -490,8 +499,8 @@ function augment_phone(phoneName, cfg)
             continue;
         end
 
-        % Load image once (using imread_raw to handle EXIF orientation)
-        stage1Img = imread_raw(imgPath);
+        % Load image once (using loadImageRaw to handle EXIF orientation)
+        stage1Img = cfg.imageIO.loadImageRaw(imgPath);
 
         % Convert grayscale to RGB (synthetic backgrounds are always RGB)
         if size(stage1Img, 3) == 1
@@ -580,7 +589,7 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
         end
 
         concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
-        ensure_folder(concDir);
+        cfg.pathUtils.ensureFolder(concDir);
         polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, poly.concentration, imgExt);
         polygonOutPath = fullfile(concDir, polygonFileName);
         imwrite(polygonImg, polygonOutPath);
@@ -614,7 +623,7 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
                 end
 
                 ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
-                ensure_folder(ellipseDir);
+                cfg.pathUtils.ensureFolder(ellipseDir);
                 patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
                                         poly.concentration, ellipseIn.replicate, imgExt);
                 patchOutPath = fullfile(ellipseDir, patchFileName);
@@ -671,14 +680,14 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         extremeCamera = cfg.camera;
         extremeCamera.maxAngleDeg = 75;
         extremeCamera.zRange = [0.8, 4.0];
-        viewParams = homography.sample_viewpoint(extremeCamera);
+        viewParams = cfg.geomTform.homog.sampleViewpoint(extremeCamera);
     else
         % Normal camera viewpoint
-        viewParams = homography.sample_viewpoint(cfg.camera);
+        viewParams = cfg.geomTform.homog.sampleViewpoint(cfg.camera);
     end
-    tformPersp = homography.compute_homography(size(stage1Img), viewParams, cfg.camera);
-    rotAngle = homography.rand_range(cfg.rotationRange);
-    tformRot = homography.centered_rotation_tform(size(stage1Img), rotAngle);
+    tformPersp = cfg.geomTform.homog.computeHomography(size(stage1Img), viewParams, cfg.camera);
+    rotAngle = cfg.geomTform.homog.randRange(cfg.rotationRange);
+    tformRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), rotAngle);
 
     % Pre-allocate coordinate accumulators
     % Stage 2: one entry per polygon (upper bound = validCount after validation)
@@ -705,18 +714,18 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         origVertices = polyEntry.vertices;
 
         % Apply shared perspective transformation
-        augVertices = homography.transform_polygon(origVertices, tformPersp);
-        augVertices = homography.transform_polygon(augVertices, tformRot);
+        augVertices = cfg.geomTform.homog.transformPolygon(origVertices, tformPersp);
+        augVertices = cfg.geomTform.homog.transformPolygon(augVertices, tformRot);
 
         % Apply independent rotation per polygon if enabled
         if cfg.independentRotation
-            independentRotAngle = homography.rand_range(cfg.rotationRange);
-            tformIndepRot = homography.centered_rotation_tform(size(stage1Img), independentRotAngle);
+            independentRotAngle = cfg.geomTform.homog.randRange(cfg.rotationRange);
+            tformIndepRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), independentRotAngle);
         else
             independentRotAngle = 0;
             tformIndepRot = affine2d(eye(3));
         end
-        augVertices = homography.transform_polygon(augVertices, tformIndepRot);
+        augVertices = cfg.geomTform.homog.transformPolygon(augVertices, tformIndepRot);
 
         % Validate transformed polygon
         if ~is_valid_polygon(augVertices, cfg.minValidPolygonArea)
@@ -730,7 +739,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         [polygonContent, contentBbox] = extract_polygon_masked(stage1Img, origVertices);
 
         % Transform extracted content to match augmented shape
-        augPolygonImg = homography.transform_polygon_content(polygonContent, ...
+        augPolygonImg = cfg.geomTform.homog.transformPolygon_content(polygonContent, ...
                                                   origVertices, augVertices, contentBbox);
 
         % Convert augmented vertices to cropped coordinate space (shared by damage + ellipse transforms)
@@ -743,7 +752,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         ellipseKey = sprintf('%s#%d', paperBase, concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
             rawEllipseList = ellipseMap(ellipseKey);
-            ellipseAugList = homography.transform_region_ellipses( ...
+            ellipseAugList = cfg.geomTform.homog.transformRegionEllipses( ...
                 rawEllipseList, paperBase, concentration, origVertices, contentBbox, ...
                 augVertices, minXCrop, minYCrop, tformPersp, tformRot, ...
                 tformIndepRot, rotAngle + independentRotAngle);
@@ -873,7 +882,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
         % Save polygon crop (stage 2 output)
         concDirOut = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
-        ensure_folder(concDirOut);
+        cfg.pathUtils.ensureFolder(concDirOut);
 
         polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, concentration, imgExt);
         polygonOutPath = fullfile(concDirOut, polygonFileName);
@@ -881,8 +890,19 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
         % Record stage 2 coordinates (polygon in scene)
         % Compute total applied rotation and update saved rotation field
+        %
+        % ROTATION SEMANTICS:
+        %   The rotation field in Stage 2 coordinates is a UI-only alignment hint
+        %   (see cut_micropads.m documentation). When augmenting:
+        %   - originalRotation: The source image's UI hint (from 2_micropads)
+        %   - totalAppliedRotation: Sum of scene rotation + any independent polygon rotation
+        %   - augmentedRotation: Adjusted hint for the augmented image
+        %
+        %   Formula: augmentedRotation = originalRotation - totalAppliedRotation
+        %   This ensures that if a user loads the augmented image in the UI and applies
+        %   the saved rotation, the visual alignment is preserved.
         totalAppliedRotation = rotAngle + region.independentRotAngle;
-        augmentedRotation = homography.normalizeAngle(region.originalRotation - totalAppliedRotation);
+        augmentedRotation = cfg.geomTform.normalizeAngle(region.originalRotation - totalAppliedRotation);
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
@@ -913,7 +933,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
                 % Save ellipse patch (stage 3 output)
                 ellipseConcDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
-                ensure_folder(ellipseConcDir);
+                cfg.pathUtils.ensureFolder(ellipseConcDir);
                 patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
                                         concentration, replicateId, imgExt);
                 patchOutPath = fullfile(ellipseConcDir, patchFileName);
@@ -996,7 +1016,20 @@ end
 
 function [content, bbox] = extract_polygon_masked(img, vertices)
     % Extract polygon region with masking to avoid black pixels.
-    % Optimization: restrict poly2mask to the local bbox instead of the full frame.
+    %
+    % Delegates to mask_utils.cropWithPolygonMask for consistent masking
+    % across all scripts. See mask_utils.m for authoritative implementation.
+    %
+    % OUTPUTS:
+    %   content - Cropped and masked image (bounding box size)
+    %   bbox    - [minX, minY, width, height] of cropped region
+    %
+    % See also: mask_utils.cropWithPolygonMask
+
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
+    end
 
     [imgH, imgW, numChannels] = size(img);
 
@@ -1006,15 +1039,11 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
         return;
     end
 
-    minX = floor(min(vertices(:,1)));
-    maxX = ceil(max(vertices(:,1)));
-    minY = floor(min(vertices(:,2)));
-    maxY = ceil(max(vertices(:,2)));
-
-    minX = max(1, minX);
-    minY = max(1, minY);
-    maxX = min(imgW, maxX);
-    maxY = min(imgH, maxY);
+    % Compute bounding box for return value
+    minX = max(1, floor(min(vertices(:,1))));
+    maxX = min(imgW, ceil(max(vertices(:,1))));
+    minY = max(1, floor(min(vertices(:,2))));
+    maxY = min(imgH, ceil(max(vertices(:,2))));
 
     if maxX < minX || maxY < minY
         content = zeros(0, 0, numChannels, 'like', img);
@@ -1022,25 +1051,17 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
         return;
     end
 
-    bboxWidth = maxX - minX + 1;
-    bboxHeight = maxY - minY + 1;
+    % Delegate masking to mask_utils
+    [content, ~] = masks.cropWithPolygonMask(img, vertices);
 
-    relVerts = vertices - [minX - 1, minY - 1];
-
-    mask = poly2mask(relVerts(:,1), relVerts(:,2), bboxHeight, bboxWidth);
-    if ~any(mask(:))
+    if isempty(content)
         content = zeros(0, 0, numChannels, 'like', img);
         bbox = [1, 1, 0, 0];
         return;
     end
 
-    bboxContent = img(minY:maxY, minX:maxX, :);
-    if numChannels == 3
-        content = bboxContent .* cast(repmat(mask, [1, 1, 3]), 'like', bboxContent);
-    else
-        content = bboxContent .* cast(mask, 'like', bboxContent);
-    end
-
+    bboxWidth = maxX - minX + 1;
+    bboxHeight = maxY - minY + 1;
     bbox = [minX, minY, bboxWidth, bboxHeight];
 end
 
@@ -1106,418 +1127,29 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
 end
 
 function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes, occupiedBboxes, cfg)
-    % Inject additional polygon-shaped distractors matching source geometry statistics.
-
-    distractorCfg = cfg.distractors;
-    if isempty(regions) || ~distractorCfg.enabled
-        placedCount = 0;
-        return;
-    end
-
-    targetCount = randi([distractorCfg.minCount, distractorCfg.maxCount]);
-    if targetCount <= 0
-        placedCount = 0;
-        return;
-    end
-
-    [bgHeight, bgWidth, ~] = size(bg);
-    if bgHeight < 1 || bgWidth < 1
-        placedCount = 0;
-        return;
-    end
-
-    numSource = numel(regions);
-    maxBboxes = targetCount + size(occupiedBboxes, 1);
-    allBboxes = zeros(maxBboxes, 4);
-    bboxCount = 0;
-
-    if ~isempty(occupiedBboxes)
-        bboxCount = size(occupiedBboxes, 1);
-        allBboxes(1:bboxCount, :) = double(occupiedBboxes);
-    end
-
-    placedCount = 0;
-    for k = 1:targetCount
-        srcIdx = randi(numSource);
-        region = regions{srcIdx};
-        bboxInfo = polygonBboxes{srcIdx};
-        templatePatch = region.augPolygonImg;
-
-        if isempty(templatePatch) || bboxInfo.width <= 0 || bboxInfo.height <= 0
-            continue;
-        end
-
-        patchType = sample_distractor_type(distractorCfg);
-        patch = synthesize_distractor_patch(templatePatch, cfg.texture, distractorCfg, patchType);
-        if isempty(patch)
-            continue;
-        end
-
-        patch = jitter_polygon_patch(patch, distractorCfg);
-
-        % Apply random uniform scaling to distractor
-        scaleRange = distractorCfg.sizeScaleRange;
-        scaleFactor = scaleRange(1) + rand() * diff(scaleRange);
-        [patch, localVerts] = scale_distractor_patch(patch, region.augVertices, bboxInfo, scaleFactor);
-
-        if isempty(patch)
-            continue;
-        end
-
-        % Compute scaled bbox dimensions
-        scaledWidth = round(bboxInfo.width * scaleFactor);
-        scaledHeight = round(bboxInfo.height * scaleFactor);
-        if scaledWidth <= 0 || scaledHeight <= 0
-            continue;
-        end
-
-        bboxStruct = struct('width', scaledWidth, 'height', scaledHeight);
-        for attempt = 1:distractorCfg.maxPlacementAttempts
-            [xCandidate, yCandidate] = random_top_left(bboxStruct, cfg.placement.margin, bgWidth, bgHeight);
-            if ~isfinite(xCandidate) || ~isfinite(yCandidate)
-                continue;
-            end
-
-            candidateBbox = [xCandidate, yCandidate, xCandidate + scaledWidth, yCandidate + scaledHeight];
-
-            % Check collision with all placed bboxes (O(n) iteration acceptable for small distractor counts)
-            hasConflict = false;
-            for j = 1:bboxCount
-                if bboxes_overlap(candidateBbox, allBboxes(j, :), cfg.placement.minSpacing)
-                    hasConflict = true;
-                    break;
-                end
-            end
-            if hasConflict
-                continue;
-            end
-
-            sceneVerts = localVerts + [xCandidate, yCandidate];
-
-            bg = composite_to_background(bg, patch, sceneVerts);
-            bboxCount = bboxCount + 1;
-            allBboxes(bboxCount, :) = candidateBbox;
-            placedCount = placedCount + 1;
-            break;
-        end
-    end
-end
-
-function patchType = sample_distractor_type(distractorCfg)
-    % Sample distractor rendering style using configured weights.
-
-    weights = [1, 1, 1];
-    if isfield(distractorCfg, 'typeWeights')
-        candidate = double(distractorCfg.typeWeights(:)');
-        candidate = candidate(isfinite(candidate) & candidate >= 0);
-        if ~isempty(candidate)
-            limit = min(3, numel(candidate));
-            weights(1:limit) = candidate(1:limit);
-        end
-    end
-
-    totalWeight = sum(weights);
-    if totalWeight <= 0
-        weights = [1, 1, 1];
-        totalWeight = 3;
-    end
-
-    cumulative = cumsum(weights);
-    r = rand() * totalWeight;
-    patchType = find(r <= cumulative, 1, 'first');
-    if isempty(patchType)
-        patchType = 2;
-    end
-end
-
-function patch = synthesize_distractor_patch(templatePatch, textureCfg, distractorCfg, patchType)
-    % Create a synthetic distractor polygon using the original mask as a template.
-
-    if isempty(templatePatch)
-        patch = templatePatch;
-        return;
-    end
-
-    mask = any(templatePatch > 0, 3);
-    if ~any(mask(:))
-        patch = [];
-        return;
-    end
-
-    numChannels = size(templatePatch, 3);
-    baseColor = sample_distractor_color(textureCfg, numChannels);
-    if nargin < 4 || isempty(patchType) || ~ismember(patchType, 1:3)
-        patchType = 2;
-    end
-
-    maskFloat = single(mask);
-    baseColorNorm = single(baseColor) / 255;
-    [height, width, ~] = size(templatePatch);
-    patchFloat = zeros(height, width, numChannels, 'single');
-
-    switch patchType
-        case 1  % Outline only
-            outlineMask = compute_outline_mask(mask, distractorCfg);
-            if ~any(outlineMask(:))
-                patch = [];
-                return;
-            end
-            outlineFloat = single(outlineMask);
-            strokeScale = 1 + 0.12 * (single(rand(1, numChannels)) - 0.5);
-            strokeScale = max(0.6, min(1.4, strokeScale));
-            for c = 1:numChannels
-                patchFloat(:,:,c) = outlineFloat * (baseColorNorm(c) * strokeScale(c));
-            end
-            activeMask = outlineMask;
-
-        case 3  % Textured fill
-            texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg);
-            channelScale = 1 + 0.10 * (single(rand(1, numChannels)) - 0.5);
-            channelScale = max(0.7, min(1.3, channelScale));
-            for c = 1:numChannels
-                modulation = texture * channelScale(c);
-                patchFloat(:,:,c) = (baseColorNorm(c) + modulation) .* maskFloat;
-            end
-            activeMask = mask;
-
-        otherwise  % Solid fill
-            for c = 1:numChannels
-                patchFloat(:,:,c) = maskFloat * baseColorNorm(c);
-            end
-            activeMask = mask;
-    end
-
-    patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch);
-end
-
-function outlineMask = compute_outline_mask(mask, distractorCfg)
-    % Compute an outline mask from the filled polygon mask.
-
-    thickness = sample_outline_width(distractorCfg);
-    outlineMask = bwperim(mask);
-    if thickness > 1
-        radius = max(0, thickness - 1);
-        se = strel('disk', radius, 0);
-        outlineMask = imdilate(outlineMask, se);
-        outlineMask = outlineMask & mask;
-    end
-
-    if ~any(outlineMask(:))
-        outlineMask = mask;
-    end
-end
-
-function thickness = sample_outline_width(distractorCfg)
-    % Sample outline stroke thickness in pixels.
-
-    range = resolve_range(distractorCfg, 'outlineWidthRange', [1.5, 4.0], 1);
-    widthVal = sample_range_value(range);
-    thickness = max(1, round(widthVal));
-end
-
-function baseColor = sample_distractor_color(textureCfg, numChannels)
-    if nargin < 2 || isempty(numChannels)
-        numChannels = 3;
-    end
-
-    switch randi(4)
-        case 1  % Uniform surface
-            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-        case 2  % Speckled surface
-            baseGray = 160 + randi([-25, 25]);
-            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        case 3  % Laminate surface
-            if rand() < 0.5
-                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-            else
-                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-            end
-        otherwise  % Skin-like hues
-            hsv = [0.03 + rand() * 0.07, 0.25 + rand() * 0.35, 0.55 + rand() * 0.35];
-            baseRGB = round(255 * hsv2rgb(hsv));
-    end
-
-    baseRGB = max(80, min(220, baseRGB));
-
-    if numChannels ~= numel(baseRGB)
-        if numChannels < numel(baseRGB)
-            baseColor = baseRGB(1:numChannels);
-        else
-            baseColor = repmat(baseRGB(end), 1, numChannels);
-            baseColor(1:numel(baseRGB)) = baseRGB;
-        end
-    else
-        baseColor = baseRGB;
-    end
-end
-
-function jittered = jitter_polygon_patch(patch, distractorCfg)
-    % Apply lightweight photometric jitter while preserving mask boundaries.
-    %
-    % Inputs:
-    %   patch - RGB image (uint8)
-    %   distractorCfg - Configuration struct
-
-    if isempty(patch)
-        jittered = patch;
-        return;
-    end
-
-    mask = any(patch > 0, 3);
-    if ~any(mask(:))
-        jittered = patch;
-        return;
-    end
-
-    patchFloat = im2single(patch);
-
-    contrastRange = resolve_range(distractorCfg, 'contrastScaleRange', [1, 1], 0);
-    contrastScale = sample_range_value(contrastRange);
-
-    brightnessRange = resolve_range(distractorCfg, 'brightnessOffsetRange', [0, 0]);
-    brightnessOffset = sample_range_value(brightnessRange) / 255;
-
-    patchFloat = (patchFloat - 0.5) * contrastScale + 0.5 + brightnessOffset;
-
-    if isfield(distractorCfg, 'noiseStd') && distractorCfg.noiseStd > 0
-        sigma = distractorCfg.noiseStd / 255;
-        patchFloat = patchFloat + sigma * randn(size(patchFloat), 'like', patchFloat);
-    end
-
-    mask3 = repmat(single(mask), [1, 1, size(patchFloat, 3)]);
-    patchFloat = min(1, max(0, patchFloat .* mask3));
-
-    jittered = cast_patch_like_template(patchFloat, patch);
-end
-
-function patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch)
-    if isempty(activeMask) || ~any(activeMask(:))
-        patch = [];
-        return;
-    end
-
-    mask3 = repmat(single(activeMask), [1, 1, size(patchFloat, 3)]);
-    patchFloat = min(1, max(0, patchFloat .* mask3));
-
-    patch = cast_patch_like_template(patchFloat, templatePatch);
-end
-
-function patch = cast_patch_like_template(patchFloat, templatePatch)
-    if isa(templatePatch, 'uint8')
-        patch = im2uint8(patchFloat);
-    elseif isa(templatePatch, 'uint16')
-        patch = im2uint16(patchFloat);
-    elseif isa(templatePatch, 'single')
-        patch = patchFloat;
-    else
-        patch = cast(patchFloat, 'like', templatePatch);
-    end
-end
-
-function texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg)
-    [height, width] = size(mask);
-
-    surfaceTypes = 1:4;
-    if isfield(distractorCfg, 'textureSurfaceTypes')
-        candidate = unique(round(double(distractorCfg.textureSurfaceTypes(:)')));
-        candidate = candidate(isfinite(candidate) & candidate >= 1 & candidate <= 4);
-        if ~isempty(candidate)
-            surfaceTypes = candidate;
-        end
-    end
-    surfaceType = surfaceTypes(randi(numel(surfaceTypes)));
-
-    texture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
-    texture = single(texture);
-
-    activeVals = texture(mask);
-    if isempty(activeVals)
-        activeVals = single(randn(height * width, 1));
-    end
-    textureMean = mean(activeVals);
-    textureStd = std(activeVals);
-    if ~isfinite(textureStd) || textureStd < eps
-        textureStd = 1;
-    end
-
-    texture = (texture - single(textureMean)) / single(textureStd);
-
-    gainRange = resolve_range(distractorCfg, 'textureGainRange', [0.06, 0.18], 0);
-    gain = sample_range_value(gainRange);
-
-    texture = texture * single(gain);
-end
-
-function range = resolve_range(cfg, fieldName, defaultRange, minValue)
-    if nargin < 4
-        minValue = -inf;
-    end
-
-    range = defaultRange;
-    if isfield(cfg, fieldName)
-        values = double(cfg.(fieldName)(:).');
-        values = values(isfinite(values));
-        if isempty(values)
-            range = defaultRange;
-        elseif numel(values) >= 2
-            range = sort(values(1:2));
-        else
-            range = [values(1), values(1)];
-        end
-    end
-
-    range = max(minValue, range);
-    if numel(range) < 2
-        range = [range(1), range(1)];
-    elseif range(1) > range(2)
-        range(2) = range(1);
-    end
-end
-
-function value = sample_range_value(range)
-    range = range(:).';
-    if isempty(range)
-        value = 0;
-        return;
-    end
-
-    if isscalar(range) || range(2) <= range(1)
-        value = range(1);
-    else
-        value = range(1) + rand() * (range(2) - range(1));
-    end
-end
-
-function [scaledPatch, scaledLocalVerts] = scale_distractor_patch(patch, vertices, bboxInfo, scaleFactor)
-    % Apply uniform scaling to distractor patch and vertices.
-    % Scales patch via imresize and adjusts vertices to match new dimensions.
-
-    if isempty(patch) || scaleFactor <= 0
-        scaledPatch = [];
-        scaledLocalVerts = [];
-        return;
-    end
-
-    % Resize patch image
-    [origHeight, origWidth, ~] = size(patch);
-    newHeight = round(origHeight * scaleFactor);
-    newWidth = round(origWidth * scaleFactor);
-
-    if newHeight < 1 || newWidth < 1
-        scaledPatch = [];
-        scaledLocalVerts = [];
-        return;
-    end
-
-    scaledPatch = imresize(patch, [newHeight, newWidth], 'nearest');
-
-    % Scale vertices relative to bbox origin
-    localVerts = vertices - [bboxInfo.minX, bboxInfo.minY];
-    scaledLocalVerts = localVerts * scaleFactor;
+    % Delegating wrapper to augmentation_synthesis helper
+    % Build placement functions struct for the helper
+    placementFuncs = struct();
+    placementFuncs.randomTopLeft = @random_top_left;
+    placementFuncs.bboxesOverlap = @bboxes_overlap;
+    placementFuncs.compositeToBackground = @composite_to_background;
+
+    [bg, placedCount] = cfg.augSynth.distractors.addPolygon(bg, regions, polygonBboxes, occupiedBboxes, cfg, placementFuncs);
 end
 
 function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
     % Crop elliptical patch from polygon image
+    %
+    % Delegates ellipse mask creation to mask_utils.createEllipseMask for
+    % consistent masking across all scripts.
+    %
+    % See also: mask_utils.createEllipseMask
+
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
+    end
+
     [imgHeight, imgWidth, ~] = size(polygonImg);
     bbox = ellipse_bounding_box(ellipse);
 
@@ -1535,17 +1167,10 @@ function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
     patchImg = polygonImg(y1:y2, x1:x2, :);
     [h, w, ~] = size(patchImg);
 
-    % Create ellipse mask
-    [X, Y] = meshgrid(1:w, 1:h);
+    % Create ellipse mask using mask_utils (center relative to patch)
     cx = ellipse.center(1) - x1 + 1;
     cy = ellipse.center(2) - y1 + 1;
-
-    theta = deg2rad(ellipse.rotation);
-    dx = X - cx;
-    dy = Y - cy;
-    xRot =  dx * cos(theta) + dy * sin(theta);
-    yRot = -dx * sin(theta) + dy * cos(theta);
-    mask = (xRot / ellipse.semiMajor).^2 + (yRot / ellipse.semiMinor).^2 <= 1;
+    mask = masks.createEllipseMask([h, w], cx, cy, ellipse.semiMajor, ellipse.semiMinor, ellipse.rotation);
 
     if ~any(mask(:))
         patchImg = [];
@@ -1565,491 +1190,48 @@ end
 
 function bbox = ellipse_bounding_box(ellipse)
     % Compute axis-aligned bounding box for rotated ellipse
-    theta = deg2rad(ellipse.rotation);
-    a = ellipse.semiMajor;
-    b = ellipse.semiMinor;
-    dx = sqrt((a * cos(theta))^2 + (b * sin(theta))^2);
-    dy = sqrt((a * sin(theta))^2 + (b * cos(theta))^2);
-    xc = ellipse.center(1);
-    yc = ellipse.center(2);
-    bbox = [xc - dx, yc - dy, xc + dx, yc + dy];
+    %
+    % Delegates to mask_utils.computeEllipseBoundingBox for consistent
+    % calculation across all scripts. Uses Inf for image dimensions to
+    % get unbounded bbox (caller handles clamping).
+    %
+    % See also: mask_utils.computeEllipseBoundingBox
+
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
+    end
+
+    [x1, y1, x2, y2] = masks.computeEllipseBoundingBox(...
+        ellipse.center(1), ellipse.center(2), ...
+        ellipse.semiMajor, ellipse.semiMinor, ...
+        ellipse.rotation, Inf, Inf);
+
+    bbox = [x1, y1, x2, y2];
 end
 
 %% =========================================================================
-%% BACKGROUND GENERATION (PROCEDURAL TEXTURES)
+%% BACKGROUND GENERATION (delegates to augmentation_synthesis helper)
 %% =========================================================================
 
 function bg = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
-    % Generate realistic lab surface backgrounds with pooled single-precision textures
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    surfaceType = randi(4);
-    texture = borrow_background_texture(surfaceType, width, height, textureCfg);
-
-    switch surfaceType
-        case 1  % Uniform surface
-            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-            noiseAmplitude = textureCfg.uniformNoiseRange(1) + rand() * diff(textureCfg.uniformNoiseRange);
-            texture = texture .* single(noiseAmplitude);
-        case 2  % Speckled surface
-            baseGray = 160 + randi([-25, 25]);
-            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        case 3  % Laminate surface
-            if rand() < 0.5
-                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-            else
-                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-            end
-        otherwise  % Skin texture
-            h = 0.03 + rand() * 0.07;
-            s = 0.25 + rand() * 0.35;
-            v = 0.55 + rand() * 0.35;
-            baseRGB = round(255 * hsv2rgb([h, s, v]));
-    end
-
-    baseRGB = max(100, min(230, baseRGB));
-
-    numChannels = 3;  % RGB backgrounds only
-    bgSingle = repmat(reshape(single(baseRGB), [1, 1, numChannels]), [height, width, 1]);
-    for c = 1:numChannels
-        bgSingle(:,:,c) = bgSingle(:,:,c) + texture;
-    end
-
-    if rand() < 0.60
-        bgSingle = add_lighting_gradient(bgSingle, width, height);
-    end
-
-    bg = clamp_uint8(bgSingle);
-    bg = add_sparse_artifacts(bg, width, height, artifactCfg);
-end
-
-function texture = borrow_background_texture(surfaceType, width, height, textureCfg)
-    persistent poolState
-
-    if isempty(poolState) || texture_pool_config_changed(poolState, width, height, textureCfg)
-        if ~isempty(poolState)
-            oldWidth = poolState.width;
-            oldHeight = poolState.height;
-            widthDiff = abs(width - oldWidth) / max(oldWidth, 1);
-            heightDiff = abs(height - oldHeight) / max(oldHeight, 1);
-            if widthDiff > 0.01 || heightDiff > 0.01
-                warning('augmentDataset:poolDimensionChange', ...
-                    'Background dimensions changed from %dx%d to %dx%d. Texture pool reset. Run ''clear functions'' to avoid this warning.', ...
-                    oldWidth, oldHeight, width, height);
-            end
-        end
-        poolState = initialize_background_texture_pool(width, height, textureCfg);
-    end
-
-    entry = poolState.surface(surfaceType);
-    if entry.cursor > entry.poolSize
-        entry.order = randperm(entry.poolSize);
-        entry.cursor = 1;
-    end
-
-    slot = entry.order(entry.cursor);
-    entry.cursor = entry.cursor + 1;
-
-    baseTexture = entry.textures{slot};
-    if isempty(baseTexture)
-        baseTexture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
-        entry.textures{slot} = baseTexture;
-    end
-
-    texture = apply_texture_pool_jitter(baseTexture, poolState);
-
-    entry.usage(slot) = entry.usage(slot) + 1;
-    if entry.usage(slot) >= poolState.refreshInterval
-        entry.textures{slot} = [];
-        entry.usage(slot) = 0;
-    end
-
-    poolState.surface(surfaceType) = entry;
-end
-
-function poolState = initialize_background_texture_pool(width, height, textureCfg)
-    requestedPoolSize = max(1, round(textureCfg.poolSize));
-    bytesPerTexture = max(1, double(width) * double(height) * 4);
-    surfaces = 4;
-    maxPoolBytes = textureCfg.poolMaxMemoryMB * 1024 * 1024;
-    maxPerSurface = max(1, floor((maxPoolBytes / surfaces) / bytesPerTexture));
-    poolSize = min(requestedPoolSize, maxPerSurface);
-    refreshInterval = max(1, round(textureCfg.poolRefreshInterval));
-
-    surfaceTemplate = struct( ...
-        'textures', {cell(poolSize, 1)}, ...
-        'usage', zeros(poolSize, 1, 'uint32'), ...
-        'order', randperm(poolSize), ...
-        'cursor', 1, ...
-        'poolSize', poolSize);
-
-    poolState = struct();
-    poolState.width = width;
-    poolState.height = height;
-    poolState.cfgSnapshot = textureCfg;
-    poolState.poolSize = poolSize;
-    poolState.refreshInterval = refreshInterval;
-    poolState.shiftPixels = max(0, round(textureCfg.poolShiftPixels));
-    poolState.scaleRange = sort(textureCfg.poolScaleRange);
-    if numel(poolState.scaleRange) ~= 2 || any(~isfinite(poolState.scaleRange))
-        poolState.scaleRange = [1, 1];
-    end
-    poolState.flipProb = max(0, min(1, textureCfg.poolFlipProbability));
-    poolState.surface = repmat(surfaceTemplate, 1, 4);
-    for surfaceType = 1:4
-        entry = poolState.surface(surfaceType);
-        entry.order = randperm(entry.poolSize);
-        entry.cursor = 1;
-        entry.usage(:) = 0;
-        poolState.surface(surfaceType) = entry;
-    end
-end
-
-function changed = texture_pool_config_changed(poolState, width, height, textureCfg)
-    changed = poolState.width ~= width || poolState.height ~= height || ~isequal(poolState.cfgSnapshot, textureCfg);
-end
-
-function texture = generate_surface_texture_base(surfaceType, width, height, textureCfg)
-    height = max(1, round(double(height)));
-    width = max(1, round(double(width)));
-
-    persistent randBuffer1 randBuffer2 bufferSize
-    if isempty(bufferSize) || any(bufferSize ~= [height, width])
-        randBuffer1 = zeros(height, width, 'single');
-        randBuffer2 = zeros(height, width, 'single');
-        bufferSize = [height, width];
-    end
-
-    switch surfaceType
-        case 1  % Uniform noise baseline (scaled per sample)
-            randBuffer1(:) = single(randn(height, width));
-            texture = randBuffer1;
-        case 2  % Speckled surface (high + low frequency noise)
-            randBuffer1(:) = single(randn(height, width));
-            randBuffer1 = randBuffer1 .* single(textureCfg.speckleHighFreq);
-
-            randBuffer2(:) = single(randn(height, width));
-            randBuffer2 = imgaussfilt(randBuffer2, 8);
-            randBuffer2 = randBuffer2 .* single(textureCfg.speckleLowFreq);
-
-            texture = randBuffer1 + randBuffer2;
-        case 3  % Laminate grain
-            texture = generate_laminate_texture(width, height, textureCfg);
-        case 4  % Skin-like microtexture
-            texture = generate_skin_texture(width, height, textureCfg);
-        otherwise
-            randBuffer1(:) = single(randn(height, width));
-            texture = randBuffer1;
-    end
-end
-
-function texture = apply_texture_pool_jitter(baseTexture, poolState)
-    % Apply random jitter to pooled texture
-    texture = baseTexture;
-
-    if poolState.shiftPixels > 0
-        shiftX = randi([-poolState.shiftPixels, poolState.shiftPixels]);
-        shiftY = randi([-poolState.shiftPixels, poolState.shiftPixels]);
-        if shiftX ~= 0 || shiftY ~= 0
-            texture = circshift(texture, [shiftY, shiftX]);
-        end
-    end
-
-    if poolState.flipProb > 0
-        if rand() < poolState.flipProb
-            texture = flip(texture, 2);
-        end
-        if rand() < poolState.flipProb
-            texture = flip(texture, 1);
-        end
-    end
-
-    scaleRange = poolState.scaleRange;
-    if numel(scaleRange) == 2 && scaleRange(2) > scaleRange(1)
-        scale = scaleRange(1) + rand() * (scaleRange(2) - scaleRange(1));
-        texture = texture .* single(scale);
-    end
-end
-
-function texture = generate_laminate_texture(width, height, textureCfg)
-    % Generate high-contrast laminate surface with subtle noise (single precision).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    texture = single(randn(height, width)) .* single(textureCfg.laminateNoiseStrength);
-end
-
-function texture = generate_skin_texture(width, height, textureCfg)
-    % Generate subtle skin-like microtexture (single precision).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(textureCfg.skinLowFreqStrength);
-    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(textureCfg.skinMidFreqStrength);
-    highFreq = single(randn(height, width)) .* single(textureCfg.skinHighFreqStrength);
-
-    texture = lowFreq + midFreq + highFreq;
-end
-
-function bg = add_lighting_gradient(bg, width, height)
-    % Add simple linear lighting gradient to simulate directional lighting (single-aware).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-    if width < 50 || height < 50
-        return;
-    end
-
-    lightAngle = rand() * 2 * pi;
-    xAxis = single(0:(width - 1));
-    yAxis = single(0:(height - 1));
-    if width > 1
-        xAxis = xAxis / single(width - 1);
-    else
-        xAxis = zeros(size(xAxis), 'single');
-    end
-    if height > 1
-        yAxis = yAxis / single(height - 1);
-    else
-        yAxis = zeros(size(yAxis), 'single');
-    end
-
-    [Ygrid, Xgrid] = ndgrid(yAxis, xAxis);
-    projection = Xgrid .* single(cos(lightAngle)) + Ygrid .* single(sin(lightAngle));
-
-    gradientStrength = single(0.05 + rand() * 0.05);
-    gradient = single(1) - gradientStrength/2 + projection .* gradientStrength;
-    gradient = max(single(0.90), min(single(1.10), gradient));
-
-    for c = 1:size(bg, 3)
-        bg(:,:,c) = bg(:,:,c) .* gradient;
-    end
+    %% Generate realistic lab surface backgrounds (delegates to helper)
+    % Generates background using augmentation_synthesis, then adds sparse artifacts.
+    augSynth = augmentation_synthesis();
+    bg = augSynth.bg.generate(width, height, textureCfg);
+    bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
 function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
-    % Add variable-density artifacts anywhere on background for robust detection training
-    %
-    % OPTIMIZATION: Ellipses/lines use unit-square normalization (default 64x64 defined
-    % in artifactCfg.unitMaskSize) to avoid large meshgrid allocations. Polygonal artifacts
-    % render directly at target resolution so corner geometry remains crisp.
-    %
-    % Artifacts: rectangles, quadrilaterals, triangles, ellipses, lines
-    % Count: configurable via artifactCfg.countRange (default 5-30)
-    % Size: 1-100% of image diagonal (allows artifacts larger than frame)
-    % Placement: unconstrained (artifacts can extend beyond boundaries for uniform spatial distribution)
-
-    % Quick guard for tiny backgrounds
-    width = max(1, round(width));
-    height = max(1, round(height));
-    if width < 8 || height < 8
-        return;
-    end
-
-    % Number of artifacts: variable (1-100 by default)
-    numArtifacts = artifactCfg.countRange(1) + randi(diff(artifactCfg.countRange) + 1);
-
-    % Image diagonal for relative sizing (allows artifacts larger than image dimensions)
-    diagSize = sqrt(width^2 + height^2);
-
-    if isfield(artifactCfg, 'unitMaskSize') && ~isempty(artifactCfg.unitMaskSize)
-        unitMaskSize = max(8, round(double(artifactCfg.unitMaskSize)));
-    else
-        unitMaskSize = 64;
-    end
-    unitCoords = linspace(0, 1, unitMaskSize);
-    [unitGridX, unitGridY] = meshgrid(unitCoords, unitCoords);
-    unitCenteredX = unitGridX - 0.5;
-    unitCenteredY = unitGridY - 0.5;
-
-    for i = 1:numArtifacts
-        % Select artifact type (equal probability)
-        artifactTypeRand = rand();
-        if artifactTypeRand < 0.20
-            artifactType = 'rectangle';
-        elseif artifactTypeRand < 0.40
-            artifactType = 'quadrilateral';
-        elseif artifactTypeRand < 0.60
-            artifactType = 'triangle';
-        elseif artifactTypeRand < 0.80
-            artifactType = 'ellipse';
-        else
-            artifactType = 'line';
-        end
-
-        % Uniform size: 1-100% of image diagonal (allows artifacts larger than frame)
-        artifactSize = round(diagSize * (artifactCfg.sizeRangePercent(1) + rand() * diff(artifactCfg.sizeRangePercent)));
-        artifactSize = max(artifactCfg.minSizePixels, artifactSize);
-
-        % Lines: use artifactSize as length, add smaller width
-        if strcmp(artifactType, 'line')
-            lineLength = artifactSize;
-            lineWidth = max(1, round(artifactSize * artifactCfg.lineWidthRatio));
-            artifactSize = lineLength + artifactCfg.lineRotationPadding;
-        end
-
-        % Unconstrained random placement (artifacts can extend beyond frame boundaries)
-        % Overhang margin creates partial artifacts at edges and uniform spatial distribution
-        margin = round(artifactSize * artifactCfg.overhangMargin);
-        xMin = 1 - margin;
-        xMax = width + margin;
-        yMin = 1 - margin;
-        yMax = height + margin;
-
-        x = randi([xMin, xMax]);
-        y = randi([yMin, yMax]);
-
-        % Create artifact mask; polygons draw directly at target resolution to keep sharp edges
-        mask = [];
-        unitMask = [];
-        switch artifactType
-            case 'ellipse'
-                radiusAFraction = 0.5 * (artifactCfg.ellipseRadiusARange(1) + rand() * diff(artifactCfg.ellipseRadiusARange));
-                radiusBFraction = 0.5 * (artifactCfg.ellipseRadiusBRange(1) + rand() * diff(artifactCfg.ellipseRadiusBRange));
-                radiusAFraction = max(radiusAFraction, 1e-3);
-                radiusBFraction = max(radiusBFraction, 1e-3);
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
-                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
-                unitMask = single((xRot / radiusAFraction).^2 + (yRot / radiusBFraction).^2 <= 1);
-
-            case 'rectangle'
-                rectWidthFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHeightFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHalfWidth = max(rectWidthFraction * artifactSize / 2, 0.5);
-                rectHalfHeight = max(rectHeightFraction * artifactSize / 2, 0.5);
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                baseVerts = [
-                    -rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth,  rectHalfHeight;
-                    -rectHalfWidth,  rectHalfHeight];
-                rotMatrix = [cosTheta, -sinTheta; sinTheta, cosTheta];
-                rotatedVerts = baseVerts * rotMatrix';
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = rotatedVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            case 'quadrilateral'
-                baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                baseHeightFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                perturbFraction = artifactCfg.quadPerturbation;
-                halfWidth = max(baseWidthFraction / 2, 1e-3);
-                halfHeight = max(baseHeightFraction / 2, 1e-3);
-                verticesNorm = [
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction
-                ];
-                centeredVerts = (verticesNorm - 0.5) * (artifactSize - 1);
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            case 'triangle'
-                baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
-                radius = max(baseSizeFraction * (artifactSize - 1) / 2, 0.5);
-                angle = rand() * 2 * pi;
-                verticesNorm = [
-                    cos(angle),           sin(angle);
-                    cos(angle + 2*pi/3),  sin(angle + 2*pi/3);
-                    cos(angle + 4*pi/3),  sin(angle + 4*pi/3)
-                ];
-                centeredVerts = radius * verticesNorm;
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            otherwise  % 'line'
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                lengthNorm = min(1, lineLength / artifactSize);
-                halfLengthNorm = max(lengthNorm / 2, 1e-3);
-                halfWidthNorm = max(lineWidth / artifactSize, 1 / artifactSize);
-                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
-                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
-                lineCore = (abs(xRot) <= halfLengthNorm) & (abs(yRot) <= halfWidthNorm);
-                unitMask = single(lineCore);
-        end
-
-        if isempty(mask) && isempty(unitMask)
-            continue;
-        end
-
-        if isempty(mask)
-            mask = imresize(unitMask, [artifactSize, artifactSize], 'nearest');
-            mask = max(mask, single(0));
-            mask = min(mask, single(1));
-        end
-        if ~any(mask(:))
-            continue;
-        end
-
-        % Random intensity: darker or lighter
-        % Lines tend to be darker; blobs can be either
-        if strcmp(artifactType, 'line')
-            intensity = artifactCfg.lineIntensityRange(1) + randi(diff(artifactCfg.lineIntensityRange) + 1);
-        else
-            if rand() < 0.5
-                intensity = artifactCfg.blobDarkIntensityRange(1) + randi(diff(artifactCfg.blobDarkIntensityRange) + 1);
-            else
-                intensity = artifactCfg.blobLightIntensityRange(1) + randi(diff(artifactCfg.blobLightIntensityRange) + 1);
-            end
-        end
-
-        % Blend into background, handling artifacts that extend beyond frame boundaries
-        % Compute valid intersection between artifact bbox and image bounds
-        xStart = max(1, x);
-        yStart = max(1, y);
-        xEnd = min(width, x + artifactSize - 1);
-        yEnd = min(height, y + artifactSize - 1);
-
-        % Validate intersection exists
-        if xEnd < xStart || yEnd < yStart
-            continue;  % Artifact completely outside bounds
-        end
-
-        % Compute corresponding mask region (offset if artifact starts outside frame)
-        maskXStart = max(1, 2 - x);  % Offset into mask if x < 1
-        maskYStart = max(1, 2 - y);  % Offset into mask if y < 1
-        maskXEnd = maskXStart + (xEnd - xStart);
-        maskYEnd = maskYStart + (yEnd - yStart);
-
-        % Blend artifact into background
-        maskRegion = single(mask(maskYStart:maskYEnd, maskXStart:maskXEnd));
-        intensitySingle = single(intensity);
-        numChannels = size(bg, 3);
-        for c = 1:numChannels
-            region = single(bg(yStart:yEnd, xStart:xEnd, c));
-            region = region + maskRegion .* intensitySingle;
-            bg(yStart:yEnd, xStart:xEnd, c) = clamp_uint8(region);
-        end
-    end
+    %% Add sparse artifacts (delegates to augmentation_synthesis helper)
+    augSynth = augmentation_synthesis();
+    bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
 function mask = generate_polygon_mask(verticesPix, targetSize)
-    % Rasterize polygon vertices expressed in pixel coordinates into a binary mask.
-    if isempty(verticesPix) || size(verticesPix, 2) ~= 2
-        mask = [];
-        return;
-    end
-
-    verticesPix = double(verticesPix);
-    polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), targetSize, targetSize);
-    if ~any(polyMask(:))
-        mask = [];
-        return;
-    end
-
-    mask = single(polyMask);
+    %% Generate polygon mask (delegates to augmentation_synthesis helper)
+    augSynth = augmentation_synthesis();
+    mask = augSynth.artifacts.generatePolygonMask(verticesPix, targetSize);
 end
 
 function bg = add_polygon_occlusions(bg, scenePolygons, probability)
@@ -2119,7 +1301,7 @@ function bg = add_polygon_occlusions(bg, scenePolygons, probability)
         for c = 1:numChannels
             plane = double(region(:,:,c));
             plane = plane + lineMask * double(delta);
-            region(:,:,c) = clamp_uint8(plane);
+            region(:,:,c) = uint8(min(255, max(0, plane)));
         end
         bg(minY:maxY, minX:maxX, :) = region;
     end
@@ -2238,52 +1420,18 @@ function hashVal = stable_string_hash(strInput)
 end
 
 %% =========================================================================
-%% COORDINATE FILE I/O
+%% COORDINATE FILE I/O (delegated to coordinate_io.m)
 %% =========================================================================
-
-function write_coordinates_atomic(coordPath, headerLine, formatFunc, entries)
-    % Generic atomic coordinate writer with deduplication
-    %
-    % Inputs:
-    %   coordPath - target coordinate file path
-    %   headerLine - header line string
-    %   formatFunc - function handle that formats one entry struct as string
-    %   entries - cell array of coordinate entry structs
-
-    tmpPath = tempname(fileparts(coordPath));
-    fid = fopen(tmpPath, 'wt');
-    if fid == -1
-        error('augmentDataset:coordWrite', 'Cannot open temp file: %s', tmpPath);
-    end
-
-    % Write header
-    fprintf(fid, '%s\n', headerLine);
-
-    % Write entries
-    for i = 1:numel(entries)
-        if ~isempty(entries{i})
-            fprintf(fid, '%s\n', formatFunc(entries{i}));
-        end
-    end
-
-    fclose(fid);
-
-    % Atomic move with fallback
-    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
-    if ~ok
-        warning(msgid, 'movefile failed: %s. Trying copyfile fallback.', msg);
-        [ok2, msg2, msgid2] = copyfile(tmpPath, coordPath, 'f');
-        if ok2
-            delete(tmpPath);
-        else
-            error(msgid2, 'Coordinate write failed: %s', msg2);
-        end
-    end
-end
+% These functions delegate parsing to coordinate_io.m (authoritative source)
+% and adapt field names to match augment_dataset's internal conventions.
 
 function write_stage2_coordinates(coords, outputDir, filename)
     % Atomically write stage 2 coordinates (deduplicated by image+concentration)
-    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation (11 columns)
+    %
+    % Delegates to coordinate_io for atomic write with standard header.
+
+    coordIO = coordinate_io();
 
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
@@ -2291,7 +1439,7 @@ function write_stage2_coordinates(coords, outputDir, filename)
     end
     coordPath = fullfile(coordFolder, filename);
 
-    % Load existing entries (if any)
+    % Load existing entries using coordinate_io (with field mapping)
     existing = read_polygon_coordinates(coordPath);
     map = containers.Map('KeyType', 'char', 'ValueType', 'any');
     if ~isempty(existing)
@@ -2309,39 +1457,44 @@ function write_stage2_coordinates(coords, outputDir, filename)
         map(key) = c;
     end
 
-    % Stage 2 format function
-    function str = formatStage2(e)
+    % Convert map to names/nums arrays for coordinate_io.atomicWriteCoordinates
+    keysArr = map.keys;
+    numEntries = numel(keysArr);
+    names = cell(numEntries, 1);
+    nums = zeros(numEntries, 10);  % concentration + 8 coords + rotation
+
+    for i = 1:numEntries
+        e = map(keysArr{i});
+        names{i} = char(e.image);
         verts = round(e.vertices);
         rotation = 0;
         if isfield(e, 'rotation') && ~isempty(e.rotation)
             rotation = e.rotation;
         end
-        str = sprintf('%s %d %d %d %d %d %d %d %d %d %.2f', ...
-            e.image, e.concentration, ...
-            verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
-            verts(3,1), verts(3,2), verts(4,1), verts(4,2), rotation);
+        nums(i, :) = [e.concentration, ...
+                      verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
+                      verts(3,1), verts(3,2), verts(4,1), verts(4,2), rotation];
     end
 
-    headerLine = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
+    % Use coordinate_io's header and format constants for atomic write
+    header = coordIO.POLYGON_HEADER;
+    writeFmt = coordIO.POLYGON_WRITE_FMT;
 
-    % Convert map to cell array
-    keysArr = map.keys;
-    entries = cell(numel(keysArr), 1);
-    for i = 1:numel(keysArr)
-        entries{i} = map(keysArr{i});
-    end
-
-    write_coordinates_atomic(coordPath, headerLine, @formatStage2, entries);
+    coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
 
 function write_stage3_coordinates(coords, outputDir, filename)
     % Atomically write stage 3 coordinates (dedup by image+concentration+replicate)
     % Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
+    %
+    % Delegates to coordinate_io for atomic write with standard header.
 
     % Skip if no coordinates to write
     if isempty(coords)
         return;
     end
+
+    coordIO = coordinate_io();
 
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
@@ -2349,7 +1502,7 @@ function write_stage3_coordinates(coords, outputDir, filename)
     end
     coordPath = fullfile(coordFolder, filename);
 
-    % Load existing entries (if any)
+    % Load existing entries using coordinate_io (with field mapping)
     existing = read_ellipse_coordinates(coordPath);
     map = containers.Map('KeyType', 'char', 'ValueType', 'any');
     if ~isempty(existing)
@@ -2367,170 +1520,102 @@ function write_stage3_coordinates(coords, outputDir, filename)
         map(key) = c;
     end
 
-    % Stage 3 format function
-    function str = formatStage3(e)
-        str = sprintf('%s %d %d %.2f %.2f %.4f %.4f %.2f', ...
-            e.image, e.concentration, e.replicate, ...
-            e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation);
-    end
-
-    headerLine = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
-
-    % Convert map to cell array
+    % Convert map to names/nums arrays for coordinate_io.atomicWriteCoordinates
     keysArr = map.keys;
-    entries = cell(numel(keysArr), 1);
-    for i = 1:numel(keysArr)
-        entries{i} = map(keysArr{i});
+    numEntries = numel(keysArr);
+    names = cell(numEntries, 1);
+    nums = zeros(numEntries, 7);  % concentration, replicate, x, y, semiMajor, semiMinor, rotation
+
+    for i = 1:numEntries
+        e = map(keysArr{i});
+        names{i} = char(e.image);
+        nums(i, :) = [e.concentration, e.replicate, ...
+                      e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation];
     end
 
-    write_coordinates_atomic(coordPath, headerLine, @formatStage3, entries);
+    % Use coordinate_io's header and format constants for atomic write
+    header = coordIO.ELLIPSE_HEADER;
+    writeFmt = coordIO.ELLIPSE_WRITE_FMT;
+
+    coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
 
-function lines = read_coordinate_file_lines(coordPath)
-    % Read non-empty lines from coordinate file, skipping header
-    % Returns cell array of trimmed lines, or empty cell array if file doesn't exist
-    lines = {};
+function entries = read_polygon_coordinates(coordPath)
+    % Read polygon coordinates from stage 2 (2_micropads)
+    % Delegates parsing to coordinate_io.parsePolygonCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .image, .concentration, .vertices, .rotation
+    % (Maps from coordinate_io's .imageName to .image for backward compatibility)
+
+    entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
 
     if ~isfile(coordPath)
         return;
     end
 
-    fid = fopen(coordPath, 'rt');
-    if fid == -1
-        warning('augmentDataset:coordReadFail', 'Cannot open %s for reading', coordPath);
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parsePolygonCoordinateFile(coordPath);
+
+    if isempty(rawEntries)
         return;
     end
-    cleaner = onCleanup(@() fclose(fid));
 
-    % Skip header if present (header starts with literal word "image")
-    headerLine = fgetl(fid);
-    if ~ischar(headerLine)
-        fseek(fid, 0, 'bof');
-    else
-        tokens = strsplit(strtrim(headerLine));
-        if isempty(tokens) || ~strcmp(tokens{1}, 'image')
-            fseek(fid, 0, 'bof');
-        end
+    % Map field names from coordinate_io format to augment_dataset format
+    numEntries = numel(rawEntries);
+    entries = struct('image', cell(1, numEntries), ...
+                     'concentration', cell(1, numEntries), ...
+                     'vertices', cell(1, numEntries), ...
+                     'rotation', cell(1, numEntries));
+
+    for i = 1:numEntries
+        entries(i).image = rawEntries(i).imageName;  % Map imageName -> image
+        entries(i).concentration = rawEntries(i).concentration;
+        entries(i).vertices = rawEntries(i).vertices;
+        entries(i).rotation = rawEntries(i).rotation;
     end
-
-    % Read all non-empty lines
-    lines = cell(1000, 1);
-    lineCount = 0;
-    while true
-        line = fgetl(fid);
-        if ~ischar(line)
-            break;
-        end
-        trimmed = strtrim(line);
-        if ~isempty(trimmed)
-            lineCount = lineCount + 1;
-            if lineCount > length(lines)
-                lines = [lines; cell(1000, 1)]; %#ok<AGROW> % Intentional chunked growth (1000-line batches)
-            end
-            lines{lineCount} = trimmed;
-        end
-    end
-    lines = lines(1:lineCount);
-end
-
-function entries = read_polygon_coordinates(coordPath)
-    % Read polygon coordinates from stage 2 (2_micropads)
-    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
-    lines = read_coordinate_file_lines(coordPath);
-
-    % Pre-allocate with efficient estimate
-    maxEntries = max(100, numel(lines) * 2);
-    entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
-    entries(maxEntries).image = '';
-    count = 0;
-    skippedCount = 0;
-
-    for i = 1:numel(lines)
-        parts = strsplit(lines{i});
-        if numel(parts) < 10
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        imgName = parts{1};
-        concentration = str2double(parts{2});
-        coords = str2double(parts(3:10));
-
-        % Read rotation if available (11th field), default to 0 if missing
-        if numel(parts) >= 11
-            rotation = str2double(parts{11});
-            if isnan(rotation)
-                rotation = 0;
-            end
-        else
-            rotation = 0;
-        end
-
-        if any(isnan([concentration, coords]))
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        vertices = reshape(coords, [2, 4])';
-
-        count = count + 1;
-        entries(count) = struct('image', imgName, ...
-                                'concentration', concentration, ...
-                                'vertices', vertices, ...
-                                'rotation', rotation);
-    end
-
-    if skippedCount > 0
-        warning('augmentDataset:invalidCoords', ...
-                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
-    end
-
-    entries = entries(1:count);
 end
 
 function entries = read_ellipse_coordinates(coordPath)
-    % Read ellipse coordinates from stage 3
-    lines = read_coordinate_file_lines(coordPath);
+    % Read ellipse coordinates from stage 3 (3_elliptical_regions)
+    % Delegates parsing to coordinate_io.parseEllipseCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .image, .concentration, .replicate,
+    %                                   .center, .semiMajor, .semiMinor, .rotation
+    % (Maps from coordinate_io field names for backward compatibility)
 
-    % Pre-allocate with generous estimate
-    maxEntries = max(100, numel(lines) * 2);
     entries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
                      'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
-    entries(maxEntries).image = '';
-    count = 0;
-    skippedCount = 0;
 
-    for i = 1:numel(lines)
-        parts = strsplit(lines{i});
-        if numel(parts) < 8
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        imgName = parts{1};
-        nums = str2double(parts(2:8));
-
-        if any(isnan(nums))
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        count = count + 1;
-        entries(count) = struct('image', imgName, ...
-                                'concentration', nums(1), ...
-                                'replicate', nums(2), ...
-                                'center', nums(3:4), ...
-                                'semiMajor', nums(5), ...
-                                'semiMinor', nums(6), ...
-                                'rotation', nums(7));
+    if ~isfile(coordPath)
+        return;
     end
 
-    if skippedCount > 0
-        fprintf('  Note: Skipped %d invalid ellipse coordinate entries in %s (missing or invalid values)\n', ...
-                skippedCount, coordPath);
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseEllipseCoordinateFile(coordPath);
+
+    if isempty(rawEntries)
+        return;
     end
 
-    entries = entries(1:count);
+    % Map field names from coordinate_io format to augment_dataset format
+    numEntries = numel(rawEntries);
+    entries = struct('image', cell(1, numEntries), ...
+                     'concentration', cell(1, numEntries), ...
+                     'replicate', cell(1, numEntries), ...
+                     'center', cell(1, numEntries), ...
+                     'semiMajor', cell(1, numEntries), ...
+                     'semiMinor', cell(1, numEntries), ...
+                     'rotation', cell(1, numEntries));
+
+    for i = 1:numEntries
+        entries(i).image = rawEntries(i).imageName;  % Map imageName -> image
+        entries(i).concentration = rawEntries(i).concentration;
+        entries(i).replicate = rawEntries(i).replicate;
+        entries(i).center = [rawEntries(i).x, rawEntries(i).y];  % Combine x,y -> center
+        entries(i).semiMajor = rawEntries(i).semiMajorAxis;  % Map semiMajorAxis -> semiMajor
+        entries(i).semiMinor = rawEntries(i).semiMinorAxis;  % Map semiMinorAxis -> semiMinor
+        entries(i).rotation = rawEntries(i).rotationAngle;   % Map rotationAngle -> rotation
+    end
 end
 
 %% =========================================================================
@@ -2729,23 +1814,6 @@ function imgPath = find_stage1_image(folder, baseName, supportedFormats)
     end
 end
 
-
-function phoneDirs = list_phones(stage2Root)
-    if ~isfolder(stage2Root)
-        phoneDirs = {};
-        return;
-    end
-    d = dir(stage2Root);
-    mask = [d.isdir] & ~ismember({d.name}, {'.', '..'});
-    phoneDirs = {d(mask).name};
-end
-
-function img = clamp_uint8(img)
-    % Clamp image values to [0, 255] and convert to uint8
-    % Input must be in [0, 255] range (not normalized [0, 1])
-    img = uint8(min(255, max(0, img)));
-end
-
 function img = apply_motion_blur(img)
     % Apply slight motion blur with cached PSFs to avoid redundant kernel generation
     persistent psf_cache
@@ -2766,45 +1834,6 @@ function img = apply_motion_blur(img)
     end
 
     img = imfilter(img, psf, 'replicate');
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% downstream rather than via image metadata.
-
-    I = imread(fname);
-end
-
-function ensure_folder(pathStr)
-    if ~isempty(pathStr) && ~isfolder(pathStr)
-        mkdir(pathStr);
-    end
-end
-
-function projectRoot = find_project_root(inputFolder)
-    % Find project root by searching up directory tree
-    currentDir = pwd;
-    searchDir = currentDir;
-    maxLevels = 5;
-
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-        searchDir = parentDir;
-    end
-
-    warning('augmentDataset:pathResolution', ...
-            'Could not find input folder "%s". Using current directory.', inputFolder);
-    projectRoot = currentDir;
 end
 
 %% -------------------------------------------------------------------------

@@ -173,7 +173,12 @@ function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, conc
     validateattributes(patchFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'patchFolder');
     validateattributes(concFolderPrefix, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'concFolderPrefix');
 
-    repoRoot = findProjectRoot(char(inputFolder));
+    % Use canonical findProjectRoot from path_utils module
+    persistent pathUtilsModule
+    if isempty(pathUtilsModule)
+        pathUtilsModule = path_utils();
+    end
+    repoRoot = pathUtilsModule.findProjectRoot(char(inputFolder));
 
     % Resolve folder paths
     inputRoot = resolve_folder(repoRoot, char(inputFolder));
@@ -232,7 +237,7 @@ function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
             warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
 
         % Rotation column is UI-only metadata (alignment hint)
         % Coordinates are already in original (unrotated) image frame
@@ -266,7 +271,7 @@ function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
             warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
 
         % Rotation column is UI-only metadata (alignment hint)
         % Coordinates are already in original (unrotated) image frame
@@ -285,62 +290,33 @@ end
 
 function rows = read_polygon_coordinates(coordPath)
     % Reads polygon coordinates saved by cut_micropads.m
-    % Header: 'image concentration x1 y1 ... xN yN rotation'
+    % Delegates parsing to coordinate_io.parsePolygonCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .imageBase, .concentration, .polygon, .rotation
+    % (Maps from coordinate_io's .imageName/.vertices to .imageBase/.polygon)
+
     rows = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
     rows = rows([]);
+
     if ~isfile(coordPath), return; end
-    fid = fopen(coordPath, 'rt');
-    if fid == -1, return; end
-    c = onCleanup(@() fclose(fid));
 
-    % Read entire file at once
-    allText = textscan(fid, '%s', 'Delimiter', '\n', 'WhiteSpace', '');
-    L = allText{1};
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parsePolygonCoordinateFile(coordPath);
 
-    if isempty(L), return; end
+    if isempty(rawEntries), return; end
 
-    firstTrim = strtrim(L{1});
-    isHeader = ~isempty(firstTrim) && strncmpi(firstTrim, 'image concentration', length('image concentration'));
+    % Map field names from coordinate_io format to extract_images format
+    numEntries = numel(rawEntries);
+    rows = struct('imageBase', cell(1, numEntries), ...
+                  'concentration', cell(1, numEntries), ...
+                  'polygon', cell(1, numEntries), ...
+                  'rotation', cell(1, numEntries));
 
-    startIdx = 1;
-    if isHeader
-        startIdx = 2;
-    end
-
-    if startIdx > numel(L), return; end
-
-    nApprox = numel(L) - startIdx + 1;
-    % Pre-allocate struct array for parsed polygon entries
-    tmp(nApprox) = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
-    k = 0;
-
-    for i = startIdx:numel(L)
-        ln = strtrim(L{i});
-        if isempty(ln), continue; end
-        parts = strsplit(ln);
-        if numel(parts) < 4, continue; end
-        imageBase = strip_ext(parts{1});
-        concentration = str2double(parts{2});
-        nums = str2double(parts(3:end));
-        if numel(nums) < 8 || any(isnan(nums(1:8)))
-            warning('extract:invalid_polygon_entry', ...
-                    'Skipping malformed polygon entry on line %d: expected 8 polygon coordinates', i);
-            continue;
-        end
-        % Extract polygon (first 8 values) and rotation (9th value if present)
-        P = reshape(nums(1:8), 2, 4).';  % 4x2 polygon matrix
-        rotation = 0;
-        if numel(nums) >= 9 && ~isnan(nums(9))
-            rotation = nums(9);
-        end
-        k = k + 1;
-        tmp(k) = struct('imageBase', imageBase, 'concentration', concentration, ...
-                        'polygon', round(P), 'rotation', rotation);
-    end
-    if k == 0
-        rows = rows([]);
-    else
-        rows = tmp(1:k);
+    for i = 1:numEntries
+        rows(i).imageBase = strip_ext(rawEntries(i).imageName);  % Strip extension
+        rows(i).concentration = rawEntries(i).concentration;
+        rows(i).polygon = round(rawEntries(i).vertices);  % Map vertices -> polygon
+        rows(i).rotation = rawEntries(i).rotation;
     end
 end
 
@@ -366,7 +342,7 @@ function extract_elliptical_patches(coordPath, polygonInputDir, patchOutputBase,
                 row.imageName, row.concentration, relpath(polygonInputDir, cfg.projectRoot));
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
         xCenter = row.x; yCenter = row.y;
         a = row.semiMajorAxis; b = row.semiMinorAxis; theta = row.rotationAngle;
 
@@ -413,76 +389,24 @@ end
 
 function rows = read_ellipse_coordinates(coordPath)
     % Reads ellipse coordinates saved by cut_elliptical_regions.m
-    % Header: 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle'
+    % Delegates parsing to coordinate_io.parseEllipseCoordinateFile.
+    %
+    % Returns struct array with fields: .imageName, .x, .y, .semiMajorAxis,
+    %                                   .semiMinorAxis, .rotationAngle, .concentration, .replicate
+    % (Field names match coordinate_io format directly)
+
     rows = struct('imageName','', 'x',0, 'y',0, 'semiMajorAxis',0, 'semiMinorAxis',0, 'rotationAngle',0, 'concentration',0, 'replicate',0);
     rows = rows([]);
+
     if ~isfile(coordPath), return; end
-    fid = fopen(coordPath, 'rt');
-    if fid == -1, return; end
-    c = onCleanup(@() fclose(fid));
 
-    % Read first line to check for header
-    first = fgetl(fid);
-    if ~ischar(first), return; end
-    firstTrim = strtrim(first);
-    isHeader = ~isempty(firstTrim) && strncmpi(firstTrim, 'image concentration', length('image concentration'));
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseEllipseCoordinateFile(coordPath);
 
-    % Use textscan for vectorized reading (8 columns: image, conc, rep, x, y, a, b, theta)
-    data = textscan(fid, '%s %f %f %f %f %f %f %f', 'Delimiter',' ', 'MultipleDelimsAsOne', true);
+    if isempty(rawEntries), return; end
 
-    % Prepend first line if it was data (no header)
-    if ~isHeader && ~isempty(firstTrim)
-        % Parse the first line tokens into the data columns
-        parts = strsplit(firstTrim);
-        if numel(parts) >= 8
-            data = prepend_ellipse_row(data, parts);
-        end
-    end
-    if isempty(data) || numel(data) < 8
-        return;
-    end
-    names = data{1};
-    cons  = data{2};
-    reps  = data{3};
-    xs    = data{4};
-    ys    = data{5};
-    as    = data{6};
-    bs    = data{7};
-    thetas= data{8};
-    n = numel(names);
-    if n == 0, return; end
-
-    % Pre-allocate struct array for parsed elliptical coordinate entries
-    rows(1,n) = struct('imageName','', 'x',0, 'y',0, 'semiMajorAxis',0, 'semiMinorAxis',0, 'rotationAngle',0, 'concentration',0, 'replicate',0);
-    for i = 1:n
-        rows(i).imageName      = names{i};
-        rows(i).x              = xs(i);
-        rows(i).y              = ys(i);
-        rows(i).semiMajorAxis  = as(i);
-        rows(i).semiMinorAxis  = bs(i);
-        rows(i).rotationAngle  = thetas(i);
-        rows(i).concentration  = cons(i);
-        rows(i).replicate      = reps(i);
-    end
-end
-
-function dataOut = prepend_ellipse_row(data, parts)
-    % Helper to prepend one parsed row (as strings) to the textscan output
-    name = parts{1};
-    nums = str2double(parts(2:8));
-    if any(isnan(nums)) || numel(nums) ~= 7
-        dataOut = data; return;
-    end
-    % data: {names, conc, rep, x, y, a, b, theta}
-    dataOut = data;
-    if isempty(data)
-        dataOut = { {name}, nums(1), nums(2), nums(3), nums(4), nums(5), nums(6), nums(7) };
-        return;
-    end
-    dataOut{1} = [{name}; data{1}];
-    for k = 2:8
-        dataOut{k} = [nums(k-1); data{k}];
-    end
+    % coordinate_io returns fields that match our expected format directly
+    rows = rawEntries;
 end
 
 % ----------------------
@@ -663,30 +587,6 @@ function [conDirs, hasAnyCoords] = find_concentration_dirs_with_coords(baseDir, 
     end
 end
 
-function projectRoot = findProjectRoot(inputFolder)
-    % Find project root by searching upward from current directory
-    currentDir = pwd;
-    searchDir = currentDir;
-    maxLevels = 5;
-
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-
-        searchDir = parentDir;
-    end
-
-    projectRoot = currentDir;
-end
-
 function absPath = resolve_folder(repoRoot, requested)
     % If requested exists relative to repoRoot, return that; else return requested as-is
     p = fullfile(repoRoot, requested);
@@ -832,14 +732,6 @@ function srcPath = resolve_polygon_source(baseDir, row, cfg, polyConDirs)
             return;
         end
     end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
 end
 
 function s = strip_ext(nameOrPath)
