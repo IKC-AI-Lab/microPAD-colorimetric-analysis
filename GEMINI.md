@@ -1,57 +1,40 @@
-# CLAUDE.md
+# GEMINI.md
 
-Guidance for Claude Code when working with this repository.
+Guidance for Gemini when working with this repository.
 
 ## Orchestration and Workflow
 
-### Hybrid Task Delegation
+### Task Management
 
-**Implement directly (Claude):**
-- Single-file edits, bug fixes with clear scope
-- Parameter changes, simple additions (<5 steps)
-- Quick fixes after code review
+**Simple Tasks:**
+- Implement directly using `replace`, `write_file`, or `run_shell_command`.
+- Quick fixes, single-file edits, or parameter changes.
 
-**Delegate to coder agents:**
-- Multi-file refactors (3+ files)
-- New features spanning multiple functions
-- Complex algorithmic changes
-- Cross-language integration points
+**Complex Tasks (Multi-file, Refactoring, System Analysis):**
+1. **Investigate** → Use `codebase_investigator` to map dependencies and understand the current architecture.
+2. **Plan** → Use `write_todos` to break down the task into tracked subtasks.
+3. **Implement** → Execute changes iteratively, updating the todo list as progress is made.
+4. **Verify** → Run relevant tests or verification scripts (e.g., `detect_quads.py` or MATLAB scripts if accessible/requested).
 
-### Standard Workflow
+### Workflow Patterns
 
-**For complex tasks (3+ phases, 4+ files, cross-language):**
-1. **Plan** → Use `plan-writer` agent to create `documents/plans/[TASK]_PLAN.md`
-2. **Implement** → Delegate to `matlab-coder` or `python-coder` agent (or Claude for simple parts)
-3. **Review** → Delegate to `matlab-code-reviewer` or `python-code-reviewer` agent
-4. **Iterate** → Simple fixes by Claude directly; complex fixes back to coder agent
-5. **Complete** → Mark phase done, ask user about deleting plan file
+**Planning:**
+- Use `write_todos` for any task requiring more than 2 steps.
+- For complex architectural changes, draft a plan in `documents/plans/` if requested, similar to the `plan-writer` workflow.
 
-**For simple tasks:** Claude implements directly without plan or delegation.
+**Implementation:**
+- **MATLAB:** Follow the existing module pattern and helper script organization.
+- **Python:** Adhere to type hinting and Google-style docstrings.
 
-### Task Delegation Patterns
-```
-Plans                    → plan-writer agent
-Complex MATLAB work      → matlab-coder agent
-Complex Python work      → python-coder agent
-Simple tasks             → Claude directly
-MATLAB review            → matlab-code-reviewer agent
-Python review            → python-code-reviewer agent
-```
-
-### Review-Fix-Verify Cycle
-After reviewer identifies issues:
-1. **Simple fixes** (1-2 lines, obvious changes) → Claude implements directly
-2. **Complex fixes** (multi-function, algorithmic) → Delegate back to coder agent
-3. Re-review until clean
-4. Optionally run MATLAB Code Analyzer for final verification
-
-**Critical:** If uncertain about requirements or approach → ASK USER. Never create fallback code.
+**Review:**
+- Self-correct using `run_shell_command` to check syntax or run linters (if available).
+- Always verify file content with `read_file` before and after modification.
 
 ## Self-Maintenance Rules
 
 **CRITICAL:** These rules MUST be followed to keep documentation accurate.
 
-1. **Update CLAUDE.md on structure changes:** When adding, removing, renaming, or reorganizing files/scripts, update this file immediately to reflect the changes.
+1. **Update GEMINI.md (and CLAUDE.md if consistent) on structure changes:** When adding, removing, renaming, or reorganizing files/scripts, update this file immediately to reflect the changes.
 
 2. **Helper script organization:** When adding new MATLAB functions:
    - Add to an existing helper script in `matlab_scripts/helper_scripts/` if the function belongs to an existing functionality class
@@ -88,14 +71,14 @@ Modular utility functions organized by functionality. Each returns a struct of f
 | `geometry_transform.m` | Geometry + homography operations (polygon/ellipse transforms, projective math) | cut_micropads, augment_dataset |
 | `feature_pipeline.m` | Feature registry + output (definitions, presets, Excel export, train/test split) | extract_features |
 | `augmentation_synthesis.m` | Synthetic data generation (backgrounds, distractors, artifacts) | augment_dataset |
-| `coordinate_io.m` | **Authoritative source** for coordinate file I/O (parsing, atomic writes, format validation) | all scripts handling coordinates |
+| `coordinate_io.m` | Coordinate file I/O (polygon/ellipse formats) | cut_micropads, extract_features |
 | `image_io.m` | Image loading with EXIF handling | cut_micropads, augment_dataset, extract_features |
 | `mask_utils.m` | Polygon/ellipse mask creation with caching | cut_micropads, extract_features |
 | `path_utils.m` | Path resolution and folder operations | all main scripts |
 | `color_analysis.m` | Color space conversions, paper detection | extract_features |
 | `yolo_integration.m` | YOLO model inference via Python subprocess | cut_micropads |
 | `micropad_ui.m` | GUI components for cut_micropads | cut_micropads |
-| `file_io_manager.m` | Image cropping/saving (delegates coordinate I/O to coordinate_io.m) | cut_micropads |
+| `file_io_manager.m` | File operations and atomic writes | cut_micropads, augment_dataset |
 
 **Standalone utilities (not module pattern):**
 - `preview_overlays.m` - Visualize polygon overlays on images
