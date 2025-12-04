@@ -84,7 +84,7 @@ end
 %% QUAD COORDINATE FUNCTIONS
 %% =========================================================================
 
-function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpected)
+function [quadParams, found, rotation] = loadQuadCoordinates(coordFile, imageName, numExpected)
     % Load quadrilateral coordinates from coordinates.txt file for a specific image
     %
     % INPUTS:
@@ -95,6 +95,8 @@ function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpe
     % OUTPUTS:
     %   quadParams - Nx4x2 matrix of quad vertices (N concentrations, 4 vertices, 2 coords)
     %   found      - Boolean indicating if file exists and contains data for image
+    %   rotation   - UI rotation hint from coordinates (degrees), 0 if not found
+    %                This is the rotation angle that was used when labeling in cut_micropads UI
 
     if nargin < 3
         numExpected = [];
@@ -102,6 +104,7 @@ function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpe
 
     quadParams = [];
     found = false;
+    rotation = 0;
 
     if ~isfile(coordFile)
         return;
@@ -182,6 +185,14 @@ function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpe
                 % Store as 4x2 matrix: [x1 y1; x2 y2; x3 y3; x4 y4]
                 validCount = validCount + 1;
                 quadParams(validCount, :, :) = reshape(coords, 2, 4)';
+
+                % Extract rotation from column 11 (first valid row only)
+                if validCount == 1
+                    rowRotation = str2double(parts{11});
+                    if isfinite(rowRotation)
+                        rotation = rowRotation;
+                    end
+                end
             end
         end
 

@@ -490,16 +490,18 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
         end
 
-        % Try loading quad coordinates for positioning context
+        % Try loading quad coordinates for positioning context (includes rotation)
         quadCoordFile = fullfile(outputDirs.quadDir, cfg.coordinateFileName);
-        [loadedQuads, quadsFound] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
+        [loadedQuads, quadsFound, loadedRotation] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
 
         if quadsFound
             % Use loaded quads for positioning
             quadParams = loadedQuads;
-            fprintf('  Mode 3: Loaded %d quad coordinates for ellipse positioning\n', size(quadParams, 1));
+            % Use the rotation from coordinates.txt to align image for easier editing
+            initialRotation = loadedRotation;
+            fprintf('  Mode 3: Loaded %d quad coordinates with rotation=%.1f° for ellipse positioning\n', size(quadParams, 1), initialRotation);
 
-            % Go directly to ellipse editing with quad overlays
+            % Go directly to ellipse editing with quad overlays (image will be rotated for display)
             buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation, memory);
 
         else
@@ -2947,6 +2949,10 @@ function [action, quadParams, rotation] = waitForUserAction(fig)
                         end
                     end
                 end
+
+                % Store ellipse data in guiData for access by Mode 3 caller
+                guiData.ellipseData = ellipseData;
+                set(fig, 'UserData', guiData);
 
                 % Return Nx7 matrix instead of cell array
                 quadParams = ellipseData;

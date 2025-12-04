@@ -13,7 +13,7 @@ function fileIO = file_io_manager()
     % Usage:
     %   fileIO = file_io_manager();
     %   fileIO.appendQuadCoordinates(phoneOutputDir, baseName, concentration, quad, cfg, rotation);
-    %   [quadParams, found] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
+    %   [quadParams, found, rotation] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
     %
     % See also: coordinate_io, cut_micropads
 
