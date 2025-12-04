@@ -490,6 +490,12 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
         end
 
+        % Clear previous UI elements before building new UI (fixes image leaking)
+        existingGuiData = get(fig, 'UserData');
+        if ~isempty(existingGuiData)
+            clearAllUIElements(fig, existingGuiData);
+        end
+
         % Try loading quad coordinates for positioning context (includes rotation)
         quadCoordFile = fullfile(outputDirs.quadDir, cfg.coordinateFileName);
         [loadedQuads, quadsFound, loadedRotation] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
@@ -528,28 +534,46 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fig, phoneName, memory);
             return;
         elseif strcmp(action, 'accept')
-            % Save ONLY ellipse outputs (skip quad outputs)
+            % Extract ellipse data from UI
             guiData = get(fig, 'UserData');
-
-            % Extract ellipse data from UI (initialize to empty if field doesn't exist)
             ellipseData = [];
             if isfield(guiData, 'ellipseData') && ~isempty(guiData.ellipseData)
                 ellipseData = guiData.ellipseData;
-
-                % For Mode 3, we only save ellipse outputs
-                % Do NOT save quad crops or quad coordinates
-                cfg.fileIOMgr.saveEllipseData(img, imageName, quadParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
-
-                fprintf('  Saved %d elliptical regions\n', size(ellipseData, 1));
             end
 
-            % Update memory for next image (Mode 3) - store base quads
-            if ~isempty(ellipseData)
-                memory = updateMemory(memory, quadParams, initialRotation, [imageHeight, imageWidth], ellipseData, cfg);
+            % Transition to preview mode before saving (like Mode 1)
+            clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, quadParams, initialRotation, memory, [], 'horizontal', ellipseData);
+
+            % Wait for preview action
+            [prevAction, ~, ~] = waitForUserAction(fig);
+
+            % Defensive check: if figure was closed/deleted, exit cleanly
+            if ~isvalid(fig) || isempty(prevAction)
+                return;
             end
 
-            success = true;
-            return;
+            switch prevAction
+                case 'accept'
+                    % Save ONLY ellipse outputs (skip quad outputs)
+                    if ~isempty(ellipseData)
+                        cfg.fileIOMgr.saveEllipseData(img, imageName, quadParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
+                        fprintf('  Saved %d elliptical regions\n', size(ellipseData, 1));
+
+                        % Update memory for next image (Mode 3) - store base quads
+                        memory = updateMemory(memory, quadParams, initialRotation, [imageHeight, imageWidth], ellipseData, cfg);
+                    end
+                    success = true;
+                    return;
+                case 'retry'
+                    % Re-process same image - recurse
+                    [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fig, phoneName, memory);
+                    return;
+                case {'skip', 'stop'}
+                    if strcmp(prevAction, 'stop')
+                        terminateExecution(fig);
+                    end
+                    return;
+            end
         end
     end
 
@@ -3069,9 +3093,9 @@ end
 %% Image Cropping and Coordinate Saving (delegating wrappers to file_io_manager)
 %% -------------------------------------------------------------------------
 
-function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpected)
+function [quadParams, found, rotation] = loadQuadCoordinates(coordFile, imageName, numExpected)
     fileIO = file_io_manager();
-    [quadParams, found] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
+    [quadParams, found, rotation] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
 end
 
 function [ellipseData, found] = loadEllipseCoordinates(coordFile, imageName)
