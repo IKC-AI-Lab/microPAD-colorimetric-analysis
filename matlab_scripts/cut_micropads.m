@@ -581,125 +581,6 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     end
 end
 
-function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orientation, rotation)
-    % Transform normalized ellipse records to pixel coordinates via homography
-    %
-    % Computes a homography from the unit square [0,1]×[0,1] to the actual
-    % quadvertices, then transforms each ellipse from ELLIPSE_DEFAULT_RECORDS
-    % through this homography to get pixel-space ellipse parameters.
-    %
-    % Args:
-    %   quadVertices - 4×2 matrix of quadcorners [TL; TR; BR; BL] in pixels
-    %   cfg             - Configuration struct with cfg.ellipse.defaultRecords
-    %                     and cfg.homography
-    %   orientation     - 'horizontal' or 'vertical' (strip layout on screen)
-    %                     Determines how ELLIPSE_DEFAULT_RECORDS are transformed
-    %                     before applying homography. Default: 'horizontal'
-    %   rotation        - Rotation angle applied to image (degrees). Used to
-    %                     re-align vertex order (Vertex 1 = Visual Top-Left).
-    %
-    % Returns:
-    %   ellipseParams - N×5 matrix [x, y, semiMajor, semiMinor, rotation] in pixels
-
-    if nargin < 3 || isempty(orientation)
-        orientation = 'horizontal';
-    end
-
-    if nargin < 4
-        rotation = 0;
-    end
-
-    % Adjust quadvertices based on rotation to ensure Vertex 1 is always Top-Left
-    % relative to the visual display.
-    % Rotation is positive clockwise (e.g. 90 = 1x CW).
-    % Default vertex order [TL, TR, BR, BL] cycles with rotation.
-    if rotation ~= 0
-        k = mod(round(rotation / 90), 4);
-        if k > 0
-            quadVertices = circshift(quadVertices, k, 1);
-        end
-    end
-
-    defaultRecords = cfg.ellipse.defaultRecords;
-    geomTform = cfg.geomTform;
-
-    % Transform default records based on micropad strip orientation
-    % ELLIPSE_DEFAULT_RECORDS is defined for horizontal strip layout (reading position)
-    % When strip is vertical (rotated 90° CCW), transform positions accordingly
-    if strcmp(orientation, 'vertical')
-        % Paper strip rotated 90° CCW: physical left → screen bottom
-        % Transform in unit square: (x, y) → (y, 1-x)
-        % Ellipse rotation: +90° to account for paper rotation
-        transformedRecords = zeros(size(defaultRecords));
-        transformedRecords(:, 1) = defaultRecords(:, 2);           % new x = old y
-        transformedRecords(:, 2) = 1 - defaultRecords(:, 1);       % new y = 1 - old x
-        transformedRecords(:, 3:4) = defaultRecords(:, 3:4);       % axes unchanged
-        transformedRecords(:, 5) = defaultRecords(:, 5) + 90;      % rotation +90°
-        defaultRecords = transformedRecords;
-    end
-
-    % Unit square corners (source reference frame)
-    % Order: TL, TR, BR, BL to match quad vertex order
-    unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];
-
-    % Compute homography from unit square to quadrilateral
-    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, quadVertices);
-
-    % Compute quadscale (average side length for axis scaling)
-    sides = zeros(4, 1);
-    for i = 1:4
-        j = mod(i, 4) + 1;
-        sides(i) = norm(quadVertices(i,:) - quadVertices(j,:));
-    end
-    quadScale = mean(sides);
-
-    numEllipses = size(defaultRecords, 1);
-    ellipseParams = zeros(numEllipses, 5);
-
-    for i = 1:numEllipses
-        % Create ellipse struct for transform_ellipse
-        % Note: defaultRecords axes are fractions of unit square side (0-1)
-        ellipseIn.center = defaultRecords(i, 1:2);
-        ellipseIn.semiMajor = defaultRecords(i, 3);
-        ellipseIn.semiMinor = defaultRecords(i, 4);
-        ellipseIn.rotation = defaultRecords(i, 5);
-        ellipseIn.valid = true;
-
-        % Transform through homography
-        ellipseOut = geomTform.homog.transformEllipse(ellipseIn, tform);
-
-        if ellipseOut.valid
-            % Scale axes by quadsize (normalized -> pixels)
-            ellipseParams(i, :) = [
-                ellipseOut.center(1), ellipseOut.center(2), ...
-                ellipseOut.semiMajor * quadScale, ...
-                ellipseOut.semiMinor * quadScale, ...
-                ellipseOut.rotation
-            ];
-        else
-            % Fallback: simple center transform without shape distortion
-            centerPt = geomTform.homog.transformQuad(defaultRecords(i, 1:2), tform);
-            ellipseParams(i, :) = [
-                centerPt(1), centerPt(2), ...
-                defaultRecords(i, 3) * quadScale, ...
-                defaultRecords(i, 4) * quadScale, ...
-                defaultRecords(i, 5)
-            ];
-        end
-
-        % Enforce semiMajor >= semiMinor convention
-        if ellipseParams(i, 3) < ellipseParams(i, 4)
-            tmp = ellipseParams(i, 3);
-            ellipseParams(i, 3) = ellipseParams(i, 4);
-            ellipseParams(i, 4) = tmp;
-            ellipseParams(i, 5) = ellipseParams(i, 5) + 90;
-        end
-
-        % Normalize rotation to [-180, 180]
-        ellipseParams(i, 5) = geomTform.normalizeAngle(ellipseParams(i, 5));
-    end
-end
-
 
 
 %% -------------------------------------------------------------------------
@@ -1343,7 +1224,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
                     ellipseRotation = memEllipses(repIdx, 7);
                 else
                     % Fallback to homography-transformed defaults if memory incomplete
-                    ellipseParams = transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
+                    ellipseParams = cfg.geomTform.geom.transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
                     ellipseCenter = ellipseParams(repIdx, 1:2);
                     ellipseSemiMajor = ellipseParams(repIdx, 3);
                     ellipseSemiMinor = ellipseParams(repIdx, 4);
@@ -1356,7 +1237,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
             end
         else
             % No memory - use homography-transformed defaults from ELLIPSE_DEFAULT_RECORDS
-            ellipseParams = transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
+            ellipseParams = cfg.geomTform.geom.transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
 
             for repIdx = 1:numReplicates
                 guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
