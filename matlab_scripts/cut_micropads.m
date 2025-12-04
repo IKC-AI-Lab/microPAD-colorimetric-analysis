@@ -529,8 +529,8 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
         if strcmp(action, 'stop') || isempty(action)
             terminateExecution(fig);
-        elseif strcmp(action, 'retry')
-            % Re-process same image - recurse
+        elseif strcmp(action, 'retry') || strcmp(action, 'back')
+            % Re-process same image - recurse (BACK treated as retry in Mode 3)
             [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fig, phoneName, memory);
             return;
         elseif strcmp(action, 'accept')
