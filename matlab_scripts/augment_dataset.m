@@ -1,6 +1,6 @@
 function augment_dataset(varargin)
     %% microPAD Colorimetric Analysis — Dataset Augmentation Tool
-    %% Generates synthetic training datasets from microPAD paper images for polygon detection
+    %% Generates synthetic training datasets from microPAD paper images for quadrilateral detection
     %% Author: Veysel Y. Yilmaz
     %
     % FEATURES:
@@ -10,16 +10,16 @@ function augment_dataset(varargin)
     % - Independent rotation per concentration region
     % - Collision detection to prevent overlap
     % - Optional photometric augmentation, white-balance jitter, and blur
-    % - Optional thin occlusions over polygons (hair/strap-like) for robustness
+    % - Optional thin occlusions over quads (hair/strap-like) for robustness
     % - Variable-density distractor artifacts (1-20 per image, unconstrained placement)
-    % - Polygon-shaped distractor generation for detection robustness
+    % - Quadrilateral-shaped distractor generation for detection robustness
     %
     % Generates synthetic training data by applying geometric and photometric
     % transformations to microPAD paper images and their labeled concentration regions.
     %
     % PIPELINE:
     % 1. Copy real captures from 1_dataset/ into augmented_1_dataset/ (passthrough)
-    % 2. Load polygon coordinates from 2_micropads/
+    % 2. Load quadrilateral coordinates from 2_micropads/
     % 3. Load ellipse coordinates from 3_elliptical_regions/ (optional)
     % 4. Generate N synthetic augmentations per paper (augIdx = 1..N)
     % 5. Write outputs to augmented_* directories
@@ -33,7 +33,7 @@ function augment_dataset(varargin)
     %
     % OUTPUT STRUCTURE:
     %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
-    %   augmented_2_micropads/[phone]/con_*/   - Polygon crops + coordinates.txt
+    %   augmented_2_micropads/[phone]/con_*/   - Quadrilateral crops + coordinates.txt
     %   augmented_3_elliptical_regions/[phone]/con_*/ - Elliptical patches + coordinates.txt
     %
     % IMPORTANT: If you change backgroundWidth/backgroundHeight parameters mid-session,
@@ -51,12 +51,12 @@ function augment_dataset(varargin)
     % - 'blurProbability' (0-1, default 0.25): fraction of samples with Gaussian blur
     % - 'motionBlurProbability' (0-1, default 0.15): fraction of samples with motion blur
     % - 'occlusionProbability' (0-1, default 0.0): fraction of samples with thin occlusions
-    % - 'independentRotation' (logical, default true): enable per-polygon rotation
+    % - 'independentRotation' (logical, default true): enable per-quad rotation
     % - 'extremeCasesProbability' (0-1, default 0.10): fraction using extreme viewpoints
-    % - 'enableDistractorPolygons' (logical, default true): add synthetic look-alike distractors
+    % - 'enableDistractorQuads' (logical, default true): add synthetic look-alike distractors
     % - 'distractorMultiplier' (numeric, default 0.6): scale factor for distractor count
     % - 'distractorMaxCount' (integer, default 6): maximum distractors per scene
-    % - 'paperDamageProbability' (0-1, default 0.5): fraction of polygons with physical defects
+    % - 'paperDamageProbability' (0-1, default 0.5): fraction of quads with physical defects
     % - 'damageSeed' (numeric, optional): RNG seed for reproducible damage patterns
     % - 'damageProfileWeights' (struct, optional): custom damage profile probabilities
     %     Default: struct('minimalWarp',0.30, 'cornerChew',0.45, 'sideCollapse',0.25)
@@ -77,8 +77,8 @@ function augment_dataset(varargin)
     %
     %   Protected regions (never damaged):
     %     - Inner ellipse cores sized by (1 - maxAreaRemovalFraction) when labels exist
-    %     - Bridge paths connecting ellipses to polygon centroid (prevent islands)
-    %     - Core polygon fallback when ellipses are missing (same area fraction)
+    %     - Bridge paths connecting ellipses to quad centroid (prevent islands)
+    %     - Core quad fallback when ellipses are missing (same area fraction)
     %
     % Examples:
     %   augment_dataset('numAugmentations', 5, 'rngSeed', 42)
@@ -100,7 +100,7 @@ function augment_dataset(varargin)
     COORDINATE_FILENAME = 'coordinates.txt';
     CONCENTRATION_PREFIX = 'con_';
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
-    MIN_VALID_POLYGON_AREA = 100;  % square pixels
+    MIN_VALID_QUAD_AREA = 100;  % square pixels
 
     % Camera/transformation parameters
     CAMERA = struct( ...
@@ -150,18 +150,18 @@ function augment_dataset(varargin)
         'blobDarkIntensityRange', [-60, -30], ...  % uint8 intensity units
         'blobLightIntensityRange', [20, 50]);  % uint8 intensity units
 
-    % Polygon placement parameters
+    % Quad placement parameters
     PLACEMENT = struct( ...
         'margin', 50, ...  % pixels from edge
         'minSpacing', 30, ...  % pixels between regions
         'maxOverlapRetries', 5);
 
-    % Distractor polygon parameters (synthetic look-alikes)
-    DISTRACTOR_POLYGONS = struct( ...
+    % Distractor quadrilateral parameters (synthetic look-alikes)
+    DISTRACTOR_QUADS = struct( ...
         'enabled', true, ...
         'minCount', 1, ...
         'maxCount', 10, ...
-        'sizeScaleRange', [0.5, 1.5], ...  % fraction of original polygon size
+        'sizeScaleRange', [0.5, 1.5], ...  % fraction of original quad size
         'maxPlacementAttempts', 30, ...
         'brightnessOffsetRange', [-20, 20], ...  % uint8 intensity units
         'contrastScaleRange', [0.9, 1.15], ...
@@ -173,14 +173,14 @@ function augment_dataset(varargin)
 
     % Paper damage augmentation parameters
     PAPER_DAMAGE = struct( ...
-        'probability', 0.3, ...  % Fraction of polygons with damage
+        'probability', 0.3, ...  % Fraction of quads with damage
         'profileWeights', struct('minimalWarp', 0.30, 'cornerChew', 0.45, 'sideCollapse', 0.25), ...
         'cornerClipRange', [0.06, 0.22], ...  % Fraction of shorter side
         'sideBiteRange', [0.08, 0.28], ...  % Fraction of side length
         'taperStrengthRange', [0.10, 0.30], ...  % Fraction of perpendicular dimension
         'edgeWaveAmplitudeRange', [0.01, 0.05], ...  % Fraction of min dimension
         'edgeWaveFrequencyRange', [1.5, 3.0], ...  % Cycles along perimeter
-        'maxOperations', 3, ...  % Max destructive ops per polygon
+        'maxOperations', 3, ...  % Max destructive ops per quad
         'maxAreaRemovalFraction', 0.40);  % Fraction allowed to be removed per ellipse (or micropad fallback)
 
     %% =====================================================================
@@ -201,7 +201,7 @@ function augment_dataset(varargin)
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', true, @islogical);
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(parser, 'enableDistractorPolygons', true, @islogical);
+    addParameter(parser, 'enableDistractorQuads', true, @islogical);
     addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
     addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
     addParameter(parser, 'paperDamageProbability', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
@@ -264,13 +264,13 @@ function augment_dataset(varargin)
     cfg.supportedFormats = SUPPORTED_FORMATS;
     cfg.camera = CAMERA;
     cfg.rotationRange = ROTATION_RANGE;
-    cfg.minValidPolygonArea = MIN_VALID_POLYGON_AREA;
+    cfg.minValidQuadArea = MIN_VALID_QUAD_AREA;
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
-    cfg.distractors = DISTRACTOR_POLYGONS;
-    cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorPolygons;
+    cfg.distractors = DISTRACTOR_QUADS;
+    cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorQuads;
     cfg.distractors.multiplier = max(0, opts.distractorMultiplier);
     if opts.distractorMaxCount >= 0
         cfg.distractors.maxCount = max(opts.distractorMaxCount, 0);
@@ -443,15 +443,15 @@ function augment_phone(phoneName, cfg)
         return;
     end
 
-    % Load polygon coordinates from stage 2 (required)
+    % Load quadrilateral coordinates from stage 2 (required)
     if ~isfile(stage2PhoneCoords)
-        warning('augmentDataset:noPolygonCoords', 'No polygon coordinates for %s. Skipping.', phoneName);
+        warning('augmentDataset:noQuadCoords', 'No quad coordinates for %s. Skipping.', phoneName);
         return;
     end
 
-    polygonEntries = read_polygon_coordinates(stage2PhoneCoords);
-    if isempty(polygonEntries)
-        warning('augmentDataset:emptyPolygons', 'No valid polygon entries for %s', phoneName);
+    quadEntries = read_quad_coordinates(stage2PhoneCoords);
+    if isempty(quadEntries)
+        warning('augmentDataset:emptyQuads', 'No valid quad entries for %s', phoneName);
         return;
     end
 
@@ -463,12 +463,12 @@ function augment_phone(phoneName, cfg)
         ellipseEntries = read_ellipse_coordinates(ellipsePhoneCoords);
         hasEllipses = ~isempty(ellipseEntries);
     else
-        fprintf('  [INFO] No ellipse coordinates. Will process polygons only.\n');
+        fprintf('  [INFO] No ellipse coordinates. Will process quads only.\n');
     end
 
     % Build lookup structures
     ellipseMap = group_ellipses_by_parent(ellipseEntries, hasEllipses);
-    paperGroups = group_polygons_by_image(polygonEntries);
+    paperGroups = group_quads_by_image(quadEntries);
 
     % Create output directories
     stage1PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage1Output, phoneName);
@@ -484,7 +484,7 @@ function augment_phone(phoneName, cfg)
     % Get unique paper names
     paperNames = keys(paperGroups);
     fprintf('  Total papers: %d\n', numel(paperNames));
-    fprintf('  Total polygons: %d\n', numel(polygonEntries));
+    fprintf('  Total quads: %d\n', numel(quadEntries));
     fprintf('  Total ellipses: %d\n', numel(ellipseEntries));
 
     % Process each paper
@@ -509,11 +509,11 @@ function augment_phone(phoneName, cfg)
 
         imgExt = '.png';
 
-        % Get all polygons from this paper
-        polygons = paperGroups(paperBase);
+        % Get all quads from this paper
+        quads = paperGroups(paperBase);
 
         % Emit passthrough sample (augIdx = 0) with original geometry
-        emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellipseMap, ...
+        emit_passthrough_sample(paperBase, imgPath, stage1Img, quads, ellipseMap, ...
                                  hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
                                  stage3PhoneOut, cfg);
 
@@ -522,7 +522,7 @@ function augment_phone(phoneName, cfg)
             continue;
         end
         for augIdx = 1:cfg.numAugmentations
-            augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
+            augment_single_paper(paperBase, imgExt, stage1Img, quads, ellipseMap, ...
                                  hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
                                  stage3PhoneOut, paperIdx, phoneName, cfg);
         end
@@ -530,13 +530,13 @@ function augment_phone(phoneName, cfg)
 
     % Paper damage summary logging
     if cfg.damage.probability > 0
-        fprintf('  Paper damage applied per polygon with %.0f%% probability\n', cfg.damage.probability * 100);
+        fprintf('  Paper damage applied per quad with %.0f%% probability\n', cfg.damage.probability * 100);
     end
 
 end
 
 %% -------------------------------------------------------------------------
-function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, ...
+function emit_passthrough_sample(paperBase, ~, stage1Img, quads, ellipseMap, ...
                                  hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
                                  stage3PhoneOut, cfg)
     % Generate aug_000 assets by reusing original captures without augmentation
@@ -561,49 +561,49 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
               'Cannot emit passthrough scene %s: %s', sceneOutPath, writeErr.message);
     end
 
-    stage2Coords = cell(numel(polygons), 1);
-    % Pre-allocate for 3 ellipses per polygon (experimental design)
-    maxEllipsesPerPolygon = 3;
-    stage3Coords = cell(max(1, numel(polygons) * maxEllipsesPerPolygon), 1);
-    polyCount = 0;
+    stage2Coords = cell(numel(quads), 1);
+    % Pre-allocate for 3 ellipses per quad (experimental design)
+    maxEllipsesPerQuad = 3;
+    stage3Coords = cell(max(1, numel(quads) * maxEllipsesPerQuad), 1);
+    quadCount = 0;
     s2Count = 0;
     s3Count = 0;
 
-    for idx = 1:numel(polygons)
-        poly = polygons(idx);
-        origVertices = double(poly.vertices);
+    for idx = 1:numel(quads)
+        quad = quads(idx);
+        origVertices = double(quad.vertices);
 
-        if ~is_valid_polygon(origVertices, cfg.minValidPolygonArea)
-            warning('augmentDataset:passthroughInvalidPolygon', ...
-                    '  ! Polygon %s con %d invalid for passthrough. Skipping.', ...
-                    paperBase, poly.concentration);
+        if ~is_valid_quad(origVertices, cfg.minValidQuadArea)
+            warning('augmentDataset:passthroughInvalidQuad', ...
+                    '  ! Quad %s con %d invalid for passthrough. Skipping.', ...
+                    paperBase, quad.concentration);
             continue;
         end
 
-        [polygonImg, ~] = extract_polygon_masked(stage1Img, origVertices);
-        if isempty(polygonImg)
+        [quadImg, ~] = extract_quad_masked(stage1Img, origVertices);
+        if isempty(quadImg)
             warning('augmentDataset:passthroughEmptyCrop', ...
-                    '  ! Polygon %s con %d produced empty crop.', ...
-                    paperBase, poly.concentration);
+                    '  ! Quad %s con %d produced empty crop.', ...
+                    paperBase, quad.concentration);
             continue;
         end
 
-        concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
+        concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, quad.concentration));
         cfg.pathUtils.ensureFolder(concDir);
-        polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, poly.concentration, imgExt);
-        polygonOutPath = fullfile(concDir, polygonFileName);
-        imwrite(polygonImg, polygonOutPath);
+        quadFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, quad.concentration, imgExt);
+        quadOutPath = fullfile(concDir, quadFileName);
+        imwrite(quadImg, quadOutPath);
 
-        polyCount = polyCount + 1;
+        quadCount = quadCount + 1;
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
-            'image', polygonFileName, ...
-            'concentration', poly.concentration, ...
+            'image', quadFileName, ...
+            'concentration', quad.concentration, ...
             'vertices', origVertices, ...
-            'rotation', poly.rotation);
+            'rotation', quad.rotation);
 
-        ellipseKey = sprintf('%s#%d', paperBase, poly.concentration);
+        ellipseKey = sprintf('%s#%d', paperBase, quad.concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
             ellipseList = ellipseMap(ellipseKey);
             for eIdx = 1:numel(ellipseList)
@@ -614,18 +614,18 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
                     'semiMinor', ellipseIn.semiMinor, ...
                     'rotation', ellipseIn.rotation);
 
-                [patchImg, patchValid] = crop_ellipse_patch(polygonImg, ellipseGeom);
+                [patchImg, patchValid] = crop_ellipse_patch(quadImg, ellipseGeom);
                 if ~patchValid || isempty(patchImg)
                     warning('augmentDataset:passthroughPatchInvalid', ...
                             '  ! Ellipse %s con %d rep %d invalid for passthrough.', ...
-                            paperBase, poly.concentration, ellipseIn.replicate);
+                            paperBase, quad.concentration, ellipseIn.replicate);
                     continue;
                 end
 
-                ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
+                ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, quad.concentration));
                 cfg.pathUtils.ensureFolder(ellipseDir);
                 patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
-                                        poly.concentration, ellipseIn.replicate, imgExt);
+                                        quad.concentration, ellipseIn.replicate, imgExt);
                 patchOutPath = fullfile(ellipseDir, patchFileName);
                 imwrite(patchImg, patchOutPath);
 
@@ -634,8 +634,8 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
                     stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
-                    'image', polygonFileName, ...
-                    'concentration', poly.concentration, ...
+                    'image', quadFileName, ...
+                    'concentration', quad.concentration, ...
                     'replicate', ellipseIn.replicate, ...
                     'center', ellipseGeom.center, ...
                     'semiMajor', ellipseGeom.semiMajor, ...
@@ -645,9 +645,9 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
         end
     end
 
-    if polyCount == 0
-        warning('augmentDataset:passthroughNoPolygons', ...
-                '  ! No valid polygons for passthrough %s. Removing scene.', sceneName);
+    if quadCount == 0
+        warning('augmentDataset:passthroughNoQuads', ...
+                '  ! No valid quads for passthrough %s. Removing scene.', sceneName);
         if exist(sceneOutPath, 'file') == 2
             delete(sceneOutPath);
         end
@@ -662,12 +662,12 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
+    fprintf('     Passthrough: %s (%d quads, %d ellipses)\n', ...
             sceneFileName, numel(stage2Coords), numel(stage3Coords));
 end
 
 %% -------------------------------------------------------------------------
-function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
+function augment_single_paper(paperBase, imgExt, stage1Img, quads, ellipseMap, ...
                                hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
                                stage3PhoneOut, paperIdx, phoneName, cfg)
     % Generate one augmented version of a paper with all its concentration regions
@@ -690,34 +690,34 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     tformRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), rotAngle);
 
     % Pre-allocate coordinate accumulators
-    % Stage 2: one entry per polygon (upper bound = validCount after validation)
-    % Stage 3: 3 ellipses per polygon (experimental design)
-    maxPolygons = numel(polygons);
-    maxEllipsesPerPolygon = 3;
-    stage2Coords = cell(maxPolygons, 1);
-    stage3Coords = cell(maxPolygons * maxEllipsesPerPolygon, 1);
+    % Stage 2: one entry per quad (upper bound = validCount after validation)
+    % Stage 3: 3 ellipses per quad (experimental design)
+    maxQuads = numel(quads);
+    maxEllipsesPerQuad = 3;
+    stage2Coords = cell(maxQuads, 1);
+    stage3Coords = cell(maxQuads * maxEllipsesPerQuad, 1);
     s2Count = 0;
     s3Count = 0;
 
-    % Cache deterministic hashes for reproducible per-polygon damage sampling
+    % Cache deterministic hashes for reproducible per-quad damage sampling
     phoneHash = stable_string_hash(phoneName);
     paperHash = stable_string_hash(paperBase);
 
-    % Temporary storage for transformed polygon crops and their properties
-    transformedRegions = cell(numel(polygons), 1);
+    % Temporary storage for transformed quad crops and their properties
+    transformedRegions = cell(numel(quads), 1);
     validCount = 0;
 
-    % Transform all polygons and extract crops
-    for polyIdx = 1:numel(polygons)
-        polyEntry = polygons(polyIdx);
-        concentration = polyEntry.concentration;
-        origVertices = polyEntry.vertices;
+    % Transform all quads and extract crops
+    for quadIdx = 1:numel(quads)
+        quadEntry = quads(quadIdx);
+        concentration = quadEntry.concentration;
+        origVertices = quadEntry.vertices;
 
         % Apply shared perspective transformation
-        augVertices = cfg.geomTform.homog.transformPolygon(origVertices, tformPersp);
-        augVertices = cfg.geomTform.homog.transformPolygon(augVertices, tformRot);
+        augVertices = cfg.geomTform.homog.transformQuad(origVertices, tformPersp);
+        augVertices = cfg.geomTform.homog.transformQuad(augVertices, tformRot);
 
-        % Apply independent rotation per polygon if enabled
+        % Apply independent rotation per quad if enabled
         if cfg.independentRotation
             independentRotAngle = cfg.geomTform.homog.randRange(cfg.rotationRange);
             tformIndepRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), independentRotAngle);
@@ -725,21 +725,21 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             independentRotAngle = 0;
             tformIndepRot = affine2d(eye(3));
         end
-        augVertices = cfg.geomTform.homog.transformPolygon(augVertices, tformIndepRot);
+        augVertices = cfg.geomTform.homog.transformQuad(augVertices, tformIndepRot);
 
-        % Validate transformed polygon
-        if ~is_valid_polygon(augVertices, cfg.minValidPolygonArea)
-            warning('augmentDataset:degeneratePolygon', ...
-                    '  ! Polygon %s con %d degenerate after transform. Skipping.', ...
+        % Validate transformed quad
+        if ~is_valid_quad(augVertices, cfg.minValidQuadArea)
+            warning('augmentDataset:degenerateQuad', ...
+                    '  ! Quad %s con %d degenerate after transform. Skipping.', ...
                     paperBase, concentration);
             continue;
         end
 
-        % Extract polygon content with masking
-        [polygonContent, contentBbox] = extract_polygon_masked(stage1Img, origVertices);
+        % Extract quad content with masking
+        [quadContent, contentBbox] = extract_quad_masked(stage1Img, origVertices);
 
         % Transform extracted content to match augmented shape
-        augPolygonImg = cfg.geomTform.homog.transformPolygon_content(polygonContent, ...
+        augQuadImg = cfg.geomTform.homog.transformQuadContent(quadContent, ...
                                                   origVertices, augVertices, contentBbox);
 
         % Convert augmented vertices to cropped coordinate space (shared by damage + ellipse transforms)
@@ -758,10 +758,10 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 tformIndepRot, rotAngle + independentRotAngle);
         end
 
-        % Apply paper damage augmentation per polygon using configured probability
+        % Apply paper damage augmentation per quad using configured probability
         if cfg.damage.probability > 0
-            % Extract alpha mask from transformed polygon
-            polygonAlpha = any(augPolygonImg > 0, 3);  % Non-zero in any channel
+            % Extract alpha mask from transformed quad
+            quadAlpha = any(augQuadImg > 0, 3);  % Non-zero in any channel
 
             % Apply damage (with deterministic RNG if seed provided)
             damageRng = [];
@@ -773,10 +773,10 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             end
 
             [damagedRGB, ~, ~, ~, damageCornersCrop] = apply_paper_damage( ...
-                augPolygonImg, polygonAlpha, augVerticesCrop, ellipseAugList, cfg.damage, damageRng);
+                augQuadImg, quadAlpha, augVerticesCrop, ellipseAugList, cfg.damage, damageRng);
 
-            % Replace augPolygonImg and propagate updated quadrilateral vertices
-            augPolygonImg = damagedRGB;
+            % Replace augQuadImg and propagate updated quadrilateral vertices
+            augQuadImg = damagedRGB;
             augVertices = damageCornersCrop + [minXCrop, minYCrop];
         end
 
@@ -785,11 +785,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         transformedRegions{validCount} = struct( ...
             'concentration', concentration, ...
             'augVertices', augVertices, ...
-            'augPolygonImg', augPolygonImg, ...
+            'augQuadImg', augQuadImg, ...
             'contentBbox', contentBbox, ...
             'origVertices', origVertices, ...
             'independentRotAngle', independentRotAngle, ...
-            'originalRotation', polyEntry.rotation, ...
+            'originalRotation', quadEntry.rotation, ...
             'augEllipses', ellipseAugList);
     end
 
@@ -801,11 +801,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         return;
     end
 
-    % Compute individual polygon bounding boxes for random placement
-    polygonBboxes = cell(validCount, 1);
+    % Compute individual quad bounding boxes for random placement
+    quadBboxes = cell(validCount, 1);
     for i = 1:validCount
         verts = transformedRegions{i}.augVertices;
-        polygonBboxes{i} = struct( ...
+        quadBboxes{i} = struct( ...
             'minX', min(verts(:,1)), ...
             'maxX', max(verts(:,1)), ...
             'minY', min(verts(:,2)), ...
@@ -824,14 +824,14 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         bgHeight = cfg.backgroundOverride.height;
     end
 
-    % Place polygons at random non-overlapping positions
-    % Calculate polygon density to adapt spacing requirements
-    totalPolygonArea = 0;
+    % Place quads at random non-overlapping positions
+    % Calculate quad density to adapt spacing requirements
+    totalQuadArea = 0;
     for i = 1:validCount
-        bbox = polygonBboxes{i};
-        totalPolygonArea = totalPolygonArea + (bbox.width * bbox.height);
+        bbox = quadBboxes{i};
+        totalQuadArea = totalQuadArea + (bbox.width * bbox.height);
     end
-    randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
+    randomPositions = place_quads_nonoverlapping(quadBboxes, ...
                                                      bgWidth, bgHeight, ...
                                                      cfg.placement.margin, ...
                                                      cfg.placement.minSpacing, ...
@@ -847,23 +847,23 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         baseSceneId = paperBase;
     end
     sceneName = sprintf('%s_aug_%03d', baseSceneId, augIdx);
-    scenePolygons = cell(validCount, 1);
+    sceneQuads = cell(validCount, 1);
     occupiedBboxes = zeros(validCount, 4);
-    polygonIdx = 0;
+    quadIdx = 0;
 
     for i = 1:validCount
         region = transformedRegions{i};
         concentration = region.concentration;
         augVertices = region.augVertices;
-        augPolygonImg = region.augPolygonImg;
+        augQuadImg = region.augQuadImg;
 
-        % Get random position for this polygon
+        % Get random position for this quad
         pos = randomPositions{i};
 
-        % Compute offset to move polygon from its current position to random position
+        % Compute offset to move quad from its current position to random position
         % Random position specifies the top-left corner of the bounding box
-        currentMinX = polygonBboxes{i}.minX;
-        currentMinY = polygonBboxes{i}.minY;
+        currentMinX = quadBboxes{i}.minX;
+        currentMinY = quadBboxes{i}.minY;
         offsetX = pos.x - currentMinX;
         offsetY = pos.y - currentMinY;
 
@@ -871,7 +871,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         sceneVertices = augVertices + [offsetX, offsetY];
 
         % Composite onto background
-        background = composite_to_background(background, augPolygonImg, sceneVertices);
+        background = composite_to_background(background, augQuadImg, sceneVertices);
 
         % Paper lies flat on surface; no shadows needed
         minSceneX = min(sceneVertices(:,1));
@@ -880,22 +880,22 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         maxSceneY = max(sceneVertices(:,2));
         occupiedBboxes(i, :) = [minSceneX, minSceneY, maxSceneX, maxSceneY];
 
-        % Save polygon crop (stage 2 output)
+        % Save quad crop (stage 2 output)
         concDirOut = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
         cfg.pathUtils.ensureFolder(concDirOut);
 
-        polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, concentration, imgExt);
-        polygonOutPath = fullfile(concDirOut, polygonFileName);
-        imwrite(augPolygonImg, polygonOutPath);
+        quadFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, concentration, imgExt);
+        quadOutPath = fullfile(concDirOut, quadFileName);
+        imwrite(augQuadImg, quadOutPath);
 
-        % Record stage 2 coordinates (polygon in scene)
+        % Record stage 2 coordinates (quad in scene)
         % Compute total applied rotation and update saved rotation field
         %
         % ROTATION SEMANTICS:
         %   The rotation field in Stage 2 coordinates is a UI-only alignment hint
         %   (see cut_micropads.m documentation). When augmenting:
         %   - originalRotation: The source image's UI hint (from 2_micropads)
-        %   - totalAppliedRotation: Sum of scene rotation + any independent polygon rotation
+        %   - totalAppliedRotation: Sum of scene rotation + any independent quad rotation
         %   - augmentedRotation: Adjusted hint for the augmented image
         %
         %   Formula: augmentedRotation = originalRotation - totalAppliedRotation
@@ -906,14 +906,14 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
-            'image', polygonFileName, ...
+            'image', quadFileName, ...
             'concentration', concentration, ...
             'vertices', sceneVertices, ...
             'rotation', augmentedRotation);
 
-        % Track polygon in scene space for optional occlusions
-        polygonIdx = polygonIdx + 1;
-        scenePolygons{polygonIdx} = sceneVertices;
+        % Track quad in scene space for optional occlusions
+        quadIdx = quadIdx + 1;
+        sceneQuads{quadIdx} = sceneVertices;
 
         % Process ellipses for this concentration (stage 3)
         ellipseCropList = region.augEllipses;
@@ -923,7 +923,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 replicateId = ellipseCrop.replicate;
 
                 % Extract ellipse patch
-                [patchImg, patchValid] = crop_ellipse_patch(augPolygonImg, ellipseCrop);
+                [patchImg, patchValid] = crop_ellipse_patch(augQuadImg, ellipseCrop);
                 if ~patchValid
                     warning('augmentDataset:patchInvalid', ...
                             '  ! Ellipse patch %s con %d rep %d invalid. Skipping.', ...
@@ -939,13 +939,13 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 patchOutPath = fullfile(ellipseConcDir, patchFileName);
                 imwrite(patchImg, patchOutPath);
 
-                % Record stage 3 coordinates (ellipse in polygon-crop space)
+                % Record stage 3 coordinates (ellipse in quad-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
                     stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
-                    'image', polygonFileName, ...
+                    'image', quadFileName, ...
                     'concentration', concentration, ...
                     'replicate', replicateId, ...
                     'center', ellipseCrop.center, ...
@@ -957,17 +957,17 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
     end
 
-    % Trim scenePolygons to actual size
-    scenePolygons = scenePolygons(1:polygonIdx);
+    % Trim sceneQuads to actual size
+    sceneQuads = sceneQuads(1:quadIdx);
 
     additionalDistractors = 0;
     if cfg.distractors.enabled && cfg.distractors.multiplier > 0
-        [background, additionalDistractors] = add_polygon_distractors(background, transformedRegions, polygonBboxes, occupiedBboxes, cfg);
+        [background, additionalDistractors] = add_quad_distractors(background, transformedRegions, quadBboxes, occupiedBboxes, cfg);
     end
 
-    % Optional: add thin occlusions (e.g., hair/strap-like) over polygons
-    if cfg.occlusionProbability > 0 && ~isempty(scenePolygons)
-        background = add_polygon_occlusions(background, scenePolygons, cfg.occlusionProbability);
+    % Optional: add thin occlusions (e.g., hair/strap-like) over quads
+    if cfg.occlusionProbability > 0 && ~isempty(sceneQuads)
+        background = add_quad_occlusions(background, sceneQuads, cfg.occlusionProbability);
     end
 
     % Apply photometric augmentation and non-overlapping blur before saving
@@ -1006,7 +1006,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    fprintf('     Generated: %s (%d polygons, %d ellipses, %d distractors)\n', ...
+    fprintf('     Generated: %s (%d quads, %d ellipses, %d distractors)\n', ...
             sceneFileName, numel(stage2Coords), numel(stage3Coords), additionalDistractors);
 end
 
@@ -1014,17 +1014,17 @@ end
 %% CORE PROCESSING FUNCTIONS
 %% =========================================================================
 
-function [content, bbox] = extract_polygon_masked(img, vertices)
-    % Extract polygon region with masking to avoid black pixels.
+function [content, bbox] = extract_quad_masked(img, vertices)
+    % Extract quadrilateral region with masking to avoid black pixels.
     %
-    % Delegates to mask_utils.cropWithPolygonMask for consistent masking
+    % Delegates to mask_utils.cropWithQuadMask for consistent masking
     % across all scripts. See mask_utils.m for authoritative implementation.
     %
     % OUTPUTS:
     %   content - Cropped and masked image (bounding box size)
     %   bbox    - [minX, minY, width, height] of cropped region
     %
-    % See also: mask_utils.cropWithPolygonMask
+    % See also: mask_utils.cropWithQuadMask
 
     persistent masks
     if isempty(masks)
@@ -1052,7 +1052,7 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
     end
 
     % Delegate masking to mask_utils
-    [content, ~] = masks.cropWithPolygonMask(img, vertices);
+    [content, ~] = masks.cropWithQuadMask(img, vertices);
 
     if isempty(content)
         content = zeros(0, 0, numChannels, 'like', img);
@@ -1065,8 +1065,8 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
     bbox = [minX, minY, bboxWidth, bboxHeight];
 end
 
-function bg = composite_to_background(bg, polygonImg, sceneVerts)
-    % Composite transformed polygon onto background using per-channel alpha blending
+function bg = composite_to_background(bg, quadImg, sceneVerts)
+    % Composite transformed quad onto background using per-channel alpha blending
 
     % Compute target region in background
     minX = max(1, floor(min(sceneVerts(:,1))));
@@ -1082,15 +1082,15 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
         return;
     end
 
-    % Resize polygon to target size only when necessary. In the common case the
+    % Resize quad to target size only when necessary. In the common case the
     % warped patch already matches the target bbox; skip extra resampling to
     % preserve edges and save time.
-    [patchH, patchW, ~] = size(polygonImg);
+    [patchH, patchW, ~] = size(quadImg);
     if patchH == targetHeight && patchW == targetWidth
-        resized = polygonImg;
+        resized = quadImg;
     else
         % Use nearest-neighbor to prevent color bleeding across masked boundaries
-        resized = imresize(polygonImg, [targetHeight, targetWidth], 'nearest');
+        resized = imresize(quadImg, [targetHeight, targetWidth], 'nearest');
     end
 
     % Create mask for target region
@@ -1126,7 +1126,7 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
     bg(minY:maxY, minX:maxX, :) = bgRegion;
 end
 
-function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes, occupiedBboxes, cfg)
+function [bg, placedCount] = add_quad_distractors(bg, regions, quadBboxes, occupiedBboxes, cfg)
     % Delegating wrapper to augmentation_synthesis helper
     % Build placement functions struct for the helper
     placementFuncs = struct();
@@ -1134,11 +1134,11 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
     placementFuncs.bboxesOverlap = @bboxes_overlap;
     placementFuncs.compositeToBackground = @composite_to_background;
 
-    [bg, placedCount] = cfg.augSynth.distractors.addPolygon(bg, regions, polygonBboxes, occupiedBboxes, cfg, placementFuncs);
+    [bg, placedCount] = cfg.augSynth.distractors.addQuad(bg, regions, quadBboxes, occupiedBboxes, cfg, placementFuncs);
 end
 
-function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
-    % Crop elliptical patch from polygon image
+function [patchImg, isValid] = crop_ellipse_patch(quadImg, ellipse)
+    % Crop elliptical patch from quad image
     %
     % Delegates ellipse mask creation to mask_utils.createEllipseMask for
     % consistent masking across all scripts.
@@ -1150,7 +1150,7 @@ function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
         masks = mask_utils();
     end
 
-    [imgHeight, imgWidth, ~] = size(polygonImg);
+    [imgHeight, imgWidth, ~] = size(quadImg);
     bbox = ellipse_bounding_box(ellipse);
 
     x1 = max(1, floor(bbox(1)));
@@ -1164,7 +1164,7 @@ function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
         return;
     end
 
-    patchImg = polygonImg(y1:y2, x1:x2, :);
+    patchImg = quadImg(y1:y2, x1:x2, :);
     [h, w, ~] = size(patchImg);
 
     % Create ellipse mask using mask_utils (center relative to patch)
@@ -1222,8 +1222,8 @@ function bg = generate_realistic_lab_surface(width, height, textureCfg, artifact
     bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
-function bg = add_polygon_occlusions(bg, scenePolygons, probability)
-    % Draw thin occlusions (e.g., hair/strap-like) across polygons with some probability.
+function bg = add_quad_occlusions(bg, sceneQuads, probability)
+    % Draw thin occlusions (e.g., hair/strap-like) across quads with some probability.
     % Each occlusion is a soft line that slightly darkens or lightens the image beneath.
 
     if probability <= 0
@@ -1232,12 +1232,12 @@ function bg = add_polygon_occlusions(bg, scenePolygons, probability)
 
     [imgH, imgW, ~] = size(bg);
 
-    for i = 1:numel(scenePolygons)
+    for i = 1:numel(sceneQuads)
         if rand() >= probability
             continue;
         end
 
-        verts = scenePolygons{i};
+        verts = sceneQuads{i};
         if isempty(verts) || any(~isfinite(verts(:)))
             continue;
         end
@@ -1250,16 +1250,16 @@ function bg = add_polygon_occlusions(bg, scenePolygons, probability)
             continue;
         end
 
-        % Build local grid for the polygon bbox
+        % Build local grid for the quad bbox
         [X, Y] = meshgrid(minX:maxX, minY:maxY);
 
-        % Polygon mask for clipping
+        % Quad mask for clipping
         polyMask = poly2mask(verts(:,1) - (minX - 1), verts(:,2) - (minY - 1), maxY - minY + 1, maxX - minX + 1);
         if ~any(polyMask(:))
             continue;
         end
 
-        % Choose line params centered near polygon centroid
+        % Choose line params centered near quad centroid
         cx = mean(verts(:,1));
         cy = mean(verts(:,2));
         angle = rand() * 2 * pi;      % random orientation
@@ -1270,7 +1270,7 @@ function bg = add_polygon_occlusions(bg, scenePolygons, probability)
         lineMask = double(d <= halfWidth);
         lineMask = imgaussfilt(lineMask, 0.8);
 
-        % Clip to polygon region
+        % Clip to quad region
         lineMask = lineMask .* double(polyMask);
         if ~any(lineMask(:))
             continue;
@@ -1428,7 +1428,7 @@ function write_stage2_coordinates(coords, outputDir, filename)
     coordPath = fullfile(coordFolder, filename);
 
     % Load existing entries using coordinate_io (with field mapping)
-    existing = read_polygon_coordinates(coordPath);
+    existing = read_quad_coordinates(coordPath);
     map = containers.Map('KeyType', 'char', 'ValueType', 'any');
     if ~isempty(existing)
         for k = 1:numel(existing)
@@ -1465,8 +1465,8 @@ function write_stage2_coordinates(coords, outputDir, filename)
     end
 
     % Use coordinate_io's header and format constants for atomic write
-    header = coordIO.POLYGON_HEADER;
-    writeFmt = coordIO.POLYGON_WRITE_FMT;
+    header = coordIO.QUAD_HEADER;
+    writeFmt = coordIO.QUAD_WRITE_FMT;
 
     coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
@@ -1528,9 +1528,9 @@ function write_stage3_coordinates(coords, outputDir, filename)
     coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
 
-function entries = read_polygon_coordinates(coordPath)
-    % Read polygon coordinates from stage 2 (2_micropads)
-    % Delegates parsing to coordinate_io.parsePolygonCoordinateFile and maps field names.
+function entries = read_quad_coordinates(coordPath)
+    % Read quadrilateral coordinates from stage 2 (2_micropads)
+    % Delegates parsing to coordinate_io.parseQuadCoordinateFile and maps field names.
     %
     % Returns struct array with fields: .image, .concentration, .vertices, .rotation
     % (Maps from coordinate_io's .imageName to .image for backward compatibility)
@@ -1542,7 +1542,7 @@ function entries = read_polygon_coordinates(coordPath)
     end
 
     coordIO = coordinate_io();
-    rawEntries = coordIO.parsePolygonCoordinateFile(coordPath);
+    rawEntries = coordIO.parseQuadCoordinateFile(coordPath);
 
     if isempty(rawEntries)
         return;
@@ -1652,12 +1652,12 @@ function ellipseMap = group_ellipses_by_parent(ellipseEntries, hasEllipses)
     end
 end
 
-function paperGroups = group_polygons_by_image(polygonEntries)
-    % Group polygons by source image name
+function paperGroups = group_quads_by_image(quadEntries)
+    % Group quads by source image name
     paperGroups = containers.Map('KeyType', 'char', 'ValueType', 'any');
 
-    for i = 1:numel(polygonEntries)
-        p = polygonEntries(i);
+    for i = 1:numel(quadEntries)
+        p = quadEntries(i);
         [~, imgBase, ~] = fileparts(p.image);
 
         if ~isKey(paperGroups, imgBase)
@@ -1673,18 +1673,18 @@ end
 %% VALIDATION AND UTILITIES
 %% =========================================================================
 
-function valid = is_valid_polygon(vertices, minArea)
-    % Check if polygon is valid (non-degenerate)
+function valid = is_valid_quad(vertices, minArea)
+    % Check if quadrilateral is valid (non-degenerate)
     area = polyarea(vertices(:,1), vertices(:,2));
     valid = area > minArea;
 end
 
-function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
-    % Place polygons randomly with collision avoidance using spatial grid acceleration
+function positions = place_quads_nonoverlapping(quadBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
+    % Place quads randomly with collision avoidance using spatial grid acceleration
 
-    numPolygons = numel(polygonBboxes);
-    positions = cell(numPolygons, 1);
-    placedBboxes = zeros(numPolygons, 4);
+    numQuads = numel(quadBboxes);
+    positions = cell(numQuads, 1);
+    placedBboxes = zeros(numQuads, 4);
 
     % Initialize spatial grid for O(1) collision detection
     gridCellSize = minSpacing;
@@ -1692,8 +1692,8 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
     gridHeight = ceil(bgHeight / gridCellSize);
     grid = cell(gridHeight, gridWidth);
 
-    for i = 1:numPolygons
-        bbox = polygonBboxes{i};
+    for i = 1:numQuads
+        bbox = quadBboxes{i};
         placed = false;
         lastCandidate = [];
 
@@ -1716,9 +1716,9 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
             hasOverlap = false;
             for cy = cellMinY:cellMaxY
                 for cx = cellMinX:cellMaxX
-                    cellPolygons = grid{cy, cx};
-                    for k = 1:numel(cellPolygons)
-                        j = cellPolygons(k);
+                    cellQuads = grid{cy, cx};
+                    for k = 1:numel(cellQuads)
+                        j = cellQuads(k);
                         if bboxes_overlap(candidateBbox, placedBboxes(j, :), minSpacing)
                             hasOverlap = true;
                             break;
@@ -1837,12 +1837,12 @@ function img = apply_motion_blur(img)
 end
 
 %% -------------------------------------------------------------------------
-function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] = apply_paper_damage(polygonRGB, polygonAlpha, quadCorners, ellipseList, damageCfg, rngState)
-    % Apply paper defect augmentation pipeline to polygon patch
+function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] = apply_paper_damage(quadRGB, quadAlpha, quadCorners, ellipseList, damageCfg, rngState)
+    % Apply paper defect augmentation pipeline to quad patch
     %
     % INPUTS:
-    %   polygonRGB - [H x W x 3] uint8 color content
-    %   polygonAlpha - [H x W] logical mask
+    %   quadRGB - [H x W x 3] uint8 color content
+    %   quadAlpha - [H x W] logical mask
     %   quadCorners - [4 x 2] vertex coordinates
     %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
     %   damageCfg - cfg.damage struct
@@ -1853,10 +1853,10 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
 %   damagedAlpha - [H x W] logical damaged mask
 %   maskEditable - [H x W] logical editable mask
 %   maskProtected - [H x W] logical protected mask
-%   damageCorners - [4 x 2] polygon vertices after warp/shear (crop space)
+%   damageCorners - [4 x 2] quad vertices after warp/shear (crop space)
 
     % Save/restore RNG only when determinism is requested so random draws do
-    % not replay for every polygon.
+    % not replay for every quad.
     savedRngState = [];
     if ~isempty(rngState)
         savedRngState = rng();
@@ -1864,14 +1864,14 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
     end
 
     % Initialize outputs
-    damagedRGB = polygonRGB;
-    damagedAlpha = polygonAlpha;
+    damagedRGB = quadRGB;
+    damagedAlpha = quadAlpha;
     damageCorners = double(quadCorners);
 
     % Check if damage should be applied
     if rand() > damageCfg.probability
-        maskEditable = false(size(polygonAlpha));
-        maskProtected = false(size(polygonAlpha));
+        maskEditable = false(size(quadAlpha));
+        maskProtected = false(size(quadAlpha));
         if ~isempty(savedRngState)
             rng(savedRngState);
         end
@@ -1887,12 +1887,12 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
     selectedProfile = damageCfg.profileNames{profileIdx};
 
     % Phase 0: Prepare masks for damage operations
-    [H, W, ~] = size(polygonRGB);
-    maskPolygon = damagedAlpha;
+    [H, W, ~] = size(quadRGB);
+    maskQuad = damagedAlpha;
     maskProtected = false(H, W);
     maskPreCuts = damagedAlpha;
     hasEllipses = ~isempty(ellipseList) && numel(ellipseList) > 0;
-    originalArea = sum(maskPolygon(:));
+    originalArea = sum(maskQuad(:));
 
     guardCenters = zeros(max(1, numel(ellipseList)), 2);
     guardCenterCount = 0;
@@ -1966,13 +1966,13 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
                 end
             end
 
-            maskProtected = maskProtected & maskPolygon;
+            maskProtected = maskProtected & maskQuad;
         end
     end
 
     if guardCenterCount > 0 && ellipseProtectionActive
         guardCenters = guardCenters(1:guardCenterCount, :);
-        bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, damageCorners);
+        bridgeMask = build_guard_bridge_mask(maskQuad, guardCenters, damageCorners);
         if ~isempty(bridgeMask)
             maskProtected = maskProtected | bridgeMask;
         end
@@ -1984,13 +1984,13 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         if coreGuardScale > 0
             coreMask = build_core_guard_mask(damageCorners, H, W, coreGuardScale);
             if ~isempty(coreMask)
-                maskProtected = maskProtected | (coreMask & maskPolygon);
+                maskProtected = maskProtected | (coreMask & maskQuad);
             end
         end
         minAllowedAreaPixels = originalArea * (1 - maxRemovalFraction);
     end
 
-    maskEditable = maskPolygon & ~maskProtected;
+    maskEditable = maskQuad & ~maskProtected;
     hasProtectedRegions = any(maskProtected(:));
 
     if sum(maskEditable(:)) == 0
@@ -2059,11 +2059,11 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         maskPreCuts = damagedAlpha;
     catch
         % fitgeotrans can fail with near-singular matrices from extreme jitter
-        % Continue with undamaged polygon - no action needed
+        % Continue with undamaged quad - no action needed
     end
 
     % 1.2 Nonlinear edge bending (minimalWarp and sideCollapse only)
-    % Skip for small polygons where warp overhead exceeds benefit
+    % Skip for small quads where warp overhead exceeds benefit
     minDim = min(H, W);
     applyNonlinearWarp = minDim > 200;
     
@@ -2132,7 +2132,7 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
             maskPreCuts = damagedAlpha;
         catch
             % fitgeotrans (lwm) can fail with degenerate control points
-            % Continue with undamaged polygon - no action needed
+            % Continue with undamaged quad - no action needed
         end
     end
 
@@ -2246,7 +2246,7 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
 end
 
 function coreMask = build_core_guard_mask(quadCorners, height, width, scaleFactor)
-    % Construct a scaled version of the polygon that remains untouched
+    % Construct a scaled version of the quad that remains untouched
     if isempty(quadCorners) || size(quadCorners, 2) ~= 2 || scaleFactor <= 0
         coreMask = [];
         return;
@@ -2336,10 +2336,10 @@ function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height)
     ellipseBBox.yMax = min(height, ceil(max(yMaxs)));
 end
 
-function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCorners)
+function bridgeMask = build_guard_bridge_mask(maskQuad, guardCenters, quadCorners)
     % Add protected connectors so guarded ellipses remain attached to the strip
 
-    bridgeMask = false(size(maskPolygon));
+    bridgeMask = false(size(maskQuad));
     if isempty(guardCenters)
         return;
     end
@@ -2349,7 +2349,7 @@ function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCor
         return;
     end
 
-    [height, width] = size(maskPolygon);
+    [height, width] = size(maskQuad);
     centroid(1) = max(1, min(width, centroid(1)));
     centroid(2) = max(1, min(height, centroid(2)));
 
@@ -2374,15 +2374,15 @@ function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCor
     end
 
     se = strel('disk', 2, 0);
-    bridgeMask = imdilate(bridgeMask, se) & maskPolygon;
+    bridgeMask = imdilate(bridgeMask, se) & maskQuad;
 end
 
 %% -------------------------------------------------------------------------
 %% Phase 2 Helper Functions (Structural Cuts)
 %% -------------------------------------------------------------------------
 
-function edgeInfo = get_polygon_edges(quadCorners)
-    % Extract edge geometry from polygon corners for edge-aware damage operations
+function edgeInfo = get_quad_edges(quadCorners)
+    % Extract edge geometry from quad corners for edge-aware damage operations
     %
     % INPUTS:
     %   quadCorners - [4 x 2] vertex coordinates in clockwise order [TL, TR, BR, BL]
@@ -2434,7 +2434,7 @@ function edgeInfo = get_polygon_edges(quadCorners)
         end
     end
 
-    % Verify normals point inward (toward polygon centroid)
+    % Verify normals point inward (toward quad centroid)
     centroid = mean(quadCorners, 1);
     for i = 1:4
         toCenter = centroid - edgeInfo.midpoints(i, :);
@@ -2453,21 +2453,21 @@ function mask = apply_corner_clip(mask, quadCorners, damageCfg)
     %   1. Sample number of corners (1-3, weighted 30/50/20)
     %   2. For adjacent corners (70% of 2-corner clips), create trapezoid look
     %   3. Compute clip depth from reference dimension (mean edge length)
-    %   4. Create triangle vertices using edge directions from polygon geometry
+    %   4. Create triangle vertices using edge directions from quad geometry
     %   5. Rasterize and subtract from mask
     %
     % INPUTS:
     %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   quadCorners - [4×2] quad vertices (TL, TR, BR, BL clockwise)
     %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
     %
     % OUTPUT:
     %   mask - [H×W] logical mask with clips subtracted
     %
-    % Uses actual polygon corners for geometry-aware clipping
+    % Uses actual quad corners for geometry-aware clipping
 
     [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
+    edgeInfo = get_quad_edges(quadCorners);
 
     % Reference dimension for depth calculation (use mean edge length)
     refDim = mean(edgeInfo.lengths);
@@ -2543,16 +2543,16 @@ function mask = apply_corner_tear(mask, quadCorners, damageCfg)
     %
     % INPUTS:
     %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   quadCorners - [4×2] quad vertices (TL, TR, BR, BL clockwise)
     %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
     %
     % OUTPUT:
     %   mask - [H×W] logical mask with tear subtracted
     %
-    % Uses actual polygon corners for geometry-aware tearing
+    % Uses actual quad corners for geometry-aware tearing
 
     [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
+    edgeInfo = get_quad_edges(quadCorners);
 
     % Reference dimension for depth calculation
     refDim = mean(edgeInfo.lengths);
@@ -2595,7 +2595,7 @@ function mask = apply_corner_tear(mask, quadCorners, damageCfg)
         tearVerts(i, :) = cornerPt + dir * offset + perpDir * jitter;
     end
 
-    % Rasterize tear polygon
+    % Rasterize tear quad
     tearMask = poly2mask(tearVerts(:, 1), tearVerts(:, 2), H, W);
 
     % Add roughness via morphological operations
@@ -2621,7 +2621,7 @@ function mask = apply_side_bite(mask, quadCorners, damageCfg, maskProtected, has
     %
     % INPUTS:
     %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   quadCorners - [4×2] quad vertices (TL, TR, BR, BL clockwise)
     %   damageCfg.sideBiteRange - [2×1] depth fraction range [0.08, 0.28]
     %   maskProtected - [H×W] logical protected region mask
     %   hasProtectedRegions - logical flag
@@ -2630,7 +2630,7 @@ function mask = apply_side_bite(mask, quadCorners, damageCfg, maskProtected, has
     %   mask - [H×W] logical mask with bite(s) subtracted
 
     [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
+    edgeInfo = get_quad_edges(quadCorners);
 
     edgeIdx = randi([1, 4]);
     edgePos = 0.3 + rand() * 0.4;
@@ -2691,16 +2691,16 @@ function mask = apply_tapered_side(mask, quadCorners, damageCfg)
     %
     % INPUTS:
     %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
+    %   quadCorners - [4×2] quad vertices (TL, TR, BR, BL clockwise)
     %   damageCfg.taperStrengthRange - [2×1] taper fraction range [0.10, 0.30]
     %
     % OUTPUT:
     %   mask - [H×W] logical mask with tapered edge
     %
-    % Uses actual polygon edges for geometry-aware tapering
+    % Uses actual quad edges for geometry-aware tapering
 
     [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
+    edgeInfo = get_quad_edges(quadCorners);
 
     % Choose edge randomly
     edgeIdx = randi([1, 4]);
@@ -2766,7 +2766,7 @@ function mask = apply_edge_wave_noise(mask, damageCfg)
     minDim = min(H, W);
     originalMask = mask;
     
-    % Skip for small polygons where wave effect is negligible
+    % Skip for small quads where wave effect is negligible
     if minDim < 150
         return;
     end

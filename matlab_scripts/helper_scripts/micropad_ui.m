@@ -3,7 +3,7 @@ function ui = micropad_ui()
     %
     % This utility module provides functions for creating and managing the
     % microPAD processing GUI. Includes figure management, control panels,
-    % polygon visualization, and zoom functionality.
+    % quadrilateral visualization, and zoom functionality.
     %
     % Usage:
     %   ui = micropad_ui();
@@ -17,7 +17,7 @@ function ui = micropad_ui()
     %     .colors    - Color definitions for UI elements
     %     .positions - Normalized positions [x, y, width, height]
     %     .layout    - Panel-internal layout positions
-    %     .polygon   - Polygon styling options
+    %     .quad      - Quadrilateral styling options
     %     .rotation  - Rotation control settings
     %     .zoom      - Zoom control settings
     %
@@ -48,12 +48,12 @@ function ui = micropad_ui()
     ui.createEllipseZoomPanel = @createEllipseZoomPanel;
     ui.createAIStatusLabel = @createAIStatusLabel;
 
-    % Polygon visualization
-    ui.createPolygons = @createPolygons;
-    ui.addPolygonLabels = @addPolygonLabels;
-    ui.updatePolygonLabels = @updatePolygonLabels;
+    % Quadrilateral visualization
+    ui.createQuads = @createQuads;
+    ui.addQuadLabels = @addQuadLabels;
+    ui.updateQuadLabels = @updateQuadLabels;
     ui.getConcentrationColor = @getConcentrationColor;
-    ui.setPolygonColor = @setPolygonColor;
+    ui.setQuadColor = @setQuadColor;
     ui.createEllipseROI = @createEllipseROI;
 
     % Preview
@@ -62,7 +62,7 @@ function ui = micropad_ui()
 
     % Zoom functions
     ui.applyZoomToAxes = @applyZoomToAxes;
-    ui.calculatePolygonBounds = @calculatePolygonBounds;
+    ui.calculateQuadBounds = @calculateQuadBounds;
     ui.calculateEllipseBounds = @calculateEllipseBounds;
 
     % State management
@@ -77,7 +77,7 @@ function ui = micropad_ui()
 
     % AI progress indicator
     ui.showAIProgressIndicator = @showAIProgressIndicator;
-    ui.capturePolygonColors = @capturePolygonColors;
+    ui.captureQuadColors = @captureQuadColors;
 
     % Timer utilities
     ui.safeStopTimer = @safeStopTimer;
@@ -98,7 +98,7 @@ function cfg = getDefaultUIConfig()
     %   - colors: Color definitions for background, foreground, panels, buttons
     %   - positions: Normalized positions for all UI elements
     %   - layout: Internal layout positions within panels
-    %   - polygon: Polygon styling (lineWidth, borderWidth)
+    %   - quad: Quadrilateral styling (lineWidth, borderWidth)
     %   - rotation: Rotation control settings (range, quickAngles)
     %   - zoom: Zoom control settings (range, defaultValue)
 
@@ -125,7 +125,7 @@ function cfg = getDefaultUIConfig()
         'accept', [0.2 0.75 0.3], ...
         'retry', [0.9 0.75 0.2], ...
         'skip', [0.75 0.25 0.25], ...
-        'polygon', [0.0 1.0 1.0], ...
+        'quad', [0.0 1.0 1.0], ...
         'info', [1.0 1.0 0.3], ...
         'path', [0.75 0.75 0.75], ...
         'apply', [0.2 0.5 0.9]);
@@ -165,8 +165,8 @@ function cfg = getDefaultUIConfig()
     cfg.layout.ellipseZoomNextButton = [0.62 0.42 0.18 0.28];
     cfg.layout.ellipseZoomResetButton = [0.25 0.08 0.50 0.28];
 
-    % Polygon styling
-    cfg.polygon = struct(...
+    % Quadrilateral styling
+    cfg.quad = struct(...
         'lineWidth', 3, ...
         'borderWidth', 2);
 
@@ -336,7 +336,7 @@ function instructionText = createInstructions(fig, cfg, customString)
     %   instructionText - Handle to instruction text control
 
     if nargin < 3 || isempty(customString)
-        customString = 'Mouse = Drag Vertices | Buttons = Rotate | RUN AI = Detect Polygons | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
+        customString = 'Mouse = Drag Vertices | Buttons = Rotate | RUN AI = Detect Quads | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
     end
 
     instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', customString, ...
@@ -465,7 +465,7 @@ function buttonPanel = createPreviewButtons(fig, cfg, callbacks)
                          'Position', cfg.ui.positions.previewPanel, ...
                          'BackgroundColor', cfg.ui.colors.panel, ...
                          'BorderType', 'etchedin', 'HighlightColor', cfg.ui.colors.foreground, ...
-                         'BorderWidth', cfg.ui.polygon.borderWidth);
+                         'BorderWidth', cfg.ui.quad.borderWidth);
 
     buttons = {'ACCEPT', 'RETRY', 'SKIP'};
     positions = {[0.05 0.25 0.25 0.50], [0.375 0.25 0.25 0.50], [0.70 0.25 0.25 0.50]};
@@ -643,7 +643,7 @@ function [zoomSlider, zoomValue] = createZoomPanel(fig, cfg, sliderCallback, res
 end
 
 function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoomPanel(fig, cfg, prevCallback, nextCallback, resetCallback)
-    % Create zoom panel with polygon navigation for ellipse editing
+    % Create zoom panel with quadrilateral navigation for ellipse editing
     %
     % INPUTS:
     %   fig           - Parent figure
@@ -665,7 +665,7 @@ function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoo
                        'BorderWidth', 2);
 
     % Panel label
-    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Polygon Zoom', ...
+    uicontrol('Parent', zoomPanel, 'Style', 'text', 'String', 'Quad Zoom', ...
              'Units', 'normalized', 'Position', cfg.ui.layout.zoomLabel, ...
              'FontSize', cfg.ui.fontSize.label, 'FontWeight', 'bold', ...
              'ForegroundColor', cfg.ui.colors.foreground, ...
@@ -683,7 +683,7 @@ function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoo
         set(prevButton, 'Callback', prevCallback);
     end
 
-    % Polygon indicator text
+    % Quadrilateral indicator text
     zoomIndicator = uicontrol('Parent', zoomPanel, 'Style', 'text', ...
                          'String', 'All', ...
                          'Units', 'normalized', 'Position', cfg.ui.layout.ellipseZoomIndicator, ...
@@ -752,101 +752,101 @@ function statusLabel = createAIStatusLabel(fig, cfg)
 end
 
 %% =========================================================================
-%% POLYGON VISUALIZATION
+%% QUADRILATERAL VISUALIZATION
 %% =========================================================================
 
-function polygons = createPolygons(initialPolygons, cfg, labelCallback)
+function quads = createQuads(initialQuads, cfg, labelCallback)
     % Create drawpolygon objects from initial positions
     %
     % INPUTS:
-    %   initialPolygons - [N x 4 x 2] array of polygon vertices
-    %   cfg             - Configuration with numSquares and ui.polygon settings
-    %   labelCallback   - (Optional) Callback for label updates
+    %   initialQuads  - [N x 4 x 2] array of quadrilateral vertices
+    %   cfg           - Configuration with numSquares and ui.quad settings
+    %   labelCallback - (Optional) Callback for label updates
     %
     % OUTPUTS:
-    %   polygons - Cell array of drawpolygon handles
+    %   quads - Cell array of drawpolygon handles
 
-    n = size(initialPolygons, 1);
-    polygons = cell(1, n);
+    n = size(initialQuads, 1);
+    quads = cell(1, n);
 
     for i = 1:n
-        pos = squeeze(initialPolygons(i, :, :));
+        pos = squeeze(initialQuads(i, :, :));
 
         % Apply color gradient based on concentration index
         concentrationIndex = i - 1;
-        polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
+        quadColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
 
-        polygons{i} = drawpolygon('Position', pos, ...
-                                 'Color', polyColor, ...
-                                 'LineWidth', cfg.ui.polygon.lineWidth, ...
+        quads{i} = drawpolygon('Position', pos, ...
+                                 'Color', quadColor, ...
+                                 'LineWidth', cfg.ui.quad.lineWidth, ...
                                  'MarkerSize', 8, ...
                                  'Selected', false);
 
         % Apply face styling
-        setPolygonColor(polygons{i}, polyColor, 0.25);
+        setQuadColor(quads{i}, quadColor, 0.25);
 
         % Store initial valid position
-        setappdata(polygons{i}, 'LastValidPosition', pos);
+        setappdata(quads{i}, 'LastValidPosition', pos);
 
         % Add listener for quadrilateral enforcement
-        listenerHandle = addlistener(polygons{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(polygons{i}));
-        setappdata(polygons{i}, 'ListenerHandle', listenerHandle);
+        listenerHandle = addlistener(quads{i}, 'ROIMoved', @(~,~) enforceQuadrilateral(quads{i}));
+        setappdata(quads{i}, 'ListenerHandle', listenerHandle);
 
         % Add listener for label updates
         if nargin >= 3 && ~isempty(labelCallback)
-            labelUpdateListener = addlistener(polygons{i}, 'ROIMoved', labelCallback);
-            setappdata(polygons{i}, 'LabelUpdateListener', labelUpdateListener);
+            labelUpdateListener = addlistener(quads{i}, 'ROIMoved', labelCallback);
+            setappdata(quads{i}, 'LabelUpdateListener', labelUpdateListener);
         end
     end
 end
 
-function enforceQuadrilateral(polygon)
-    % Ensure polygon remains a quadrilateral
-    if ~isvalid(polygon)
+function enforceQuadrilateral(quad)
+    % Ensure quadrilateral remains a quadrilateral
+    if ~isvalid(quad)
         return;
     end
 
-    pos = polygon.Position;
+    pos = quad.Position;
     if size(pos, 1) ~= 4
-        lastValid = getappdata(polygon, 'LastValidPosition');
+        lastValid = getappdata(quad, 'LastValidPosition');
         if ~isempty(lastValid)
-            polygon.Position = lastValid;
+            quad.Position = lastValid;
         end
-        warning('micropad_ui:invalid_polygon', 'Polygon must have exactly 4 vertices. Reverting change.');
+        warning('micropad_ui:invalid_quad', 'Quadrilateral must have exactly 4 vertices. Reverting change.');
     else
-        setappdata(polygon, 'LastValidPosition', pos);
+        setappdata(quad, 'LastValidPosition', pos);
     end
 end
 
-function labelHandles = addPolygonLabels(polygons, axesHandle)
-    % Add text labels showing concentration number on each polygon
+function labelHandles = addQuadLabels(quads, axesHandle)
+    % Add text labels showing concentration number on each quadrilateral
     %
     % INPUTS:
-    %   polygons   - Cell array of drawpolygon objects
+    %   quads      - Cell array of drawpolygon objects
     %   axesHandle - Axes where labels should be drawn
     %
     % OUTPUTS:
     %   labelHandles - Cell array of text handles
 
-    n = numel(polygons);
+    n = numel(quads);
     labelHandles = cell(1, n);
 
     for i = 1:n
-        poly = polygons{i};
-        if ~isvalid(poly)
+        quad = quads{i};
+        if ~isvalid(quad)
             continue;
         end
 
-        pos = poly.Position;
+        pos = quad.Position;
         if isempty(pos) || size(pos, 1) < 3
             continue;
         end
 
-        % Position at top of polygon
+        % Position at top of quadrilateral
         centerX = mean(pos(:, 1));
         minY = min(pos(:, 2));
-        polyHeight = max(pos(:, 2)) - minY;
-        labelY = minY - max(15, polyHeight * 0.1);
+        quadHeight = max(pos(:, 2)) - minY;
+        labelY = minY - max(15, quadHeight * 0.1);
 
         concentrationIndex = i - 1;
         labelText = sprintf('con_%d', concentrationIndex);
@@ -863,35 +863,35 @@ function labelHandles = addPolygonLabels(polygons, axesHandle)
     end
 end
 
-function updatePolygonLabels(polygons, labelHandles)
-    % Update label positions to match polygon positions
+function updateQuadLabels(quads, labelHandles)
+    % Update label positions to match quadrilateral positions
     %
     % INPUTS:
-    %   polygons     - Cell array of drawpolygon objects
+    %   quads        - Cell array of drawpolygon objects
     %   labelHandles - Cell array of text handles
 
     if isempty(labelHandles)
         return;
     end
 
-    numPolygons = numel(polygons);
+    numQuads = numel(quads);
     numLabels = numel(labelHandles);
 
-    for i = 1:min(numPolygons, numLabels)
-        if ~isvalid(polygons{i}) || ~isvalid(labelHandles{i})
+    for i = 1:min(numQuads, numLabels)
+        if ~isvalid(quads{i}) || ~isvalid(labelHandles{i})
             continue;
         end
 
-        pos = polygons{i}.Position;
+        pos = quads{i}.Position;
         if isempty(pos) || size(pos, 1) < 3
             continue;
         end
 
-        % Position at top of polygon
+        % Position at top of quadrilateral
         centerX = mean(pos(:, 1));
         minY = min(pos(:, 2));
-        polyHeight = max(pos(:, 2)) - minY;
-        labelY = minY - max(15, polyHeight * 0.1);
+        quadHeight = max(pos(:, 2)) - minY;
+        labelY = minY - max(15, quadHeight * 0.1);
 
         set(labelHandles{i}, 'Position', [centerX, labelY, 0]);
     end
@@ -924,31 +924,31 @@ function color = getConcentrationColor(concentrationIndex, totalConcentrations)
     color = hsv2rgb([hue, sat, val]);
 end
 
-function setPolygonColor(polygonHandle, colorValue, faceAlpha)
-    % Apply edge/face color updates to polygon
+function setQuadColor(quadHandle, colorValue, faceAlpha)
+    % Apply edge/face color updates to quadrilateral
     %
     % INPUTS:
-    %   polygonHandle - Polygon ROI handle
-    %   colorValue    - [R G B] color
-    %   faceAlpha     - (Optional) Face transparency
+    %   quadHandle - Quadrilateral ROI handle
+    %   colorValue - [R G B] color
+    %   faceAlpha  - (Optional) Face transparency
 
     if nargin < 3
         faceAlpha = [];
     end
 
-    if isempty(polygonHandle) || ~isvalid(polygonHandle)
+    if isempty(quadHandle) || ~isvalid(quadHandle)
         return;
     end
 
     if ~isempty(colorValue) && all(isfinite(colorValue))
-        set(polygonHandle, 'Color', colorValue);
-        if isprop(polygonHandle, 'FaceColor')
-            set(polygonHandle, 'FaceColor', colorValue);
+        set(quadHandle, 'Color', colorValue);
+        if isprop(quadHandle, 'FaceColor')
+            set(quadHandle, 'FaceColor', colorValue);
         end
     end
 
-    if ~isempty(faceAlpha) && isprop(polygonHandle, 'FaceAlpha')
-        set(polygonHandle, 'FaceAlpha', faceAlpha);
+    if ~isempty(faceAlpha) && isprop(quadHandle, 'FaceAlpha')
+        set(quadHandle, 'FaceAlpha', faceAlpha);
     end
 end
 
@@ -1005,20 +1005,20 @@ end
 %% PREVIEW
 %% =========================================================================
 
-function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxes(fig, img, polygonParams, ellipseData, cfg)
+function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxes(fig, img, quadParams, ellipseData, cfg)
     % Create preview axes with original and masked images
     %
     % INPUTS:
-    %   fig           - Parent figure
-    %   img           - Original image
-    %   polygonParams - [N x 4 x 2] polygon coordinates
-    %   ellipseData   - (Optional) Ellipse data [M x 7]
-    %   cfg           - UI configuration
+    %   fig         - Parent figure
+    %   img         - Original image
+    %   quadParams  - [N x 4 x 2] quadrilateral coordinates
+    %   ellipseData - (Optional) Ellipse data [M x 7]
+    %   cfg         - UI configuration
     %
     % OUTPUTS:
-    %   leftAxes      - Left axes handle (original)
-    %   rightAxes     - Right axes handle (masked)
-    %   leftImgHandle - Left image handle
+    %   leftAxes       - Left axes handle (original)
+    %   rightAxes      - Right axes handle (masked)
+    %   leftImgHandle  - Left image handle
     %   rightImgHandle - Right image handle
 
     if nargin < 4
@@ -1034,19 +1034,19 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
           'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
     hold(leftAxes, 'on');
 
-    % Draw polygon overlays
-    for i = 1:size(polygonParams, 1)
-        poly = squeeze(polygonParams(i,:,:));
-        if size(poly, 1) >= 3
+    % Draw quadrilateral overlays
+    for i = 1:size(quadParams, 1)
+        quad = squeeze(quadParams(i,:,:));
+        if size(quad, 1) >= 3
             concentrationIndex = i - 1;
-            polyColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
+            quadColor = getConcentrationColor(concentrationIndex, cfg.numSquares);
 
-            plot(leftAxes, [poly(:,1); poly(1,1)], [poly(:,2); poly(1,2)], ...
-                 'Color', polyColor, 'LineWidth', cfg.ui.polygon.lineWidth);
+            plot(leftAxes, [quad(:,1); quad(1,1)], [quad(:,2); quad(1,2)], ...
+                 'Color', quadColor, 'LineWidth', cfg.ui.quad.lineWidth);
 
             % Label at bottom-right
-            bottomRightX = max(poly(:,1));
-            bottomRightY = max(poly(:,2));
+            bottomRightX = max(quad(:,1));
+            bottomRightY = max(quad(:,2));
             hText = text(leftAxes, bottomRightX, bottomRightY, sprintf('con_%d', i-1), ...
                  'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
                  'FontSize', cfg.ui.fontSize.info, 'FontWeight', 'bold', ...
@@ -1087,7 +1087,7 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
 
     % Right: masked preview
     rightAxes = axes('Parent', fig, 'Units', 'normalized', 'Position', cfg.ui.positions.previewRight);
-    maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg);
+    maskedImg = createMaskedPreview(img, quadParams, ellipseData, cfg);
     rightImgHandle = imshow(maskedImg, 'Parent', rightAxes, 'InitialMagnification', 'fit');
     axis(rightAxes, 'image');
     axis(rightAxes, 'tight');
@@ -1095,14 +1095,14 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
           'Color', cfg.ui.colors.foreground, 'FontSize', cfg.ui.fontSize.preview, 'FontWeight', 'bold');
 end
 
-function maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg)
+function maskedImg = createMaskedPreview(img, quadParams, ellipseData, cfg)
     % Create masked preview image
     %
     % INPUTS:
-    %   img           - Original image
-    %   polygonParams - Polygon coordinates
-    %   ellipseData   - Ellipse data
-    %   cfg           - Configuration with dimFactor
+    %   img         - Original image
+    %   quadParams  - Quadrilateral coordinates
+    %   ellipseData - Ellipse data
+    %   cfg         - Configuration with dimFactor
     %
     % OUTPUTS:
     %   maskedImg - Image with non-selected regions dimmed
@@ -1110,12 +1110,12 @@ function maskedImg = createMaskedPreview(img, polygonParams, ellipseData, cfg)
     [height, width, ~] = size(img);
     totalMask = false(height, width);
 
-    % Add polygon masks
-    numRegions = size(polygonParams, 1);
+    % Add quadrilateral masks
+    numRegions = size(quadParams, 1);
     for i = 1:numRegions
-        poly = squeeze(polygonParams(i,:,:));
-        if size(poly, 1) >= 3
-            regionMask = poly2mask(poly(:,1), poly(:,2), height, width);
+        quad = squeeze(quadParams(i,:,:));
+        if size(quad, 1) >= 3
+            regionMask = poly2mask(quad(:,1), quad(:,2), height, width);
             totalMask = totalMask | regionMask;
         end
     end
@@ -1175,7 +1175,7 @@ function applyZoomToAxes(guiData, ~)
         if isfield(guiData, 'autoZoomBounds') && ~isempty(guiData.autoZoomBounds)
             autoZoomBounds = guiData.autoZoomBounds;
         else
-            [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+            [xmin, xmax, ymin, ymax] = calculateQuadBounds(guiData);
             if ~isempty(xmin)
                 autoZoomBounds = [xmin, xmax, ymin, ymax];
             else
@@ -1198,11 +1198,11 @@ function applyZoomToAxes(guiData, ~)
     end
 end
 
-function [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData)
-    % Calculate bounding box containing all polygons
+function [xmin, xmax, ymin, ymax] = calculateQuadBounds(guiData)
+    % Calculate bounding box containing all quadrilaterals
     %
     % INPUTS:
-    %   guiData - GUI data struct with polygons cell array
+    %   guiData - GUI data struct with quads cell array
     %
     % OUTPUTS:
     %   xmin, xmax, ymin, ymax - Bounding box (with 10% margin)
@@ -1212,14 +1212,14 @@ function [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData)
     ymin = inf;
     ymax = -inf;
 
-    if ~isfield(guiData, 'polygons') || isempty(guiData.polygons)
+    if ~isfield(guiData, 'quads') || isempty(guiData.quads)
         xmin = [];
         return;
     end
 
-    for i = 1:numel(guiData.polygons)
-        if isvalid(guiData.polygons{i})
-            pos = guiData.polygons{i}.Position;
+    for i = 1:numel(guiData.quads)
+        if isvalid(guiData.quads{i})
+            pos = guiData.quads{i}.Position;
             xmin = min(xmin, min(pos(:, 1)));
             xmax = max(xmax, max(pos(:, 1)));
             ymin = min(ymin, min(pos(:, 2)));
@@ -1361,17 +1361,17 @@ function clearAllUIElements(fig, guiData)
 
     toDelete = allObjects(isControl | isPanel | isAxes);
 
-    % Add polygon ROIs
-    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'polygons')
-        validPolys = collectValidHandles(guiData.polygons);
-        if ~isempty(validPolys)
-            toDelete = [toDelete; validPolys];
+    % Add quadrilateral ROIs
+    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'quads')
+        validQuads = collectValidHandles(guiData.quads);
+        if ~isempty(validQuads)
+            toDelete = [toDelete; validQuads];
         end
     end
 
-    % Add polygon labels
-    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'polygonLabels')
-        validLabels = collectValidHandles(guiData.polygonLabels);
+    % Add quadrilateral labels
+    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'quadLabels')
+        validLabels = collectValidHandles(guiData.quadLabels);
         if ~isempty(validLabels)
             toDelete = [toDelete; validLabels];
         end
@@ -1537,9 +1537,9 @@ function showAIProgressIndicator(fig, show, cfg)
         set(guiData.aiStatusLabel, 'String', 'AI DETECTION RUNNING', 'Visible', 'on');
         uistack(guiData.aiStatusLabel, 'top');
 
-        % Capture current polygon colors
-        if isfield(guiData, 'polygons')
-            guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+        % Capture current quadrilateral colors
+        if isfield(guiData, 'quads')
+            guiData.aiBaseColors = captureQuadColors(guiData.quads);
         end
 
         drawnow limitrate;
@@ -1550,48 +1550,48 @@ function showAIProgressIndicator(fig, show, cfg)
         end
 
         % Restore base colors
-        if isfield(guiData, 'polygons') && iscell(guiData.polygons) && ...
+        if isfield(guiData, 'quads') && iscell(guiData.quads) && ...
            isfield(guiData, 'aiBaseColors') && ~isempty(guiData.aiBaseColors)
-            numRestore = min(size(guiData.aiBaseColors, 1), numel(guiData.polygons));
+            numRestore = min(size(guiData.aiBaseColors, 1), numel(guiData.quads));
             for idx = 1:numRestore
-                poly = guiData.polygons{idx};
+                quad = guiData.quads{idx};
                 baseColor = guiData.aiBaseColors(idx, :);
-                if isvalid(poly) && all(isfinite(baseColor))
-                    setPolygonColor(poly, baseColor, 0.25);
+                if isvalid(quad) && all(isfinite(baseColor))
+                    setQuadColor(quad, baseColor, 0.25);
                 end
             end
             drawnow limitrate;
         end
 
         % Refresh baseline colors
-        if isfield(guiData, 'polygons')
-            guiData.aiBaseColors = capturePolygonColors(guiData.polygons);
+        if isfield(guiData, 'quads')
+            guiData.aiBaseColors = captureQuadColors(guiData.quads);
         end
     end
 
     set(fig, 'UserData', guiData);
 end
 
-function baseColors = capturePolygonColors(polygons)
-    % Capture current colors of all polygons
+function baseColors = captureQuadColors(quads)
+    % Capture current colors of all quadrilaterals
     %
     % INPUTS:
-    %   polygons - Cell array of polygon handles
+    %   quads - Cell array of quadrilateral handles
     %
     % OUTPUTS:
     %   baseColors - [N x 3] matrix of RGB colors
 
     baseColors = [];
-    if isempty(polygons) || ~iscell(polygons)
+    if isempty(quads) || ~iscell(quads)
         return;
     end
 
-    numPolygons = numel(polygons);
-    baseColors = nan(numPolygons, 3);
+    numQuads = numel(quads);
+    baseColors = nan(numQuads, 3);
 
-    for idx = 1:numPolygons
-        if isvalid(polygons{idx})
-            color = get(polygons{idx}, 'Color');
+    for idx = 1:numQuads
+        if isvalid(quads{idx})
+            color = get(quads{idx}, 'Color');
             if numel(color) == 3
                 baseColors(idx, :) = color;
             end

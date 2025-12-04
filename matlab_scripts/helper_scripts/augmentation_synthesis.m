@@ -2,7 +2,7 @@ function augSynth = augmentation_synthesis()
     %% AUGMENTATION_SYNTHESIS Returns a struct of function handles for synthetic data generation
     %
     % This utility module consolidates all synthetic generation for the augmentation
-    % pipeline: background textures, sparse artifacts, and polygon distractors.
+    % pipeline: background textures, sparse artifacts, and quadrilateral distractors.
     %
     % Usage:
     %   augSynth = augmentation_synthesis();
@@ -13,10 +13,10 @@ function augSynth = augmentation_synthesis()
     %
     %   % Sparse artifacts
     %   bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
-    %   mask = augSynth.artifacts.generatePolygonMask(verticesPix, targetSize);
+    %   mask = augSynth.artifacts.generateQuadMask(verticesPix, targetSize);
     %
-    %   % Polygon distractors
-    %   [bg, count] = augSynth.distractors.addPolygon(bg, regions, bboxes, occupied, cfg, funcs);
+    %   % Quadrilateral distractors
+    %   [bg, count] = augSynth.distractors.addQuad(bg, regions, bboxes, occupied, cfg, funcs);
     %
     % See also: augment_dataset
 
@@ -40,14 +40,14 @@ function augSynth = augmentation_synthesis()
 
     %% Public API - Sparse artifacts
     augSynth.artifacts.addSparse = @addSparseArtifacts;
-    augSynth.artifacts.generatePolygonMask = @generatePolygonMask;
+    augSynth.artifacts.generateQuadMask = @generateQuadMask;
 
-    %% Public API - Polygon distractors
-    augSynth.distractors.addPolygon = @addPolygonDistractors;
+    %% Public API - Quadrilateral distractors
+    augSynth.distractors.addQuad = @addQuadDistractors;
     augSynth.distractors.sampleType = @sampleDistractorType;
     augSynth.distractors.synthesizePatch = @synthesizeDistractorPatch;
     augSynth.distractors.finalizePatch = @finalizeDistractorPatch;
-    augSynth.distractors.jitterPatch = @jitterPolygonPatch;
+    augSynth.distractors.jitterPatch = @jitterQuadPatch;
     augSynth.distractors.scalePatch = @scaleDistractorPatch;
     augSynth.distractors.sampleColor = @sampleDistractorColor;
     augSynth.distractors.synthesizeTexture = @synthesizeDistractorTexture;
@@ -361,7 +361,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     %% Add variable-density artifacts anywhere on background for robust detection training
     %
     % OPTIMIZATION: Ellipses/lines use unit-square normalization (default 64x64 defined
-    % in artifactCfg.unitMaskSize) to avoid large meshgrid allocations. Polygonal artifacts
+    % in artifactCfg.unitMaskSize) to avoid large meshgrid allocations. Quadrilateral artifacts
     % render directly at target resolution so corner geometry remains crisp.
     %
     % Inputs:
@@ -380,7 +380,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     %       .ellipseRadiusBRange - [min, max] ellipse semi-minor axis fraction
     %       .rectangleSizeRange - [min, max] rectangle size fraction
     %       .quadSizeRange - [min, max] quadrilateral size fraction
-    %       .quadPerturbation - Vertex perturbation for quads
+    %       .quadPerturbation - Vertex perturbation for quadrilaterals
     %       .triangleSizeRange - [min, max] triangle size fraction
     %       .lineIntensityRange - [min, max] line intensity offset
     %       .blobDarkIntensityRange - [min, max] dark blob intensity
@@ -454,7 +454,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
         x = randi([xMin, xMax]);
         y = randi([yMin, yMax]);
 
-        % Create artifact mask; polygons draw directly at target resolution to keep sharp edges
+        % Create artifact mask; quadrilaterals draw directly at target resolution to keep sharp edges
         mask = [];
         unitMask = [];
         switch artifactType
@@ -487,7 +487,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
                 rotatedVerts = baseVerts * rotMatrix';
                 centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
                 verticesPix = rotatedVerts + centerPix;
-                mask = generatePolygonMask(verticesPix, artifactSize);
+                mask = generateQuadMask(verticesPix, artifactSize);
 
             case 'quadrilateral'
                 baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
@@ -504,7 +504,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
                 centeredVerts = (verticesNorm - 0.5) * (artifactSize - 1);
                 centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
                 verticesPix = centeredVerts + centerPix;
-                mask = generatePolygonMask(verticesPix, artifactSize);
+                mask = generateQuadMask(verticesPix, artifactSize);
 
             case 'triangle'
                 baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
@@ -518,7 +518,7 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
                 centeredVerts = radius * verticesNorm;
                 centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
                 verticesPix = centeredVerts + centerPix;
-                mask = generatePolygonMask(verticesPix, artifactSize);
+                mask = generateQuadMask(verticesPix, artifactSize);
 
             otherwise  % 'line'
                 angle = rand() * pi;
@@ -588,8 +588,8 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     end
 end
 
-function mask = generatePolygonMask(verticesPix, targetSize)
-    %% Rasterize polygon vertices expressed in pixel coordinates into a binary mask
+function mask = generateQuadMask(verticesPix, targetSize)
+    %% Rasterize quadrilateral vertices expressed in pixel coordinates into a binary mask
     %
     % Inputs:
     %   verticesPix - Nx2 matrix of [x, y] vertex coordinates in pixels
@@ -604,26 +604,26 @@ function mask = generatePolygonMask(verticesPix, targetSize)
     end
 
     verticesPix = double(verticesPix);
-    polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), targetSize, targetSize);
-    if ~any(polyMask(:))
+    quadMask = poly2mask(verticesPix(:,1), verticesPix(:,2), targetSize, targetSize);
+    if ~any(quadMask(:))
         mask = [];
         return;
     end
 
-    mask = single(polyMask);
+    mask = single(quadMask);
 end
 
 %% =========================================================================
-%% POLYGON DISTRACTORS - MAIN GENERATION
+%% QUADRILATERAL DISTRACTORS - MAIN GENERATION
 %% =========================================================================
 
-function [bg, placedCount] = addPolygonDistractors(bg, regions, polygonBboxes, occupiedBboxes, cfg, placementFuncs)
-    % Inject additional polygon-shaped distractors matching source geometry statistics.
+function [bg, placedCount] = addQuadDistractors(bg, regions, quadBboxes, occupiedBboxes, cfg, placementFuncs)
+    % Inject additional quadrilateral-shaped distractors matching source geometry statistics.
     %
     % Inputs:
     %   bg - Background image to composite distractors onto
     %   regions - Cell array of source region structures
-    %   polygonBboxes - Cell array of bbox info structs for each region
+    %   quadBboxes - Cell array of bbox info structs for each region
     %   occupiedBboxes - Nx4 matrix of already-occupied bounding boxes
     %   cfg - Configuration struct with .distractors, .texture, .placement fields
     %   placementFuncs - Struct with function handles:
@@ -667,8 +667,8 @@ function [bg, placedCount] = addPolygonDistractors(bg, regions, polygonBboxes, o
     for k = 1:targetCount
         srcIdx = randi(numSource);
         region = regions{srcIdx};
-        bboxInfo = polygonBboxes{srcIdx};
-        templatePatch = region.augPolygonImg;
+        bboxInfo = quadBboxes{srcIdx};
+        templatePatch = region.augQuadImg;
 
         if isempty(templatePatch) || bboxInfo.width <= 0 || bboxInfo.height <= 0
             continue;
@@ -680,7 +680,7 @@ function [bg, placedCount] = addPolygonDistractors(bg, regions, polygonBboxes, o
             continue;
         end
 
-        patch = jitterPolygonPatch(patch, distractorCfg);
+        patch = jitterQuadPatch(patch, distractorCfg);
 
         % Apply random uniform scaling to distractor
         scaleRange = distractorCfg.sizeScaleRange;
@@ -731,7 +731,7 @@ function [bg, placedCount] = addPolygonDistractors(bg, regions, polygonBboxes, o
 end
 
 %% =========================================================================
-%% POLYGON DISTRACTORS - PATCH SYNTHESIS
+%% QUADRILATERAL DISTRACTORS - PATCH SYNTHESIS
 %% =========================================================================
 
 function patchType = sampleDistractorType(distractorCfg)
@@ -764,7 +764,7 @@ function patchType = sampleDistractorType(distractorCfg)
 end
 
 function patch = synthesizeDistractorPatch(templatePatch, textureCfg, distractorCfg, patchType)
-    % Create a synthetic distractor polygon using the original mask as a template.
+    % Create a synthetic distractor quadrilateral using the original mask as a template.
 
     if isempty(templatePatch)
         patch = templatePatch;
@@ -837,7 +837,7 @@ function patch = finalizeDistractorPatch(patchFloat, activeMask, templatePatch)
     patch = castPatchLikeTemplate(patchFloat, templatePatch);
 end
 
-function jittered = jitterPolygonPatch(patch, distractorCfg)
+function jittered = jitterQuadPatch(patch, distractorCfg)
     % Apply lightweight photometric jitter while preserving mask boundaries.
 
     if isempty(patch)
@@ -900,7 +900,7 @@ function [scaledPatch, scaledLocalVerts] = scaleDistractorPatch(patch, vertices,
 end
 
 %% =========================================================================
-%% POLYGON DISTRACTORS - COLOR AND TEXTURE
+%% QUADRILATERAL DISTRACTORS - COLOR AND TEXTURE
 %% =========================================================================
 
 function baseColor = sampleDistractorColor(textureCfg, numChannels)
@@ -979,11 +979,11 @@ function texture = synthesizeDistractorTexture(mask, textureCfg, distractorCfg)
 end
 
 %% =========================================================================
-%% POLYGON DISTRACTORS - OUTLINE UTILITIES
+%% QUADRILATERAL DISTRACTORS - OUTLINE UTILITIES
 %% =========================================================================
 
 function outlineMask = computeOutlineMask(mask, distractorCfg)
-    % Compute an outline mask from the filled polygon mask.
+    % Compute an outline mask from the filled quadrilateral mask.
 
     thickness = sampleOutlineWidth(distractorCfg);
     outlineMask = bwperim(mask);

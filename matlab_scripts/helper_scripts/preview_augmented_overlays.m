@@ -1,10 +1,10 @@
 function preview_augmented_overlays(varargin)
 %PREVIEW_AUGMENTED_OVERLAYS Visual integrity check for augmented overlays.
 %   Displays augmented scenes from augmented_1_dataset with concentration
-%   polygons from augmented_2_micropads and ellipse fits
+%   quads from augmented_2_micropads and ellipse fits
 %   from augmented_3_elliptical_regions overlaid on top.
 %
-%   This viewer aggregates all polygons and ellipses per base scene image,
+%   This viewer aggregates all quads and ellipses per base scene image,
 %   matching the workflow of preview_overlays.m but for augmented data.
 %
 %   COORDINATE FORMATS:
@@ -204,10 +204,10 @@ end
 %% Helper functions
 
 function plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, maxSamples, supportedExts, stage2Cols, stage3Cols)
-% Build preview plan aggregating all polygons and ellipses per base scene
+% Build preview plan aggregating all quads and ellipses per base scene
 
 plan = struct('phoneName', {}, 'imageName', {}, 'imagePath', {}, ...
-    'imageMissing', {}, 'polygons', {}, 'ellipses', {});
+    'imageMissing', {}, 'quads', {}, 'ellipses', {});
 
 entryCount = 0;
 imageMap = containers.Map('KeyType', 'char', 'ValueType', 'int32');
@@ -220,7 +220,7 @@ for pIdx = 1:numel(phoneDirs)
     phone = phoneDirs(pIdx);
     phoneStr = char(phone);
 
-    % Read stage-2 polygon coordinates
+    % Read stage-2 quad coordinates
     s2CoordPath = fullfile(stage2Root, phoneStr, 'coordinates.txt');
     if ~isfile(s2CoordPath)
         warning('preview_augmented_overlays:missingS2Coords', ...
@@ -228,7 +228,7 @@ for pIdx = 1:numel(phoneDirs)
         continue;
     end
 
-    s2Table = read_polygon_table(s2CoordPath, stage2Cols);
+    s2Table = read_quad_table(s2CoordPath, stage2Cols);
     if isempty(s2Table)
         continue;
     end
@@ -245,7 +245,7 @@ for pIdx = 1:numel(phoneDirs)
         end
     end
 
-    % Group polygons by base scene name
+    % Group quads by base scene name
     for rowIdx = 1:height(s2Table)
         if entryCount >= maxSamples
             break;
@@ -292,20 +292,20 @@ for pIdx = 1:numel(phoneDirs)
             plan(idx).imageName = [baseNameNoConc, ext];
             plan(idx).imagePath = scenePath;
             plan(idx).imageMissing = ~isfile(scenePath);
-            plan(idx).polygons = {};
+            plan(idx).quads = {};
             plan(idx).ellipses = {};
         end
 
-        % Add polygon to this entry
-        polygon = [
+        % Add quad to this entry
+        quad = [
             s2Table.x1(rowIdx), s2Table.y1(rowIdx);
             s2Table.x2(rowIdx), s2Table.y2(rowIdx);
             s2Table.x3(rowIdx), s2Table.y3(rowIdx);
             s2Table.x4(rowIdx), s2Table.y4(rowIdx);
         ];
-        plan(idx).polygons{end+1} = polygon;
+        plan(idx).quads{end+1} = quad;
 
-        % Find matching ellipses for this concentration polygon
+        % Find matching ellipses for this concentration quad
         if ~isempty(s3Table)
             % Match by the full stage-2 filename (with extension)
             nameMask = strcmpi(s3Table.image, string(imageChar));
@@ -313,8 +313,8 @@ for pIdx = 1:numel(phoneDirs)
             ellipseRows = s3Table(nameMask & concMask, :);
 
             if ~isempty(ellipseRows)
-                % Transform ellipse coordinates from polygon-crop space to scene space
-                minXY = [min(polygon(:,1)), min(polygon(:,2))];
+                % Transform ellipse coordinates from quad-crop space to scene space
+                minXY = [min(quad(:,1)), min(quad(:,2))];
                 for eIdx = 1:height(ellipseRows)
                     ellipse = struct();
                     ellipse.center = [ellipseRows.x(eIdx), ellipseRows.y(eIdx)] + minXY;
@@ -358,7 +358,7 @@ imgPath = imageIO.findImageFile(phoneDir, baseName, cache);
 end
 
 function draw_augmented_overlays(ax, entry, ellipseRenderPoints, overlayColor)
-% Draw all concentration polygons and ellipses for this augmented scene
+% Draw all concentration quads and ellipses for this augmented scene
 
 persistent theta cosTheta sinTheta lastRenderPoints
 
@@ -370,10 +370,10 @@ if isempty(lastRenderPoints) || lastRenderPoints ~= ellipseRenderPoints
     lastRenderPoints = ellipseRenderPoints;
 end
 
-% Draw all concentration polygons
-numPolygons = numel(entry.polygons);
-for i = 1:numPolygons
-    P = entry.polygons{i};
+% Draw all concentration quads
+numQuads = numel(entry.quads);
+for i = 1:numQuads
+    P = entry.quads{i};
     plot(ax, [P(:,1); P(1,1)], [P(:,2); P(1,2)], '-', ...
         'Color', overlayColor, 'LineWidth', 0.5);
 end
@@ -431,23 +431,23 @@ isPhone = [entries.isdir] & ~ismember({entries.name}, {'.', '..'});
 names = string({entries(isPhone).name});
 end
 
-function tbl = read_polygon_table(coordPath, ~)
-% Read concentration polygon coordinate table using coordinate_io
+function tbl = read_quad_table(coordPath, ~)
+% Read concentration quad coordinate table using coordinate_io
 %
-% Delegates to coordinate_io.parsePolygonCoordinateFileAsTable for consistent
+% Delegates to coordinate_io.parseQuadCoordinateFileAsTable for consistent
 % parsing across all scripts. See coordinate_io.m for authoritative format docs.
 %
 % Note: Second argument (expectedColumns) is ignored - coordinate_io uses
 % standardized column names for consistency.
 %
-% See also: coordinate_io.parsePolygonCoordinateFileAsTable
+% See also: coordinate_io.parseQuadCoordinateFileAsTable
 
 persistent coordIO
 if isempty(coordIO)
     coordIO = coordinate_io();
 end
 
-tbl = coordIO.parsePolygonCoordinateFileAsTable(coordPath);
+tbl = coordIO.parseQuadCoordinateFileAsTable(coordPath);
 end
 
 function tbl = read_ellipse_table(coordPath, ~)

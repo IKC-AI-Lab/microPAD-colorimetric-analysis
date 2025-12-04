@@ -2,7 +2,7 @@
 """
 Standalone YOLO inference script for microPAD quad detection using pose keypoints.
 
-Called by MATLAB cut_micropads.m to perform AI-based polygon detection.
+Called by MATLAB cut_micropads.m to perform AI-based quad detection.
 Accepts image path and outputs detected quad coordinates to stdout.
 
 This script uses YOLOv11s-pose to detect quadrilateral concentration zones on microPAD
@@ -145,7 +145,7 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
 
     This function runs the trained YOLOv11s-pose model to detect microPAD
     concentration zones. Each detection consists of 4 corner keypoints
-    representing a quadrilateral polygon.
+    representing a quadrilateral.
 
     Args:
         image_path: Path to input microPAD image

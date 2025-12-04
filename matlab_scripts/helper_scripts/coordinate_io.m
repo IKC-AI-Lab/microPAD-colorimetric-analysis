@@ -2,19 +2,19 @@ function io = coordinate_io()
     %% COORDINATE_IO Returns a struct of function handles for coordinate file I/O
     %
     % This utility module provides functions for reading and writing coordinate
-    % files used in the microPAD processing pipeline. Supports both polygon
+    % files used in the microPAD processing pipeline. Supports both quadrilateral
     % (Stage 2) and ellipse (Stage 3) coordinate formats.
     %
     % Usage:
     %   io = coordinate_io();
-    %   polygons = io.loadPolygonCoordinates(filepath, imageName, numExpected);
+    %   quads = io.loadQuadCoordinates(filepath, imageName, numExpected);
     %   ellipses = io.loadEllipseCoordinates(filepath, imageName);
-    %   io.appendPolygonCoordinates(folder, baseName, concentration, vertices, rotation);
+    %   io.appendQuadCoordinates(folder, baseName, concentration, vertices, rotation);
     %   io.appendEllipseCoordinates(folder, baseName, ellipseData);
     %
     % Coordinate File Formats:
     %
-    % Stage 2 (Polygon) - 2_micropads/[phone]/coordinates.txt:
+    % Stage 2 (Quad) - 2_micropads/[phone]/coordinates.txt:
     %   image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
     %   - 11 columns: 1 string + 10 numeric
     %   - Vertices in clockwise order from top-left
@@ -50,15 +50,15 @@ function io = coordinate_io()
 
     %% Public API
     % Reading functions
-    io.loadPolygonCoordinates = @loadPolygonCoordinates;
+    io.loadQuadCoordinates = @loadQuadCoordinates;
     io.loadEllipseCoordinates = @loadEllipseCoordinates;
-    io.parsePolygonCoordinateFile = @parsePolygonCoordinateFile;
+    io.parseQuadCoordinateFile = @parseQuadCoordinateFile;
     io.parseEllipseCoordinateFile = @parseEllipseCoordinateFile;
-    io.parsePolygonCoordinateFileAsTable = @parsePolygonCoordinateFileAsTable;
+    io.parseQuadCoordinateFileAsTable = @parseQuadCoordinateFileAsTable;
     io.parseEllipseCoordinateFileAsTable = @parseEllipseCoordinateFileAsTable;
 
     % Writing functions
-    io.appendPolygonCoordinates = @appendPolygonCoordinates;
+    io.appendQuadCoordinates = @appendQuadCoordinates;
     io.appendEllipseCoordinates = @appendEllipseCoordinates;
 
     % Low-level utilities (exposed for advanced use)
@@ -67,40 +67,40 @@ function io = coordinate_io()
     io.filterConflictingEntries = @filterConflictingEntries;
 
     % Constants
-    io.POLYGON_HEADER = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
+    io.QUAD_HEADER = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
     io.ELLIPSE_HEADER = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
-    io.POLYGON_NUMERIC_COUNT = 10;  % concentration + 8 coords + rotation
+    io.QUAD_NUMERIC_COUNT = 10;  % concentration + 8 coords + rotation
     io.ELLIPSE_NUMERIC_COUNT = 7;   % concentration + replicate + 5 ellipse params
     io.DEFAULT_COORDINATE_FILENAME = 'coordinates.txt';
 
     % Format strings for writing (matches header column order)
-    % Polygon: imageName conc x1 y1 x2 y2 x3 y3 x4 y4 rotation
-    io.POLYGON_WRITE_FMT = '%s %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.2f\n';
+    % Quad: imageName conc x1 y1 x2 y2 x3 y3 x4 y4 rotation
+    io.QUAD_WRITE_FMT = '%s %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.2f\n';
     % Ellipse: imageName conc replicate x y semiMajor semiMinor rotation
     io.ELLIPSE_WRITE_FMT = '%s %.0f %.0f %.2f %.2f %.4f %.4f %.2f\n';
 end
 
 %% =========================================================================
-%% POLYGON COORDINATE FUNCTIONS
+%% QUAD COORDINATE FUNCTIONS
 %% =========================================================================
 
-function [polygonParams, found] = loadPolygonCoordinates(coordFile, imageName, numExpected)
-    % Load polygon coordinates from coordinates.txt file for a specific image
+function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpected)
+    % Load quadrilateral coordinates from coordinates.txt file for a specific image
     %
     % INPUTS:
     %   coordFile   - Full path to coordinates.txt file
     %   imageName   - Base image name to filter rows (case-insensitive)
-    %   numExpected - Expected number of polygons (optional, for validation)
+    %   numExpected - Expected number of quads (optional, for validation)
     %
     % OUTPUTS:
-    %   polygonParams - Nx4x2 matrix of polygon vertices (N concentrations, 4 vertices, 2 coords)
-    %   found         - Boolean indicating if file exists and contains data for image
+    %   quadParams - Nx4x2 matrix of quad vertices (N concentrations, 4 vertices, 2 coords)
+    %   found      - Boolean indicating if file exists and contains data for image
 
     if nargin < 3
         numExpected = [];
     end
 
-    polygonParams = [];
+    quadParams = [];
     found = false;
 
     if ~isfile(coordFile)
@@ -149,9 +149,9 @@ function [polygonParams, found] = loadPolygonCoordinates(coordFile, imageName, n
             return;
         end
 
-        % Parse matching rows into polygon matrix
+        % Parse matching rows into quad matrix
         numRows = length(matchingRows);
-        polygonParams = zeros(numRows, 4, 2);
+        quadParams = zeros(numRows, 4, 2);
         validCount = 0;
 
         for i = 1:numRows
@@ -174,54 +174,54 @@ function [polygonParams, found] = loadPolygonCoordinates(coordFile, imageName, n
                 % Validate coordinates are finite
                 if any(~isfinite(coords))
                     warning('coordinate_io:invalid_coordinates', ...
-                        'Invalid polygon coordinates for image %s, concentration %d - skipping row', ...
+                        'Invalid quad coordinates for image %s, concentration %d - skipping row', ...
                         imageName, concIdx);
                     continue;
                 end
 
                 % Store as 4x2 matrix: [x1 y1; x2 y2; x3 y3; x4 y4]
                 validCount = validCount + 1;
-                polygonParams(validCount, :, :) = reshape(coords, 2, 4)';
+                quadParams(validCount, :, :) = reshape(coords, 2, 4)';
             end
         end
 
         % Trim to valid rows
         if validCount > 0
-            polygonParams = polygonParams(1:validCount, :, :);
+            quadParams = quadParams(1:validCount, :, :);
             found = true;
         else
-            polygonParams = [];
+            quadParams = [];
         end
 
-        % Validate polygon count matches expected
-        if found && ~isempty(numExpected) && size(polygonParams, 1) ~= numExpected
-            warning('coordinate_io:polygon_count_mismatch', ...
-                'Expected %d polygons, found %d for image %s', ...
-                numExpected, size(polygonParams, 1), imageName);
+        % Validate quad count matches expected
+        if found && ~isempty(numExpected) && size(quadParams, 1) ~= numExpected
+            warning('coordinate_io:quad_count_mismatch', ...
+                'Expected %d quads, found %d for image %s', ...
+                numExpected, size(quadParams, 1), imageName);
         end
 
     catch ME
-        warning('coordinate_io:polygon_load_error', ...
-            'Failed to load polygon coordinates from %s: %s', coordFile, ME.message);
-        polygonParams = [];
+        warning('coordinate_io:quad_load_error', ...
+            'Failed to load quad coordinates from %s: %s', coordFile, ME.message);
+        quadParams = [];
         found = false;
     end
 end
 
-function polygons = parsePolygonCoordinateFile(coordFile)
-    % Parse entire polygon coordinate file into struct array
+function quads = parseQuadCoordinateFile(coordFile)
+    % Parse entire quadrilateral coordinate file into struct array
     %
     % INPUTS:
     %   coordFile - Full path to coordinates.txt file
     %
     % OUTPUTS:
-    %   polygons - Struct array with fields:
-    %              .imageName (string)
-    %              .concentration (integer)
-    %              .vertices (4x2 matrix)
-    %              .rotation (degrees)
+    %   quads - Struct array with fields:
+    %           .imageName (string)
+    %           .concentration (integer)
+    %           .vertices (4x2 matrix)
+    %           .rotation (degrees)
 
-    polygons = struct('imageName', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
+    quads = struct('imageName', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
 
     if ~isfile(coordFile)
         return;
@@ -258,10 +258,10 @@ function polygons = parsePolygonCoordinateFile(coordFile)
         n = numel(names);
 
         % Pre-allocate struct array
-        polygons(n).imageName = '';
-        polygons(n).concentration = 0;
-        polygons(n).vertices = zeros(4, 2);
-        polygons(n).rotation = 0;
+        quads(n).imageName = '';
+        quads(n).concentration = 0;
+        quads(n).vertices = zeros(4, 2);
+        quads(n).rotation = 0;
 
         validCount = 0;
         for i = 1:n
@@ -269,33 +269,33 @@ function polygons = parsePolygonCoordinateFile(coordFile)
                       data{7}(i), data{8}(i), data{9}(i), data{10}(i)];
 
             if any(~isfinite(coords))
-                warning('coordinate_io:invalid_polygon_entry', ...
+                warning('coordinate_io:invalid_quad_entry', ...
                     'Skipping row %d with invalid coordinates', i);
                 continue;
             end
 
             validCount = validCount + 1;
             [~, baseName, ~] = fileparts(names{i});
-            polygons(validCount).imageName = baseName;
-            polygons(validCount).concentration = data{2}(i);
-            polygons(validCount).vertices = reshape(coords, 2, 4)';
-            polygons(validCount).rotation = data{11}(i);
+            quads(validCount).imageName = baseName;
+            quads(validCount).concentration = data{2}(i);
+            quads(validCount).vertices = reshape(coords, 2, 4)';
+            quads(validCount).rotation = data{11}(i);
         end
 
         % Trim to valid entries
-        polygons = polygons(1:validCount);
+        quads = quads(1:validCount);
 
     catch ME
-        warning('coordinate_io:parse_polygon_error', ...
-            'Failed to parse polygon coordinates from %s: %s', coordFile, ME.message);
-        polygons = struct('imageName', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
+        warning('coordinate_io:parse_quad_error', ...
+            'Failed to parse quad coordinates from %s: %s', coordFile, ME.message);
+        quads = struct('imageName', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
     end
 end
 
-function T = parsePolygonCoordinateFileAsTable(coordFile)
-    % Parse polygon coordinate file and return as MATLAB table
+function T = parseQuadCoordinateFileAsTable(coordFile)
+    % Parse quadrilateral coordinate file and return as MATLAB table
     %
-    % This function provides the same parsing as parsePolygonCoordinateFile
+    % This function provides the same parsing as parseQuadCoordinateFile
     % but returns a table for vectorized filtering operations in preview scripts.
     %
     % INPUTS:
@@ -308,10 +308,10 @@ function T = parsePolygonCoordinateFileAsTable(coordFile)
     %
     % Example:
     %   coordIO = coordinate_io();
-    %   T = coordIO.parsePolygonCoordinateFileAsTable('2_micropads/phone1/coordinates.txt');
+    %   T = coordIO.parseQuadCoordinateFileAsTable('2_micropads/phone1/coordinates.txt');
     %   filtered = T(T.concentration == 3, :);
     %
-    % See also: parsePolygonCoordinateFile (returns struct array)
+    % See also: parseQuadCoordinateFile (returns struct array)
 
     % Define expected column names
     expectedCols = {'image', 'concentration', 'x1', 'y1', 'x2', 'y2', 'x3', 'y3', 'x4', 'y4', 'rotation'};
@@ -371,29 +371,29 @@ function T = parsePolygonCoordinateFileAsTable(coordFile)
         end
 
         if any(invalidMask)
-            warning('coordinate_io:invalid_polygon_entries', ...
+            warning('coordinate_io:invalid_quad_entries', ...
                 'Skipping %d rows with invalid coordinates in %s', sum(invalidMask), coordFile);
             T = T(~invalidMask, :);
         end
 
     catch ME
-        warning('coordinate_io:parse_polygon_table_error', ...
-            'Failed to parse polygon coordinates as table from %s: %s', coordFile, ME.message);
+        warning('coordinate_io:parse_quad_table_error', ...
+            'Failed to parse quad coordinates as table from %s: %s', coordFile, ME.message);
         T = table('Size', [0, numel(expectedCols)], ...
                   'VariableTypes', [{'string'}, repmat({'double'}, 1, 10)], ...
                   'VariableNames', expectedCols);
     end
 end
 
-function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, rotation, coordinateFileName)
-    % Append polygon vertex coordinates to phone-level coordinates file with atomic write
+function appendQuadCoordinates(phoneOutputDir, baseName, concentration, quad, rotation, coordinateFileName)
+    % Append quadrilateral vertex coordinates to phone-level coordinates file with atomic write
     % Overwrites existing entry for same image/concentration combination
     %
     % INPUTS:
     %   phoneOutputDir     - Directory containing coordinates.txt (e.g., 2_micropads/phone1)
     %   baseName           - Base image name (without extension)
     %   concentration      - Concentration index (0-based)
-    %   polygon            - 4x2 matrix of vertices [x1 y1; x2 y2; x3 y3; x4 y4]
+    %   quad               - 4x2 matrix of vertices [x1 y1; x2 y2; x3 y3; x4 y4]
     %   rotation           - Rotation angle in degrees (UI metadata)
     %   coordinateFileName - Name of coordinate file (default: 'coordinates.txt')
 
@@ -404,17 +404,17 @@ function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polyg
     coordFolder = phoneOutputDir;
     coordPath = fullfile(coordFolder, coordinateFileName);
 
-    % Validate polygon
-    if ~isnumeric(polygon) || size(polygon, 2) ~= 2
-        warning('coordinate_io:invalid_polygon', ...
-            'Polygon must be an Nx2 numeric array. Skipping write for %s.', baseName);
+    % Validate quad
+    if ~isnumeric(quad) || size(quad, 2) ~= 2
+        warning('coordinate_io:invalid_quad', ...
+            'Quad must be an Nx2 numeric array. Skipping write for %s.', baseName);
         return;
     end
 
-    nVerts = size(polygon, 1);
+    nVerts = size(quad, 1);
     if nVerts ~= 4
         warning('coordinate_io:vertex_count', ...
-            'Expected 4-vertex polygon; got %d. Proceeding may break downstream tools.', nVerts);
+            'Expected 4-vertex quad; got %d. Proceeding may break downstream tools.', nVerts);
     end
 
     numericCount = 1 + 2 * nVerts + 1; % concentration, vertices, rotation
@@ -436,7 +436,7 @@ function appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polyg
     writeSpecs{1} = '%.0f';   % concentration index
     writeFmt = ['%s ' strjoin(writeSpecs, ' ') '\n'];
 
-    coords = reshape(polygon.', 1, []);
+    coords = reshape(quad.', 1, []);
     newNums = [concentration, coords, rotation];
 
     [existingNames, existingNums] = readExistingCoordinates(coordPath, scanFmt, numericCount);
@@ -876,7 +876,7 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
             existingNums = nums;
 
             % Validate numeric content (skip rotation column for NaN check)
-            % Polygon format (10 cols): cols 2:9 are x1,y1,x2,y2,x3,y3,x4,y4
+            % Quad format (10 cols): cols 2:9 are x1,y1,x2,y2,x3,y3,x4,y4
             % Ellipse format (7 cols): cols 3:6 are x,y,semiMajor,semiMinor
             if numericCount == 10
                 coordCols = 2:9;

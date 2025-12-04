@@ -21,12 +21,12 @@ Modular utility functions organized by functionality. Each returns a struct of f
 
 | Script | Purpose | Used By |
 |--------|---------|---------|
-| `geometry_transform.m` | Geometry + homography operations (polygon/ellipse transforms, projective math) | cut_micropads, augment_dataset |
+| `geometry_transform.m` | Geometry + homography operations (quad/ellipse transforms, projective math) | cut_micropads, augment_dataset |
 | `feature_pipeline.m` | Feature registry + output (definitions, presets, Excel export, train/test split) | extract_features |
 | `augmentation_synthesis.m` | Synthetic data generation (backgrounds, distractors, artifacts) | augment_dataset |
-| `coordinate_io.m` | Coordinate file I/O (polygon/ellipse formats) | cut_micropads, extract_features |
+| `coordinate_io.m` | Coordinate file I/O (quad/ellipse formats) | cut_micropads, extract_features |
 | `image_io.m` | Image loading with EXIF handling | cut_micropads, augment_dataset, extract_features |
-| `mask_utils.m` | Polygon/ellipse mask creation with caching | cut_micropads, extract_features |
+| `mask_utils.m` | Quad/ellipse mask creation with caching | cut_micropads, extract_features |
 | `path_utils.m` | Path resolution and folder operations | all main scripts |
 | `color_analysis.m` | Color space conversions, paper detection | extract_features |
 | `yolo_integration.m` | YOLO model inference via Python subprocess | cut_micropads |
@@ -34,7 +34,7 @@ Modular utility functions organized by functionality. Each returns a struct of f
 | `file_io_manager.m` | File operations and atomic writes | cut_micropads, augment_dataset |
 
 **Standalone utilities (not module pattern):**
-- `preview_overlays.m` - Visualize polygon overlays on images
+- `preview_overlays.m` - Visualize quad overlays on images
 - `preview_augmented_overlays.m` - Visualize augmented data results
 - `extract_images_from_coordinates.m` - Extract image patches from coordinates
 
@@ -51,7 +51,7 @@ Modular utility functions organized by functionality. Each returns a struct of f
 
 ## Geometry Constraints
 - Ellipse: `semiMajorAxis >= semiMinorAxis` (swap and rotate 90° if needed)
-- Polygon: clockwise vertex order from top-left
+- Quad: clockwise vertex order from top-left
 
 ## Build, Test, and Development Commands
 - Run a stage (MATLAB): `matlab -batch "addpath('matlab_scripts'); cut_micropads;"`

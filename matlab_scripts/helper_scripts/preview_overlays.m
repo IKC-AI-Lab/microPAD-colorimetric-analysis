@@ -2,13 +2,13 @@ function preview_overlays(varargin)
     %% Preview multi-stage overlays from dataset through elliptical patches
     %% Author: Veysel Y. Yilmaz
     %
-    % Overlay concentration polygons and elliptical patches on top of the
+    % Overlay concentration quads and elliptical patches on top of the
     % original captures in 1_dataset/ for integrity checks.
     % Stage dependencies are verified before visualization.
     %
     % INPUTS (name-value pairs):
     % - datasetFolder : root of original captures (default '1_dataset')
-    % - coordsFolder  : root of concentration polygons (default '2_micropads')
+    % - coordsFolder  : root of concentration quads (default '2_micropads')
     % - ellipseFolder : root of elliptical patches (default '3_elliptical_regions')
     %
     % OUTPUTS: none (opens a viewer window)
@@ -80,7 +80,7 @@ function preview_overlays(varargin)
     fprintf('Concentration root: %s\n', coordsRoot);
     fprintf('Ellipse root: %s\n', ellipseRoot);
 
-    % Build mapping from image path -> list of polygons and ellipses
+    % Build mapping from image path -> list of quads and ellipses
     plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, SUPPORTED_IMAGE_EXTENSIONS);
     if isempty(plan)
         error('preview_overlays:no_entries', ...
@@ -96,7 +96,7 @@ function preview_overlays(varargin)
     state.idx = 1;
     state.overlayColor = OVERLAY_COLOR_RGB;
     state.ellipseRenderPoints = ELLIPSE_RENDER_POINTS;
-    state.fig = figure('Name','Concentration Polygons Preview', 'Color','k', 'NumberTitle','off', ...
+    state.fig = figure('Name','Concentration Quads Preview', 'Color','k', 'NumberTitle','off', ...
                        'Units','normalized', 'Position',[0.1 0.1 0.8 0.8], ...
                        'CloseRequestFcn', @(h,~) on_close(h));
     state.ax = axes('Parent', state.fig);
@@ -191,32 +191,32 @@ end
 function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
     %% Build preview plan mapping images to multi-stage overlays in dataset space
     %
-    % Reads polygon coordinates from 2_micropads and ellipse coordinates from
-    % 3_elliptical_regions, then transforms ellipse centers from polygon space
+    % Reads quad coordinates from 2_micropads and ellipse coordinates from
+    % 3_elliptical_regions, then transforms ellipse centers from quad space
     % to original image space.
 
-    % Read polygon coordinates (stage 2)
+    % Read quad coordinates (stage 2)
     coordFiles = find_concentration_coordinate_files(coordsRoot);
     plan = struct('phoneName', {}, 'imagePath', {}, 'displayName', {}, ...
-                  'polygons', {}, 'ellipses', {}, 'imageMissing', {});
+                  'quads', {}, 'ellipses', {}, 'imageMissing', {});
     if isempty(coordFiles)
         return;
     end
 
     idxMap = containers.Map('KeyType','char','ValueType','int32');
-    polygonCounts = containers.Map('KeyType','char','ValueType','int32');
+    quadCounts = containers.Map('KeyType','char','ValueType','int32');
 
-    % First pass: count polygons per image
-    totalPolygonRows = 0;
+    % First pass: count quads per image
+    totalQuadRows = 0;
     for k = 1:numel(coordFiles)
         cfile = coordFiles{k};
-        T = read_polygon_coordinates_table(cfile);
+        T = read_quad_coordinates_table(cfile);
         if isempty(T)
             continue;
         end
-        T = standardize_polygon_coord_vars(T, cfile);
+        T = standardize_quad_coord_vars(T, cfile);
         numRows = height(T);
-        totalPolygonRows = totalPolygonRows + numRows;
+        totalQuadRows = totalQuadRows + numRows;
 
         [cdir, ~, ~] = fileparts(cfile);
         phoneName = extract_phone_name(coordsRoot, cdir);
@@ -225,39 +225,39 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
         for r = 1:numRows
             baseName = standardize_base_name(baseNames{r});
             key = sprintf('%s|%s', phoneName, baseName);
-            if isKey(polygonCounts, key)
-                polygonCounts(key) = polygonCounts(key) + 1;
+            if isKey(quadCounts, key)
+                quadCounts(key) = quadCounts(key) + 1;
             else
-                polygonCounts(key) = 1;
+                quadCounts(key) = 1;
             end
         end
     end
 
-    if totalPolygonRows == 0
-        error('preview_overlays:empty_polygon_data', ...
-              'No concentration polygons found under %s.', coordsRoot);
+    if totalQuadRows == 0
+        error('preview_overlays:empty_quad_data', ...
+              'No concentration quads found under %s.', coordsRoot);
     end
 
-    % Build polygon data structure for ellipse transformation
-    allPolygonData = repmat(struct('phoneName', '', 'imageName', '', 'concentration', 0, 'polygon', []), totalPolygonRows, 1);
-    polygonIdx = 0;
-    polygonIndices = containers.Map('KeyType','char','ValueType','int32');
+    % Build quad data structure for ellipse transformation
+    allQuadData = repmat(struct('phoneName', '', 'imageName', '', 'concentration', 0, 'quad', []), totalQuadRows, 1);
+    quadIdx = 0;
+    quadIndices = containers.Map('KeyType','char','ValueType','int32');
 
-    % Second pass: populate plan structure with polygons
+    % Second pass: populate plan structure with quads
     for k = 1:numel(coordFiles)
         cfile = coordFiles{k};
         [cdir, ~, ~] = fileparts(cfile);
         phoneName = extract_phone_name(coordsRoot, cdir);
 
-        T = read_polygon_coordinates_table(cfile);
+        T = read_quad_coordinates_table(cfile);
         if isempty(T)
             continue;
         end
-        T = standardize_polygon_coord_vars(T, cfile);
+        T = standardize_quad_coord_vars(T, cfile);
 
         concValues = extract_concentration_column(T);
         baseNames = cellstr(string(T.image));
-        polygonCoords = [T.x1, T.y1, T.x2, T.y2, T.x3, T.y3, T.x4, T.y4];
+        quadCoords = [T.x1, T.y1, T.x2, T.y2, T.x3, T.y3, T.x4, T.y4];
 
         numRows = height(T);
         for r = 1:numRows
@@ -266,7 +266,7 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
 
             if isKey(idxMap, key)
                 idx = idxMap(key);
-                polyIdx = polygonIndices(key);
+                qIdx = quadIndices(key);
             else
                 % New image entry
                 idx = numel(plan) + 1;
@@ -274,19 +274,19 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
                 entry.phoneName = phoneName;
                 entry.imagePath = find_original_image(datasetRoot, phoneName, baseName, supportedExts);
                 entry.displayName = compute_display_name(datasetRoot, entry.imagePath);
-                entry.polygons = cell(1, polygonCounts(key));
+                entry.quads = cell(1, quadCounts(key));
                 entry.ellipses = {};
                 entry.imageMissing = isempty(entry.imagePath) || ~isfile(entry.imagePath);
                 plan(idx) = entry;
                 idxMap(key) = idx;
-                polygonIndices(key) = 1;
-                polyIdx = 1;
+                quadIndices(key) = 1;
+                qIdx = 1;
             end
 
-            % Polygon vertices are already in original image space
-            poly = reshape(polygonCoords(r,:), 2, 4)';  % 4x2 matrix
-            plan(idx).polygons{polyIdx} = poly;
-            polygonIndices(key) = polygonIndices(key) + 1;
+            % Quad vertices are already in original image space
+            quad = reshape(quadCoords(r,:), 2, 4)';  % 4x2 matrix
+            plan(idx).quads{qIdx} = quad;
+            quadIndices(key) = quadIndices(key) + 1;
 
             concValue = concValues(r);
             if isnan(concValue)
@@ -295,15 +295,15 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
             end
 
             % Store for ellipse transformation
-            polygonIdx = polygonIdx + 1;
-            allPolygonData(polygonIdx) = struct('phoneName', phoneName, ...
+            quadIdx = quadIdx + 1;
+            allQuadData(quadIdx) = struct('phoneName', phoneName, ...
                                                 'imageName', baseName, ...
                                                 'concentration', concValue, ...
-                                                'polygon', poly);
+                                                'quad', quad);
         end
     end
 
-    allPolygonData = allPolygonData(1:polygonIdx);
+    allQuadData = allQuadData(1:quadIdx);
 
     % Read ellipse coordinates (stage 3) - optional
     if isempty(ellipseRoot) || ~isfolder(ellipseRoot)
@@ -373,9 +373,9 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
 
     allEllipseData = allEllipseData(1:ellipseIdx);
 
-    % Transform ellipse coordinates from polygon space to image space (if available)
+    % Transform ellipse coordinates from quad space to image space (if available)
     if ellipseIdx > 0
-        transformedEllipses = transform_ellipse_coordinates(allEllipseData, allPolygonData);
+        transformedEllipses = transform_ellipse_coordinates(allEllipseData, allQuadData);
 
         % Build map for fast lookup
         planMap = containers.Map();
@@ -391,7 +391,7 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
             key = sprintf('%s|%s', ellipse.phoneName, ellipse.imageName);
             if ~isKey(planMap, key)
                 warning('preview_overlays:ellipse_no_match', ...
-                      'Ellipse entry references missing polygon: phone=%s image=%s - skipping.', ellipse.phoneName, ellipse.imageName);
+                      'Ellipse entry references missing quad: phone=%s image=%s - skipping.', ellipse.phoneName, ellipse.imageName);
                 continue;
             end
             idx = planMap(key);
@@ -400,7 +400,7 @@ function plan = build_plan(datasetRoot, coordsRoot, ellipseRoot, supportedExts)
         end
     end
 
-    % Note: Images without ellipse data will show polygons only (no error)
+    % Note: Images without ellipse data will show quads only (no error)
 
     % Sort by display name
     if ~isempty(plan)
@@ -413,11 +413,11 @@ end
 %% Coordinate File Reading
 %% -------------------------------------------------------------------------
 
-function T = read_polygon_coordinates_table(coordFile)
-    %% Read polygon coordinates from 2_micropads using coordinate_io
+function T = read_quad_coordinates_table(coordFile)
+    %% Read quad coordinates from 2_micropads using coordinate_io
     %% Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
     %
-    % Delegates to coordinate_io.parsePolygonCoordinateFileAsTable for consistent
+    % Delegates to coordinate_io.parseQuadCoordinateFileAsTable for consistent
     % parsing across all scripts. See coordinate_io.m for authoritative format docs.
 
     persistent coordIO
@@ -425,11 +425,11 @@ function T = read_polygon_coordinates_table(coordFile)
         coordIO = coordinate_io();
     end
 
-    T = coordIO.parsePolygonCoordinateFileAsTable(coordFile);
+    T = coordIO.parseQuadCoordinateFileAsTable(coordFile);
 end
 
-function T = standardize_polygon_coord_vars(T, sourceName)
-    %% Standardize polygon coordinate variable names
+function T = standardize_quad_coord_vars(T, sourceName)
+    %% Standardize quad coordinate variable names
     v = lower(string(T.Properties.VariableNames));
     expected = ["image","concentration","x1","y1","x2","y2","x3","y3","x4","y4","rotation"];
     for i = 1:numel(expected)
@@ -441,7 +441,7 @@ function T = standardize_polygon_coord_vars(T, sourceName)
 
     missing = setdiff(cellstr(expected), T.Properties.VariableNames);
     if ~isempty(missing)
-        error('preview_overlays:polygon_columns', 'Missing columns in %s: %s', char(sourceName), strjoin(missing, ','));
+        error('preview_overlays:quad_columns', 'Missing columns in %s: %s', char(sourceName), strjoin(missing, ','));
     end
 
     % Ensure numeric types
@@ -495,26 +495,26 @@ end
 %% Coordinate Transformation
 %% -------------------------------------------------------------------------
 
-function transformedEllipses = transform_ellipse_coordinates(ellipseData, polygonData)
-    %% Transform ellipse coordinates from polygon crop space to image space
+function transformedEllipses = transform_ellipse_coordinates(ellipseData, quadData)
+    %% Transform ellipse coordinates from quad crop space to image space
     %
     % INPUTS:
     %   ellipseData - Struct array with fields:
     %       phoneName      (char)   - Device identifier
     %       imageName      (char)   - Concentration region image name (with _con_ tag)
-    %       x              (double) - Center x in polygon crop space
-    %       y              (double) - Center y in polygon crop space
+    %       x              (double) - Center x in quad crop space
+    %       y              (double) - Center y in quad crop space
     %       semiMajorAxis  (double) - Semi-major axis length
     %       semiMinorAxis  (double) - Semi-minor axis length
     %       rotationAngle  (double) - Rotation angle (degrees)
     %       concentration  (double) - Concentration level
     %       replicate      (double) - Replicate number
     %
-    %   polygonData - Struct array with fields:
+    %   quadData - Struct array with fields:
     %       phoneName     (char)      - Device identifier
     %       imageName     (char)      - Base image name (without _con_ tag)
     %       concentration (double)    - Concentration level
-    %       polygon       (4×2 double) - Polygon vertices [x,y] in image space
+    %       quad          (4×2 double) - Quadrilateral vertices [x,y] in image space
     %
     % OUTPUTS:
     %   transformedEllipses - Struct array with fields:
@@ -535,15 +535,15 @@ function transformedEllipses = transform_ellipse_coordinates(ellipseData, polygo
     transformedEllipses = repmat(struct('phoneName', '', 'imageName', '', 'x', 0, 'y', 0, 'semiMajorAxis', 0, 'semiMinorAxis', 0, 'rotationAngle', 0), numEllipses, 1);
     outputIdx = 0;
 
-    % Build polygon lookup map
-    polygonMap = containers.Map();
-    validPolygons = ~arrayfun(@(p) isnan(p.concentration), polygonData);
-    validPolyData = polygonData(validPolygons);
+    % Build quad lookup map
+    quadMap = containers.Map();
+    validQuads = ~arrayfun(@(p) isnan(p.concentration), quadData);
+    validQuadData = quadData(validQuads);
 
-    for j = 1:length(validPolyData)
-        key = strjoin({validPolyData(j).phoneName, validPolyData(j).imageName, format_concentration_key(validPolyData(j).concentration)}, '|');
-        if ~isKey(polygonMap, key)
-            polygonMap(key) = validPolyData(j);
+    for j = 1:length(validQuadData)
+        key = strjoin({validQuadData(j).phoneName, validQuadData(j).imageName, format_concentration_key(validQuadData(j).concentration)}, '|');
+        if ~isKey(quadMap, key)
+            quadMap(key) = validQuadData(j);
         end
     end
 
@@ -581,16 +581,16 @@ function transformedEllipses = transform_ellipse_coordinates(ellipseData, polygo
         end
 
         key = lookupKeys{i};
-        if isKey(polygonMap, key)
-            matchingPolygon = polygonMap(key);
-            poly = matchingPolygon.polygon;
+        if isKey(quadMap, key)
+            matchingQuad = quadMap(key);
+            quad = matchingQuad.quad;
 
-            % Calculate polygon bounding box
-            min_x = min(poly(:,1));
-            min_y = min(poly(:,2));
+            % Calculate quad bounding box
+            min_x = min(quad(:,1));
+            min_y = min(quad(:,2));
 
-            % Transform ellipse center from polygon space to image space
-            % Ellipse (x,y) are in polygon crop space, so add polygon offset
+            % Transform ellipse center from quad space to image space
+            % Ellipse (x,y) are in quad crop space, so add quad offset
             transformed_x = xCoords(i) + min_x;
             transformed_y = yCoords(i) + min_y;
 
@@ -603,8 +603,8 @@ function transformedEllipses = transform_ellipse_coordinates(ellipseData, polygo
                                                  'semiMinorAxis', semiMinorAxes(i), ...
                                                  'rotationAngle', rotationAngles(i));
         else
-            error('preview_overlays:no_matching_polygon', ...
-                ['No polygon found for ellipse %s/%s at concentration %d (ellipse %d/%d).' ...
+            error('preview_overlays:no_matching_quad', ...
+                ['No quad found for ellipse %s/%s at concentration %d (ellipse %d/%d).' ...
                  '\nVerify coordinates.txt files for stages 2-3 before retrying.'], ...
                 phoneNames{i}, imageNames{i}, concentrations(i), i, numEllipses);
         end
@@ -791,7 +791,7 @@ end
 
 function draw_overlays(ax, entry, ellipseRenderPoints, overlayColor)
     %% Draw coordinate overlays on preview axes
-    %% Renders polygons and ellipses with optimized persistent trigonometric caching
+    %% Renders quads and ellipses with optimized persistent trigonometric caching
     persistent theta cosTheta sinTheta lastRenderPoints
 
     % Pre-compute parametric angles (persistent across redraws for performance)
@@ -802,11 +802,11 @@ function draw_overlays(ax, entry, ellipseRenderPoints, overlayColor)
         lastRenderPoints = ellipseRenderPoints;
     end
 
-    % Draw polygons
-    numPolygons = numel(entry.polygons);
-    if numPolygons > 0
-        for i = 1:numPolygons
-            P = entry.polygons{i}; % 4x2
+    % Draw quads
+    numQuads = numel(entry.quads);
+    if numQuads > 0
+        for i = 1:numQuads
+            P = entry.quads{i}; % 4x2
             plot(ax, [P(:,1); P(1,1)], [P(:,2); P(1,2)], '-', 'Color', overlayColor, 'LineWidth', 0.5);
         end
     end

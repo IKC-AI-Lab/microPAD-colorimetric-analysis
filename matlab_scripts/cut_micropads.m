@@ -1,18 +1,18 @@
 function cut_micropads(varargin)
     %% microPAD Colorimetric Analysis — Unified microPAD Processing Tool
-    %% Detect and extract polygonal concentration regions from raw microPAD images
+    %% Detect and extract concentration regions from raw microPAD images
     %% Author: Veysel Y. Yilmaz
     %
-    % This script combines rotation adjustment and AI-powered polygon detection
+    % This script combines rotation adjustment and AI-powered quad detection
     % to directly process raw microPAD images into concentration region crops.
     %
     % Pipeline stage: 1_dataset → 2_micropads
     %
     % Features:
     %   - Interactive rotation adjustment with memory
-    %   - AI-powered polygon detection (YOLOv11s-pose)
-    %   - Manual polygon editing and refinement
-    %   - Saves polygon coordinates with rotation angle
+    %   - AI-powered quad detection (YOLOv11s-pose)
+    %   - Manual quad editing and refinement
+    %   - Saves quad coordinates with rotation angle
     %
     % Inputs (Name-Value pairs):
     % - 'numSquares': number of regions to capture per strip (default: 7)
@@ -21,14 +21,14 @@ function cut_micropads(varargin)
     % - 'gapPercent': gap as percent of region width, 0..1 or 0..100 (default: 0.19)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'saveCoordinates': output behavior
-    % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
+    % - 'useAIDetection': use YOLO for initial quad placement (default: true)
     % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11s-micropad-pose-1280.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
     % - 'inferenceSize': YOLO inference image size in pixels (default: 1280)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
-    % - Writes PNG polygon crops to 2_micropads/[phone]/con_*/
+    % - Writes PNG quad crops to 2_micropads/[phone]/con_*/
     % - Writes consolidated coordinates.txt at phone level (atomic, no duplicate rows per image)
     %
     % ROTATION SEMANTICS:
@@ -42,9 +42,9 @@ function cut_micropads(varargin)
     % - Shows interactive UI with drawpolygon editing for every image
     % - If useAIDetection=true, attempts AI detection for initial placement
     % - If AI fails or disabled, uses default geometry (aspectRatio, coverage, gapPercent)
-    % - User can manually adjust polygons before saving
+    % - User can manually adjust quads before saving
     % - Cuts N region crops and saves into con_0..con_(N-1) subfolders for each strip
-    % - All polygon coordinates written to single phone-level coordinates.txt
+    % - All quad coordinates written to single phone-level coordinates.txt
     %
     % Examples:
     %   cut_micropads('numSquares', 7)
@@ -81,7 +81,7 @@ function cut_micropads(varargin)
 
     % === ELLIPSE EDITING CONFIGURATION ===
     DEFAULT_ENABLE_ELLIPSE_EDITING = true;
-    DEFAULT_ENABLE_POLYGON_EDITING = true;
+    DEFAULT_ENABLE_QUAD_EDITING = false;
     REPLICATES_PER_CONCENTRATION = 3;
 
     % Ellipse definitions in normalized micropad coordinates [0,1]×[0,1]
@@ -150,7 +150,7 @@ function cut_micropads(varargin)
     %% Build configuration
     cfg = createConfiguration(INPUT_FOLDER, OUTPUT_FOLDER, OUTPUT_FOLDER_ELLIPSES, SAVE_COORDINATES, ...
                               DEFAULT_NUM_SQUARES, DEFAULT_ASPECT_RATIO, DEFAULT_COVERAGE, DEFAULT_GAP_PERCENT, ...
-                              DEFAULT_ENABLE_ELLIPSE_EDITING, DEFAULT_ENABLE_POLYGON_EDITING, REPLICATES_PER_CONCENTRATION, ...
+                              DEFAULT_ENABLE_ELLIPSE_EDITING, DEFAULT_ENABLE_QUAD_EDITING, REPLICATES_PER_CONCENTRATION, ...
                               MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, MIN_AXIS_PERCENT, ...
                               SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ELLIPSE_DEFAULT_RECORDS, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
@@ -172,7 +172,7 @@ end
 
 function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllipses, saveCoordinates, ...
                                    defaultNumSquares, defaultAspectRatio, defaultCoverage, defaultGapPercent, ...
-                                   defaultEnableEllipseEditing, defaultEnablePolygonEditing, replicatesPerConcentration, ...
+                                   defaultEnableEllipseEditing, defaultEnableQuadEditing, replicatesPerConcentration, ...
                                    marginToSpacingRatio, verticalPositionRatio, minAxisPercent, ...
                                    semiMajorDefaultRatio, semiMinorDefaultRatio, ellipseDefaultRecords, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
@@ -192,7 +192,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     parser.addParameter('gapPercent', defaultGapPercent, @(x) isnumeric(x) && isscalar(x) && x>=0);
 
     parser.addParameter('enableEllipseEditing', defaultEnableEllipseEditing, @islogical);
-    parser.addParameter('enablePolygonEditing', defaultEnablePolygonEditing, @islogical);
+    parser.addParameter('enableQuadEditing', defaultEnableQuadEditing, @islogical);
 
     parser.addParameter('useAIDetection', defaultUseAI, @islogical);
     parser.addParameter('detectionModel', defaultDetectionModel, @(x) validateattributes(x, {'char', 'string'}, {'nonempty', 'scalartext'}));
@@ -239,7 +239,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
 
     % Ellipse editing configuration
     cfg.enableEllipseEditing = parser.Results.enableEllipseEditing;
-    cfg.enablePolygonEditing = parser.Results.enablePolygonEditing;
+    cfg.enableQuadEditing = parser.Results.enableQuadEditing;
     cfg.ellipse = struct();
     cfg.ellipse.replicatesPerMicropad = replicatesPerConcentration;
     cfg.ellipse.marginToSpacingRatio = marginToSpacingRatio;
@@ -428,12 +428,12 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
     % Initialize rotation (may be overridden by mode-specific logic)
     initialRotation = 0;
 
-    % Determine operating mode based on enablePolygonEditing and enableEllipseEditing
-    if cfg.enablePolygonEditing && cfg.enableEllipseEditing
-        processingMode = 1; % Unified: polygon edit -> ellipse edit -> preview
-    elseif cfg.enablePolygonEditing && ~cfg.enableEllipseEditing
-        processingMode = 2; % Polygon-only: polygon edit -> preview
-    elseif ~cfg.enablePolygonEditing && cfg.enableEllipseEditing
+    % Determine operating mode based on enableQuadEditing and enableEllipseEditing
+    if cfg.enableQuadEditing && cfg.enableEllipseEditing
+        processingMode = 1; % Unified: quad edit -> ellipse edit -> preview
+    elseif cfg.enableQuadEditing && ~cfg.enableEllipseEditing
+        processingMode = 2; % Quad-only: quad edit -> preview
+    elseif ~cfg.enableQuadEditing && cfg.enableEllipseEditing
         processingMode = 3; % Ellipse-only: [load/default] -> ellipse edit -> preview
     else
         processingMode = 4; % Read-only preview: [load coords] -> preview
@@ -441,22 +441,22 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
     % Mode 4: Read-only preview (both editing disabled)
     if processingMode == 4
-        % Try loading polygon coordinates
-        polygonCoordFile = fullfile(outputDirs.polygonDir, cfg.coordinateFileName);
-        [loadedPolygons, polygonsFound] = loadPolygonCoordinates(polygonCoordFile, imageName, cfg.numSquares);
+        % Try loading quad coordinates
+        quadCoordFile = fullfile(outputDirs.quadDir, cfg.coordinateFileName);
+        [loadedQuads, quadsFound] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
 
         % Try loading ellipse coordinates
         ellipseCoordFile = fullfile(outputDirs.ellipseDir, cfg.coordinateFileName);
         [loadedEllipses, ellipsesFound] = loadEllipseCoordinates(ellipseCoordFile, imageName);
 
         % Error if neither found
-        if ~polygonsFound && ~ellipsesFound
+        if ~quadsFound && ~ellipsesFound
             error('cut_micropads:no_coordinates_for_preview', ...
                 ['No coordinate files found for preview mode (image: %s).\n' ...
                  'Enable at least one editing mode or ensure coordinate files exist in:\n' ...
-                 '  - %s (polygons)\n' ...
+                 '  - %s (quads)\n' ...
                  '  - %s (ellipses)'], ...
-                imageName, polygonCoordFile, ellipseCoordFile);
+                imageName, quadCoordFile, ellipseCoordFile);
         end
 
         % Create figure if needed
@@ -465,7 +465,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         end
 
         % Build read-only preview UI
-        buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, loadedPolygons, polygonsFound, ...
+        buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, loadedQuads, quadsFound, ...
                               loadedEllipses, ellipsesFound, initialRotation);
 
         % Wait for user to advance to next image
@@ -490,30 +490,30 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             fig = cfg.micropadUI.createFigure(imageName, phoneName, cfg, @keyPressHandler, @(src, evt) cleanupAndClose(src));
         end
 
-        % Try loading polygon coordinates for positioning context
-        polygonCoordFile = fullfile(outputDirs.polygonDir, cfg.coordinateFileName);
-        [loadedPolygons, polygonsFound] = loadPolygonCoordinates(polygonCoordFile, imageName, cfg.numSquares);
+        % Try loading quad coordinates for positioning context
+        quadCoordFile = fullfile(outputDirs.quadDir, cfg.coordinateFileName);
+        [loadedQuads, quadsFound] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
 
-        if polygonsFound
-            % Use loaded polygons for positioning
-            polygonParams = loadedPolygons;
-            fprintf('  Mode 3: Loaded %d polygon coordinates for ellipse positioning\n', size(polygonParams, 1));
+        if quadsFound
+            % Use loaded quads for positioning
+            quadParams = loadedQuads;
+            fprintf('  Mode 3: Loaded %d quad coordinates for ellipse positioning\n', size(quadParams, 1));
 
-            % Go directly to ellipse editing with polygon overlays
-            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory);
+            % Go directly to ellipse editing with quad overlays
+            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation, memory);
 
         else
-            % No polygons - use default grid layout
-            fprintf('  Mode 3: No polygon coordinates - using default grid layout\n');
+            % No quads - use default grid layout
+            fprintf('  Mode 3: No quad coordinates - using default grid layout\n');
 
             % Create default ellipse positions using grid
             imageSize = [size(img, 1), size(img, 2)];
             numReplicates = cfg.ellipse.replicatesPerMicropad;
             defaultPositions = createDefaultEllipseGrid(imageSize, cfg.numSquares, numReplicates, cfg);
 
-            % Build ellipse editing UI without polygon overlays
+            % Build ellipse editing UI without quad overlays
             buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, defaultPositions, initialRotation, memory);
-            polygonParams = []; % No polygons in grid mode
+            quadParams = []; % No quads in grid mode
         end
 
         % Wait for user action
@@ -526,7 +526,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fig, phoneName, memory);
             return;
         elseif strcmp(action, 'accept')
-            % Save ONLY ellipse outputs (skip polygon outputs)
+            % Save ONLY ellipse outputs (skip quad outputs)
             guiData = get(fig, 'UserData');
 
             % Extract ellipse data from UI (initialize to empty if field doesn't exist)
@@ -535,15 +535,15 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
                 ellipseData = guiData.ellipseData;
 
                 % For Mode 3, we only save ellipse outputs
-                % Do NOT save polygon crops or polygon coordinates
-                cfg.fileIOMgr.saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
+                % Do NOT save quad crops or quad coordinates
+                cfg.fileIOMgr.saveEllipseData(img, imageName, quadParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
 
                 fprintf('  Saved %d elliptical regions\n', size(ellipseData, 1));
             end
 
-            % Update memory for next image (Mode 3) - store base polygons
+            % Update memory for next image (Mode 3) - store base quads
             if ~isempty(ellipseData)
-                memory = updateMemory(memory, polygonParams, initialRotation, [imageHeight, imageWidth], ellipseData, cfg);
+                memory = updateMemory(memory, quadParams, initialRotation, [imageHeight, imageWidth], ellipseData, cfg);
             end
 
             success = true;
@@ -551,45 +551,45 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         end
     end
 
-    % Modes 1 & 2: Get initial polygon positions and rotation (memory or default, NOT AI yet)
-    [initialPolygons, initialRotation, ~] = getInitialPolygonsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
+    % Modes 1 & 2: Get initial quad positions and rotation (memory or default, NOT AI yet)
+    [initialQuads, initialRotation, ~] = getInitialQuadsWithMemory(img, cfg, memory, [imageHeight, imageWidth]);
 
-    % Memory polygons are exact display coordinates - use them directly
-    [initialPolygons, orientation] = sortPolygonArrayByX(initialPolygons);
+    % Memory quads are exact display coordinates - use them directly
+    [initialQuads, orientation] = sortQuadArrayByX(initialQuads);
 
-    % Use memory orientation if available (polygons may come from memory with known orientation)
+    % Use memory orientation if available (quads may come from memory with known orientation)
     if memory.hasSettings && ~isempty(memory.orientation)
         orientation = memory.orientation;
     end
 
-    % Display GUI immediately with memory/default polygons and rotation
-    [polygonParams, ~, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation);
+    % Display GUI immediately with memory/default quads and rotation
+    [quadParams, ~, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialQuads, fig, initialRotation, memory, orientation);
 
     % NOTE: If AI detection is enabled, it will run asynchronously AFTER GUI is displayed
 
-    if ~isempty(polygonParams)
-        cfg.fileIOMgr.saveCroppedRegions(img, imageName, polygonParams, outputDirs.polygonDir, cfg, rotation, cfg.fileIOMgr);
-        % Update memory with base polygon coordinates and rotation
-        memory = updateMemory(memory, polygonParams, rotation, [imageHeight, imageWidth], ellipseData, cfg, orientation);
+    if ~isempty(quadParams)
+        cfg.fileIOMgr.saveCroppedRegions(img, imageName, quadParams, outputDirs.quadDir, cfg, rotation, cfg.fileIOMgr);
+        % Update memory with base quad coordinates and rotation
+        memory = updateMemory(memory, quadParams, rotation, [imageHeight, imageWidth], ellipseData, cfg, orientation);
 
         % Save ellipse data if ellipse editing was enabled
         if cfg.enableEllipseEditing && ~isempty(ellipseData)
-            cfg.fileIOMgr.saveEllipseData(img, imageName, polygonParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
+            cfg.fileIOMgr.saveEllipseData(img, imageName, quadParams, ellipseData, outputDirs.ellipseDir, cfg, cfg.fileIOMgr);
         end
 
         success = true;
     end
 end
 
-function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg, orientation, rotation)
+function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orientation, rotation)
     % Transform normalized ellipse records to pixel coordinates via homography
     %
     % Computes a homography from the unit square [0,1]×[0,1] to the actual
-    % polygon vertices, then transforms each ellipse from ELLIPSE_DEFAULT_RECORDS
+    % quadvertices, then transforms each ellipse from ELLIPSE_DEFAULT_RECORDS
     % through this homography to get pixel-space ellipse parameters.
     %
     % Args:
-    %   polygonVertices - 4×2 matrix of polygon corners [TL; TR; BR; BL] in pixels
+    %   quadVertices - 4×2 matrix of quadcorners [TL; TR; BR; BL] in pixels
     %   cfg             - Configuration struct with cfg.ellipse.defaultRecords
     %                     and cfg.homography
     %   orientation     - 'horizontal' or 'vertical' (strip layout on screen)
@@ -609,14 +609,14 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
         rotation = 0;
     end
 
-    % Adjust polygon vertices based on rotation to ensure Vertex 1 is always Top-Left
+    % Adjust quadvertices based on rotation to ensure Vertex 1 is always Top-Left
     % relative to the visual display.
     % Rotation is positive clockwise (e.g. 90 = 1x CW).
     % Default vertex order [TL, TR, BR, BL] cycles with rotation.
     if rotation ~= 0
         k = mod(round(rotation / 90), 4);
         if k > 0
-            polygonVertices = circshift(polygonVertices, k, 1);
+            quadVertices = circshift(quadVertices, k, 1);
         end
     end
 
@@ -639,19 +639,19 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
     end
 
     % Unit square corners (source reference frame)
-    % Order: TL, TR, BR, BL to match polygon vertex order
+    % Order: TL, TR, BR, BL to match quad vertex order
     unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];
 
-    % Compute homography from unit square to polygon
-    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, polygonVertices);
+    % Compute homography from unit square to quadrilateral
+    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, quadVertices);
 
-    % Compute polygon scale (average side length for axis scaling)
+    % Compute quadscale (average side length for axis scaling)
     sides = zeros(4, 1);
     for i = 1:4
         j = mod(i, 4) + 1;
-        sides(i) = norm(polygonVertices(i,:) - polygonVertices(j,:));
+        sides(i) = norm(quadVertices(i,:) - quadVertices(j,:));
     end
-    polygonScale = mean(sides);
+    quadScale = mean(sides);
 
     numEllipses = size(defaultRecords, 1);
     ellipseParams = zeros(numEllipses, 5);
@@ -669,20 +669,20 @@ function ellipseParams = transformDefaultEllipsesToPolygon(polygonVertices, cfg,
         ellipseOut = geomTform.homog.transformEllipse(ellipseIn, tform);
 
         if ellipseOut.valid
-            % Scale axes by polygon size (normalized -> pixels)
+            % Scale axes by quadsize (normalized -> pixels)
             ellipseParams(i, :) = [
                 ellipseOut.center(1), ellipseOut.center(2), ...
-                ellipseOut.semiMajor * polygonScale, ...
-                ellipseOut.semiMinor * polygonScale, ...
+                ellipseOut.semiMajor * quadScale, ...
+                ellipseOut.semiMinor * quadScale, ...
                 ellipseOut.rotation
             ];
         else
             % Fallback: simple center transform without shape distortion
-            centerPt = geomTform.homog.transformPolygon(defaultRecords(i, 1:2), tform);
+            centerPt = geomTform.homog.transformQuad(defaultRecords(i, 1:2), tform);
             ellipseParams(i, :) = [
                 centerPt(1), centerPt(2), ...
-                defaultRecords(i, 3) * polygonScale, ...
-                defaultRecords(i, 4) * polygonScale, ...
+                defaultRecords(i, 3) * quadScale, ...
+                defaultRecords(i, 4) * quadScale, ...
                 defaultRecords(i, 5)
             ];
         end
@@ -706,10 +706,10 @@ end
 %% Interactive UI
 %% -------------------------------------------------------------------------
 
-function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialPolygons, fig, initialRotation, memory, orientation)
+function [quadParams, displayQuads, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialQuads, fig, initialRotation, memory, orientation)
     % Show interactive GUI with editing, ellipse editing (optional), and preview modes
-    polygonParams = [];
-    displayPolygons = [];
+    quadParams = [];
+    displayQuads = [];
     rotation = 0;
     ellipseData = [];
 
@@ -734,10 +734,10 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
     end
 
     while true
-        % Polygon editing mode
-        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialPolygons, initialRotation, memory, [], orientation);
+        % Quad editing mode
+        clearAndRebuildUI(fig, 'editing', img, imageName, phoneName, cfg, initialQuads, initialRotation, memory, [], orientation);
 
-        [action, userPolygons, userRotation] = waitForUserAction(fig);
+        [action, userQuads, userRotation] = waitForUserAction(fig);
 
         % Defensive check: if figure was closed/deleted, exit cleanly
         if ~isvalid(fig) || isempty(action)
@@ -754,10 +754,10 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                 error('User stopped execution');
             case 'accept'
                 guiDataEditing = get(fig, 'UserData');
-                basePolygons = convertDisplayPolygonsToBase(guiDataEditing, userPolygons, cfg);
+                baseQuads = convertDisplayQuadsToBase(guiDataEditing, userQuads, cfg);
                 savedRotation = userRotation;
-                savedDisplayPolygons = userPolygons;
-                savedBasePolygons = basePolygons;
+                savedDisplayQuads = userQuads;
+                savedBaseQuads = baseQuads;
 
                 % Retrieve updated orientation from editing mode (may have changed due to rotation/AI)
                 if isfield(guiDataEditing, 'orientation') && ~isempty(guiDataEditing.orientation)
@@ -767,7 +767,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                 % Ellipse editing mode (if enabled)
                 if cfg.enableEllipseEditing
                     viewState = captureViewState(guiDataEditing);
-                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, viewState, orientation);
+                    clearAndRebuildUI(fig, 'ellipse_editing', img, imageName, phoneName, cfg, savedBaseQuads, savedRotation, memory, viewState, orientation);
 
                     [ellipseAction, ellipseCoords] = waitForUserAction(fig);
 
@@ -778,8 +778,8 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
 
                     switch ellipseAction
                         case 'back'
-                            % Return to polygon editing
-                            initialPolygons = savedDisplayPolygons;
+                            % Return to quad editing
+                            initialQuads = savedDisplayQuads;
                             initialRotation = savedRotation;
                             continue;
                         case 'skip'
@@ -799,7 +799,7 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                 end
 
                 % Preview mode (pass ellipse data directly to buildPreviewUI via clearAndRebuildUI)
-                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBasePolygons, savedRotation, memory, [], orientation, savedEllipseData);
+                clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, savedBaseQuads, savedRotation, memory, [], orientation, savedEllipseData);
 
                 % Store rotation in guiData for preview mode (ellipse data already stored by buildPreviewUI)
                 guiData = get(fig, 'UserData');
@@ -815,8 +815,8 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
 
                 switch prevAction
                     case 'accept'
-                        polygonParams = savedBasePolygons;
-                        displayPolygons = savedDisplayPolygons;
+                        quadParams = savedBaseQuads;
+                        displayQuads = savedDisplayQuads;
                         rotation = savedRotation;
                         ellipseData = savedEllipseData;
                         return;
@@ -829,8 +829,8 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
                         end
                         return;
                     case 'retry'
-                        % Use edited polygons as new initial positions
-                        initialPolygons = savedDisplayPolygons;
+                        % Use edited quads as new initial positions
+                        initialQuads = savedDisplayQuads;
                         initialRotation = savedRotation;
                         continue;
                 end
@@ -838,8 +838,8 @@ function [polygonParams, displayPolygons, fig, rotation, ellipseData, orientatio
     end
 end
 
-function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, viewState, orientation, ellipseData)
-    % Modes: 'editing' (polygon adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
+function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, quadParams, initialRotation, memory, viewState, orientation, ellipseData)
+    % Modes: 'editing' (quad adjustment), 'ellipse_editing' (ellipse placement), 'preview' (final confirmation)
     % Default argument handling (ordered from lowest to highest nargin)
     if nargin < 8
         initialRotation = 0;
@@ -866,13 +866,13 @@ function clearAndRebuildUI(fig, mode, img, imageName, phoneName, cfg, polygonPar
 
     switch mode
         case 'editing'
-            buildEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation);
+            buildEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation);
 
         case 'ellipse_editing'
-            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, initialRotation, memory, orientation);
+            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation, memory, orientation);
 
         case 'preview'
-            buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, ellipseData);
+            buildPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, ellipseData);
     end
 
     if ~isempty(viewState)
@@ -897,23 +897,23 @@ function clearAllUIElements(fig, guiData)
 
     toDelete = allObjects(isControl | isPanel | isAxes);
 
-    % Add polygon ROIs from guiData
-    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'polygons')
-        validPolys = collectValidPolygons(guiData);
+    % Add quadROIs from guiData
+    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'quads')
+        validPolys = collectValidQuads(guiData);
         if ~isempty(validPolys)
             toDelete = [toDelete; validPolys];
         end
     end
 
-    % Add polygon labels from guiData
-    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'polygonLabels')
-        numLabels = numel(guiData.polygonLabels);
+    % Add quadlabels from guiData
+    if ~isempty(guiData) && isstruct(guiData) && isfield(guiData, 'quadLabels')
+        numLabels = numel(guiData.quadLabels);
         validLabels = gobjects(numLabels, 1);
         validCount = 0;
         for i = 1:numLabels
-            if isvalid(guiData.polygonLabels{i})
+            if isvalid(guiData.quadLabels{i})
                 validCount = validCount + 1;
-                validLabels(validCount) = guiData.polygonLabels{i};
+                validLabels(validCount) = guiData.quadLabels{i};
             end
         end
         validLabels = validLabels(1:validCount);
@@ -1026,19 +1026,19 @@ function applyViewState(fig, viewState)
     set(fig, 'UserData', guiData);
 end
 
-function polys = collectValidPolygons(guiData)
+function polys = collectValidQuads(guiData)
     polys = [];
-    if isempty(guiData) || ~isstruct(guiData) || ~isfield(guiData, 'polygons')
+    if isempty(guiData) || ~isstruct(guiData) || ~isfield(guiData, 'quads')
         return;
     end
-    if ~iscell(guiData.polygons)
+    if ~iscell(guiData.quads)
         return;
     end
 
-    validMask = cellfun(@isvalid, guiData.polygons);
+    validMask = cellfun(@isvalid, guiData.quads);
     if any(validMask)
         % Clear appdata before collecting for deletion
-        validPolys = guiData.polygons(validMask);
+        validPolys = guiData.quads(validMask);
         for i = 1:length(validPolys)
             if isvalid(validPolys{i})
                 if isappdata(validPolys{i}, 'LastValidPosition')
@@ -1054,12 +1054,12 @@ function polys = collectValidPolygons(guiData)
                 end
             end
         end
-        polys = [guiData.polygons{validMask}]';
+        polys = [guiData.quads{validMask}]';
     end
 end
 
-function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, initialRotation)
-    % Build UI for polygon editing mode
+function buildEditingUI(fig, img, imageName, phoneName, cfg, initialQuads, initialRotation)
+    % Build UI for quad editing mode
     if nargin < 7
         initialRotation = 0;
     end
@@ -1097,18 +1097,18 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
-    % Create editable polygons
-    guiData.polygons = cfg.micropadUI.createPolygons(initialPolygons, cfg, @(src, evt) updatePolygonLabelsCallback(src, evt));
-    [guiData.polygons, ~, guiData.orientation] = assignPolygonLabels(guiData.polygons);
+    % Create editable quads
+    guiData.quads = cfg.micropadUI.createQuads(initialQuads, cfg, @(src, evt) updateQuadLabelsCallback(src, evt));
+    [guiData.quads, ~, guiData.orientation] = assignQuadLabels(guiData.quads);
 
-    numInitialPolygons = numel(guiData.polygons);
-    totalForColor = max(numInitialPolygons, 1);
-    guiData.aiBaseColors = zeros(numInitialPolygons, 3);
-    for idx = 1:numInitialPolygons
-        polyHandle = guiData.polygons{idx};
+    numInitialQuads = numel(guiData.quads);
+    totalForColor = max(numInitialQuads, 1);
+    guiData.aiBaseColors = zeros(numInitialQuads, 3);
+    for idx = 1:numInitialQuads
+        polyHandle = guiData.quads{idx};
         if isvalid(polyHandle)
             baseColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
-            cfg.micropadUI.setPolygonColor(polyHandle, baseColor, 0.25);
+            cfg.micropadUI.setQuadColor(polyHandle, baseColor, 0.25);
             guiData.aiBaseColors(idx, :) = baseColor;
         else
             guiData.aiBaseColors(idx, :) = [NaN NaN NaN];
@@ -1129,7 +1129,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.asyncDetection.generation = 0;        % Generation counter to invalidate stale detections
 
     % Add concentration labels
-    guiData.polygonLabels = cfg.micropadUI.addPolygonLabels(guiData.polygons, guiData.imgAxes);
+    guiData.quadLabels = cfg.micropadUI.addQuadLabels(guiData.quads, guiData.imgAxes);
 
     % Rotation panel (preset buttons only)
     guiData.rotationPanel = cfg.micropadUI.createRotationButtonPanel(fig, cfg, @applyRotation_UI);
@@ -1154,7 +1154,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     % Store guiData before auto-zoom
     set(fig, 'UserData', guiData);
 
-    % Auto-zoom to polygons after all UI is created
+    % Auto-zoom to quads after all UI is created
     guiData = get(fig, 'UserData');
     applyAutoZoom(fig, guiData, cfg);
 
@@ -1175,7 +1175,7 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     end
 end
 
-function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, ellipseData)
+function buildPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, ellipseData)
     % Build UI for preview mode
     set(fig, 'Name', sprintf('Preview - %s - %s', phoneName, imageName));
 
@@ -1186,11 +1186,11 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, elli
 
     guiData = struct();
     guiData.mode = 'preview';
-    guiData.savedPolygonParams = polygonParams;
+    guiData.savedQuadParams = quadParams;
     guiData.savedEllipseData = ellipseData;
 
     % Preview titles occupying the top band
-    numRegions = size(polygonParams, 1);
+    numRegions = size(quadParams, 1);
     titleText = sprintf('Preview - %s', phoneName);
     guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
                                    'Units', 'normalized', 'Position', cfg.ui.positions.previewTitle, ...
@@ -1208,7 +1208,7 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, elli
                                   'HorizontalAlignment', 'center');
 
     % Preview axes fill the middle band between titles and bottom controls
-    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, polygonParams, ellipseData, cfg);
+    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, quadParams, ellipseData, cfg);
 
     % Bottom controls
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
@@ -1221,7 +1221,7 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, elli
     set(fig, 'UserData', guiData);
 end
 
-function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParams, rotation, memory, orientation)
+function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, rotation, memory, orientation)
     % Build UI for ellipse editing mode
     set(fig, 'Name', sprintf('Ellipse Editing - %s - %s', phoneName, imageName));
 
@@ -1233,10 +1233,10 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData = struct();
     guiData.mode = 'ellipse_editing';
     guiData.cfg = cfg;
-    guiData.polygons = polygonParams;
+    guiData.quads = quadParams;
     guiData.rotation = rotation;
     guiData.memory = memory;
-    guiData.orientation = orientation;  % Store for polygon ordering and ellipse positioning
+    guiData.orientation = orientation;  % Store for quad ordering and ellipse positioning
 
     % Apply rotation to image
     if rotation ~= 0
@@ -1248,7 +1248,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
     guiData.baseImageSize = [size(img, 1), size(img, 2)];
     guiData.currentImg = displayImg;
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
-    guiData.displayPolygons = convertBasePolygonsToDisplay(polygonParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
+    guiData.displayQuads = convertBaseQuadsToDisplay(quadParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
 
     % Title
     titleText = sprintf('Ellipse Editing - %s - %s', phoneName, imageName);
@@ -1267,31 +1267,31 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                           'BackgroundColor', cfg.ui.colors.background, ...
                           'HorizontalAlignment', 'center');
 
-    % Image display with polygons
+    % Image display with quads
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % Add double-click background reset callback
     set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
     set(guiData.imgHandle, 'HitTest', 'off');  % Allow clicks to pass through to axes
 
-    % Draw all polygons (clickable for zoom navigation, but not editable)
-    numConcentrations = size(polygonParams, 1);
-    guiData.polygonHandles = cell(numConcentrations, 1);
+    % Draw all quads (clickable for zoom navigation, but not editable)
+    numConcentrations = size(quadParams, 1);
+    guiData.quadHandles = cell(numConcentrations, 1);
     for i = 1:numConcentrations
-        vertices = squeeze(guiData.displayPolygons(i, :, :));
-        polygonColor = cfg.micropadUI.getConcentrationColor(i - 1, numConcentrations);
-        guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
-                                                'Color', polygonColor, 'LineWidth', 2, ...
+        vertices = squeeze(guiData.displayQuads(i, :, :));
+        quadColor = cfg.micropadUI.getConcentrationColor(i - 1, numConcentrations);
+        guiData.quadHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
+                                                'Color', quadColor, 'LineWidth', 2, ...
                                                 'FaceAlpha', 0.15, 'InteractionsAllowed', 'translate', ...
-                                                'Tag', sprintf('polygon_%d', i));
+                                                'Tag', sprintf('quad_%d', i));
         % Add click callback for zoom
-        addlistener(guiData.polygonHandles{i}, 'ROIClicked', @(src, evt) zoomToPolygonCallback(src, fig, i, cfg));
+        addlistener(guiData.quadHandles{i}, 'ROIClicked', @(src, evt) zoomToQuadCallback(src, fig, i, cfg));
         % Prevent movement by resetting position when drag starts
         originalVertices = vertices;
-        addlistener(guiData.polygonHandles{i}, 'MovingROI', @(src, ~) set(src, 'Position', originalVertices));
+        addlistener(guiData.quadHandles{i}, 'MovingROI', @(src, ~) set(src, 'Position', originalVertices));
     end
 
-    % Create ALL ellipses at once (21 total for 7 polygons × 3 replicates)
+    % Create ALL ellipses at once (21 total for 7 quads × 3 replicates)
     numReplicates = cfg.ellipse.replicatesPerMicropad;
     totalEllipses = numConcentrations * numReplicates;
     guiData.ellipses = cell(1, totalEllipses);
@@ -1303,33 +1303,33 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
        isfield(guiData.memory, 'hasEllipseSettings') && guiData.memory.hasEllipseSettings
         hasMemory = true;
 
-        % Check if polygon geometry changed (need to scale)
-        if isfield(guiData.memory, 'polygons') && ~isempty(guiData.memory.polygons)
-            oldPolygons = guiData.memory.polygons;
-            newPolygons = guiData.displayPolygons;
+        % Check if quad geometry changed (need to scale)
+        if isfield(guiData.memory, 'quads') && ~isempty(guiData.memory.quads)
+            oldQuads = guiData.memory.quads;
+            newQuads = guiData.displayQuads;
 
             % Scale ellipses for each concentration
             for concIdx = 1:numConcentrations
                 if concIdx <= numel(guiData.memory.ellipses) && ~isempty(guiData.memory.ellipses{concIdx})
-                    oldPoly = squeeze(oldPolygons(concIdx, :, :));
-                    newPoly = squeeze(newPolygons(concIdx, :, :));
+                    oldPoly = squeeze(oldQuads(concIdx, :, :));
+                    newPoly = squeeze(newQuads(concIdx, :, :));
                     oldEllipses = guiData.memory.ellipses{concIdx};
 
-                    % Scale ellipses to new polygon geometry
-                    scaledEllipses = cfg.geomTform.geom.scaleEllipsesForPolygonChange(oldPoly, newPoly, oldEllipses, guiData.imageSize, cfg);
+                    % Scale ellipses to new quad geometry
+                    scaledEllipses = cfg.geomTform.geom.scaleEllipsesForQuadChange(oldPoly, newPoly, oldEllipses, guiData.imageSize, cfg);
                     guiData.memory.ellipses{concIdx} = scaledEllipses;
                 end
             end
         end
     end
 
-    displayPolygons = guiData.displayPolygons;
+    displayQuads = guiData.displayQuads;
     for concIdx = 1:numConcentrations
-        polygonColor = cfg.micropadUI.getConcentrationColor(concIdx - 1, numConcentrations);
-        currentPolygon = squeeze(displayPolygons(concIdx, :, :));
+        quadColor = cfg.micropadUI.getConcentrationColor(concIdx - 1, numConcentrations);
+        currentQuad = squeeze(displayQuads(concIdx, :, :));
 
-        % Compute axis bounds for this polygon
-        ellipseBounds = cfg.geomTform.geom.computeEllipseAxisBounds(currentPolygon, guiData.imageSize, cfg);
+        % Compute axis bounds for this quad
+        ellipseBounds = cfg.geomTform.geom.computeEllipseAxisBounds(currentQuad, guiData.imageSize, cfg);
 
         % Check if we have memory for this concentration
         if hasMemory && concIdx <= numel(guiData.memory.ellipses) && ...
@@ -1346,7 +1346,7 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                     ellipseRotation = memEllipses(repIdx, 7);
                 else
                     % Fallback to homography-transformed defaults if memory incomplete
-                    ellipseParams = transformDefaultEllipsesToPolygon(currentPolygon, cfg, orientation, rotation);
+                    ellipseParams = transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
                     ellipseCenter = ellipseParams(repIdx, 1:2);
                     ellipseSemiMajor = ellipseParams(repIdx, 3);
                     ellipseSemiMinor = ellipseParams(repIdx, 4);
@@ -1354,35 +1354,35 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
                 end
 
                 guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseCenter, ...
-                    ellipseSemiMajor, ellipseSemiMinor, ellipseRotation, polygonColor, ellipseBounds, cfg);
+                    ellipseSemiMajor, ellipseSemiMinor, ellipseRotation, quadColor, ellipseBounds, cfg);
                 ellipseIdx = ellipseIdx + 1;
             end
         else
             % No memory - use homography-transformed defaults from ELLIPSE_DEFAULT_RECORDS
-            ellipseParams = transformDefaultEllipsesToPolygon(currentPolygon, cfg, orientation, rotation);
+            ellipseParams = transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
 
             for repIdx = 1:numReplicates
                 guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
-                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), polygonColor, ellipseBounds, cfg);
+                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), quadColor, ellipseBounds, cfg);
                 ellipseIdx = ellipseIdx + 1;
             end
         end
     end
 
-    % Zoom panel (polygon-specific navigation)
+    % Zoom panel (quad-specific navigation)
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
-    guiData.focusedPolygonIndex = 0;  % 0 = none/all, 1-N = specific polygon
+    guiData.focusedQuadIndex = 0;  % 0 = none/all, 1-N = specific quad
             [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = cfg.micropadUI.createEllipseZoomPanel(fig, cfg, ...
-                @(~,~) navigateToPrevPolygon(fig, cfg), ...
-                @(~,~) navigateToNextPolygon(fig, cfg), ...
+                @(~,~) navigateToPrevQuad(fig, cfg), ...
+                @(~,~) navigateToNextQuad(fig, cfg), ...
                 @(~,~) resetZoomEllipse(fig, cfg));
     % Action buttons panel
     guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Instructions
-    instructionText = 'Draw 21 ellipses (3 per micropad). Colors match polygons. Click DONE when finished.';
+    instructionText = 'Draw 21 ellipses (3 per micropad). Colors match quads. Click DONE when finished.';
     guiData.instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionText, ...
                                        'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
                                        'FontSize', cfg.ui.fontSize.instruction, ...
@@ -1395,16 +1395,16 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, polygonParam
 end
 
 function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, ellipsePositions, rotation, memory)
-    % Build ellipse editing UI for grid mode (no polygon overlays)
-    % This is used in Mode 3 when no polygon coordinates exist
+    % Build ellipse editing UI for grid mode (no quad overlays)
+    % This is used in Mode 3 when no quad coordinates exist
 
     set(fig, 'Name', sprintf('Ellipse Editing (Grid Mode) - %s - %s', phoneName, imageName));
 
     guiData = struct();
     guiData.mode = 'ellipse_editing_grid';
     guiData.cfg = cfg;
-    guiData.polygons = []; % No polygons in grid mode
-    guiData.displayPolygons = [];
+    guiData.quads = []; % No quads in grid mode
+    guiData.displayQuads = [];
     guiData.rotation = rotation;
     guiData.memory = memory;
 
@@ -1436,7 +1436,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
                           'BackgroundColor', cfg.ui.colors.background, ...
                           'HorizontalAlignment', 'center');
 
-    % Image display (NO polygon overlays in grid mode)
+    % Image display (NO quad overlays in grid mode)
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % Add double-click background reset callback
@@ -1474,10 +1474,10 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
         end
     end
 
-    % Zoom panel (grid mode doesn't have polygons, so no polygon-specific zoom)
+    % Zoom panel (grid mode doesn't have quads, so no quad-specific zoom)
     guiData.zoomLevel = 0;
     guiData.autoZoomBounds = [];
-    guiData.focusedPolygonIndex = 0;  % Always 0 in grid mode (no polygons)
+    guiData.focusedQuadIndex = 0;  % Always 0 in grid mode (no quads)
     [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
         @(src, ~) zoomSliderCallback(src, fig, cfg), ...
         @(~, ~) resetZoom(fig, cfg), ...
@@ -1501,7 +1501,7 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     set(fig, 'UserData', guiData);
 end
 
-function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonParams, hasPolygons, ...
+function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, hasQuads, ...
                                ellipseData, hasEllipses, rotation)
     % Build read-only preview UI for Mode 4 (both editing disabled)
     % Displays existing coordinate overlays without editing capability
@@ -1515,7 +1515,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     guiData = struct();
     guiData.mode = 'preview_readonly';
     guiData.cfg = cfg;
-    guiData.polygons = polygonParams;
+    guiData.quads = quadParams;
     guiData.ellipses = ellipseData;
     guiData.rotation = rotation;
 
@@ -1550,18 +1550,18 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
     % Image display
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
-    displayPolygonsPreview = convertBasePolygonsToDisplay(polygonParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
+    displayQuadsPreview = convertBaseQuadsToDisplay(quadParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
     displayEllipsesPreview = convertBaseEllipsesToDisplay(ellipseData, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
 
-    % Draw polygon overlays if available
-    if hasPolygons && ~isempty(displayPolygonsPreview)
-        numPolygons = size(displayPolygonsPreview, 1);
-        guiData.polygonHandles = cell(numPolygons, 1);
-        for i = 1:numPolygons
-            vertices = squeeze(displayPolygonsPreview(i, :, :));
-            polygonColor = cfg.micropadUI.getConcentrationColor(i - 1, numPolygons);
-            guiData.polygonHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
-                                                    'Color', polygonColor, 'LineWidth', 2, ...
+    % Draw quad overlays if available
+    if hasQuads && ~isempty(displayQuadsPreview)
+        numQuads = size(displayQuadsPreview, 1);
+        guiData.quadHandles = cell(numQuads, 1);
+        for i = 1:numQuads
+            vertices = squeeze(displayQuadsPreview(i, :, :));
+            quadColor = cfg.micropadUI.getConcentrationColor(i - 1, numQuads);
+            guiData.quadHandles{i} = drawpolygon(guiData.imgAxes, 'Position', vertices, ...
+                                                    'Color', quadColor, 'LineWidth', 2, ...
                                                     'FaceAlpha', 0.15, 'InteractionsAllowed', 'none');
         end
     end
@@ -1579,9 +1579,9 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
             semiMinor = displayEllipsesPreview(i, 6);
             rotationAngle = displayEllipsesPreview(i, 7);
 
-            % Use same color as corresponding polygon
-            if hasPolygons
-                numConcentrations = size(displayPolygonsPreview, 1);
+            % Use same color as corresponding quad
+            if hasQuads
+                numConcentrations = size(displayQuadsPreview, 1);
             else
                 numConcentrations = max(displayEllipsesPreview(:, 1)) + 1;
             end
@@ -1615,10 +1615,10 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
 
     % Instructions
     overlayInfo = '';
-    if hasPolygons && hasEllipses
-        overlayInfo = sprintf('%d polygons and %d ellipses', size(polygonParams, 1), size(ellipseData, 1));
-    elseif hasPolygons
-        overlayInfo = sprintf('%d polygons', size(polygonParams, 1));
+    if hasQuads && hasEllipses
+        overlayInfo = sprintf('%d quads and %d ellipses', size(quadParams, 1), size(ellipseData, 1));
+    elseif hasQuads
+        overlayInfo = sprintf('%d quads', size(quadParams, 1));
     elseif hasEllipses
         overlayInfo = sprintf('%d ellipses', size(ellipseData, 1));
     end
@@ -1636,7 +1636,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, polygonPara
 end
 
 function showAIProgressIndicator(fig, show)
-    % Toggle AI detection status indicator and polygon breathing animation
+    % Toggle AI detection status indicator and quadbreathing animation
     if ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
         return;
     end
@@ -1658,7 +1658,7 @@ function showAIProgressIndicator(fig, show)
 
     if show
         guiData = stopAIBreathingTimer(guiData, ui);
-        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
+        guiData.aiBaseColors = ui.captureQuadColors(guiData.quads);
 
         if ~isempty(guiData.aiBaseColors)
             guiData.aiBreathingStart = tic;
@@ -1671,14 +1671,14 @@ function showAIProgressIndicator(fig, show)
                 'ExecutionMode', 'fixedRate', ...
                 'BusyMode', 'queue', ...
                 'TasksToExecute', Inf, ...
-                'TimerFcn', @(~,~) animatePolygonBreathing(fig));
+                'TimerFcn', @(~,~) animateQuadBreathing(fig));
             start(guiData.aiBreathingTimer);
         end
 
         drawnow limitrate;
     else
         guiData = stopAIBreathingTimer(guiData, ui);
-        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
+        guiData.aiBaseColors = ui.captureQuadColors(guiData.quads);
     end
 
     set(fig, 'UserData', guiData);
@@ -1717,7 +1717,7 @@ function guiData = stopAIBreathingTimer(guiData, ui)
     end
 end
 
-function animatePolygonBreathing(fig)
+function animateQuadBreathing(fig)
     if ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
         return;
     end
@@ -1726,7 +1726,7 @@ function animatePolygonBreathing(fig)
     if isempty(guiData) || ~isstruct(guiData)
         return;
     end
-    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons)
+    if ~isfield(guiData, 'quads') || ~iscell(guiData.quads)
         return;
     end
     if ~isfield(guiData, 'aiBaseColors') || isempty(guiData.aiBaseColors)
@@ -1766,111 +1766,111 @@ function animatePolygonBreathing(fig)
     brightenMix = mixRange(1) + (mixRange(2) - mixRange(1)) * inhale;
     dimScale = 1 - guiData.aiBreathingDimFactor * exhale;
 
-    numPolygons = min(size(guiData.aiBaseColors, 1), numel(guiData.polygons));
-    for idx = 1:numPolygons
-        poly = guiData.polygons{idx};
+    numQuads = min(size(guiData.aiBaseColors, 1), numel(guiData.quads));
+    for idx = 1:numQuads
+        poly = guiData.quads{idx};
         baseColor = guiData.aiBaseColors(idx, :);
         if isvalid(poly) && all(isfinite(baseColor))
             whitened = baseColor * (1 - brightenMix) + brightenMix;
             newColor = min(max(whitened * dimScale, 0), 1);
-            ui.setPolygonColor(poly, newColor, []);
+            ui.setQuadColor(poly, newColor, []);
         end
     end
 
     drawnow limitrate;
 end
 
-function guiData = applyDetectedPolygons(guiData, newPolygons, cfg, ~)
+function guiData = applyDetectedQuads(guiData, newQuads, cfg, ~)
     % Synchronize drawpolygon handles with detection output preserving UI ordering
 
-    if isempty(newPolygons)
+    if isempty(newQuads)
         return;
     end
 
-    % Ensure polygons are ordered left-to-right, bottom-to-top in UI space
-    [newPolygons, newOrientation] = sortPolygonArrayByX(newPolygons);
-    guiData.orientation = newOrientation;  % Update orientation based on new polygon layout
-    targetCount = size(newPolygons, 1);
+    % Ensure quads are ordered left-to-right, bottom-to-top in UI space
+    [newQuads, newOrientation] = sortQuadArrayByX(newQuads);
+    guiData.orientation = newOrientation;  % Update orientation based on new quadlayout
+    targetCount = size(newQuads, 1);
 
     if targetCount == 0
         return;
     end
 
-    % Determine whether we can reuse existing polygon handles
-    hasPolygons = isfield(guiData, 'polygons') && iscell(guiData.polygons) && ~isempty(guiData.polygons);
-    validMask = hasPolygons;
-    if hasPolygons
-        validMask = cellfun(@isvalid, guiData.polygons);
+    % Determine whether we can reuse existing quadhandles
+    hasQuads = isfield(guiData, 'quads') && iscell(guiData.quads) && ~isempty(guiData.quads);
+    validMask = hasQuads;
+    if hasQuads
+        validMask = cellfun(@isvalid, guiData.quads);
     end
-    reusePolygons = hasPolygons && all(validMask) && numel(guiData.polygons) == targetCount;
+    reuseQuads = hasQuads && all(validMask) && numel(guiData.quads) == targetCount;
 
-    if reusePolygons
+    if reuseQuads
         labelHandles = [];
-        if isfield(guiData, 'polygonLabels')
-            labelHandles = guiData.polygonLabels;
+        if isfield(guiData, 'quadLabels')
+            labelHandles = guiData.quadLabels;
         end
-        updatePolygonPositions(guiData.polygons, newPolygons, labelHandles, cfg.micropadUI);
+        updateQuadPositions(guiData.quads, newQuads, labelHandles, cfg.micropadUI);
     else
-        % Clean up existing polygons if present
-        if hasPolygons
-            for idx = 1:numel(guiData.polygons)
-                if isvalid(guiData.polygons{idx})
-                    delete(guiData.polygons{idx});
+        % Clean up existing quads if present
+        if hasQuads
+            for idx = 1:numel(guiData.quads)
+                if isvalid(guiData.quads{idx})
+                    delete(guiData.quads{idx});
                 end
             end
         end
 
-        guiData.polygons = cfg.micropadUI.createPolygons(newPolygons, cfg, @(src, evt) updatePolygonLabelsCallback(src, evt));
+        guiData.quads = cfg.micropadUI.createQuads(newQuads, cfg, @(src, evt) updateQuadLabelsCallback(src, evt));
     end
 
-    % Reorder polygons to enforce gradient ordering
-    [guiData.polygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    % Reorder quads to enforce gradient ordering
+    [guiData.quads, order, newOrientation] = assignQuadLabels(guiData.quads);
     guiData.orientation = newOrientation;  % Update orientation based on current layout
 
     % Synchronize labels
-    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
+    hasLabels = isfield(guiData, 'quadLabels') && iscell(guiData.quadLabels);
     reuseLabels = false;
     if hasLabels
-        labelValidMask = cellfun(@isvalid, guiData.polygonLabels);
-        reuseLabels = all(labelValidMask) && numel(guiData.polygonLabels) == targetCount;
+        labelValidMask = cellfun(@isvalid, guiData.quadLabels);
+        reuseLabels = all(labelValidMask) && numel(guiData.quadLabels) == targetCount;
     end
 
     if ~reuseLabels
         if hasLabels
-            for idx = 1:numel(guiData.polygonLabels)
-                if isvalid(guiData.polygonLabels{idx})
-                    delete(guiData.polygonLabels{idx});
+            for idx = 1:numel(guiData.quadLabels)
+                if isvalid(guiData.quadLabels{idx})
+                    delete(guiData.quadLabels{idx});
                 end
             end
         end
-        guiData.polygonLabels = cfg.micropadUI.addPolygonLabels(guiData.polygons, guiData.imgAxes);
+        guiData.quadLabels = cfg.micropadUI.addQuadLabels(guiData.quads, guiData.imgAxes);
     elseif ~isempty(order)
-        guiData.polygonLabels = guiData.polygonLabels(order);
+        guiData.quadLabels = guiData.quadLabels(order);
     end
 
     % Apply consistent cold-to-hot gradient and refresh label strings
-    numPolygons = numel(guiData.polygons);
-    totalForColor = max(numPolygons, 1);
-    for idx = 1:numPolygons
-        polyHandle = guiData.polygons{idx};
+    numQuads = numel(guiData.quads);
+    totalForColor = max(numQuads, 1);
+    for idx = 1:numQuads
+        polyHandle = guiData.quads{idx};
         if isvalid(polyHandle)
             gradColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
-            cfg.micropadUI.setPolygonColor(polyHandle, gradColor, 0.25);
+            cfg.micropadUI.setQuadColor(polyHandle, gradColor, 0.25);
 
         end
     end
 
-    if ~isempty(guiData.polygonLabels)
-        for idx = 1:min(numPolygons, numel(guiData.polygonLabels))
-            labelHandle = guiData.polygonLabels{idx};
+    if ~isempty(guiData.quadLabels)
+        for idx = 1:min(numQuads, numel(guiData.quadLabels))
+            labelHandle = guiData.quadLabels{idx};
             if isvalid(labelHandle)
                 set(labelHandle, 'String', sprintf('con_%d', idx - 1));
             end
         end
-        cfg.micropadUI.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        cfg.micropadUI.updateQuadLabels(guiData.quads, guiData.quadLabels);
     end
 
-    guiData.aiBaseColors = cfg.micropadUI.capturePolygonColors(guiData.polygons);
+    guiData.aiBaseColors = cfg.micropadUI.captureQuadColors(guiData.quads);
 end
 
 function applyRotation_UI(angle, fig, cfg)
@@ -1909,17 +1909,17 @@ function applyRotation_UI(angle, fig, cfg)
     newWidth = size(guiData.currentImg, 2);
     guiData.imageSize = [newHeight, newWidth];
 
-    % Convert polygon positions to normalized coordinates [0, 1] before image update
-    numPolygons = 0;
-    polygonNormalized = {};
-    if isfield(guiData, 'polygons') && iscell(guiData.polygons)
-        numPolygons = length(guiData.polygons);
-        polygonNormalized = cell(numPolygons, 1);
-        for i = 1:numPolygons
-            if isvalid(guiData.polygons{i})
-                posData = guiData.polygons{i}.Position;  % [N x 2] array of vertices
+    % Convert quad positions to normalized coordinates [0, 1] before image update
+    numQuads = 0;
+    quadNormalized = {};
+    if isfield(guiData, 'quads') && iscell(guiData.quads)
+        numQuads = length(guiData.quads);
+        quadNormalized = cell(numQuads, 1);
+        for i = 1:numQuads
+            if isvalid(guiData.quads{i})
+                posData = guiData.quads{i}.Position;  % [N x 2] array of vertices
                 % Convert to normalized axes coordinates [0, 1]
-                polygonNormalized{i} = [(posData(:, 1) - 1) / currentWidth, (posData(:, 2) - 1) / currentHeight];
+                quadNormalized{i} = [(posData(:, 1) - 1) / currentWidth, (posData(:, 2) - 1) / currentHeight];
             end
         end
     end
@@ -1932,36 +1932,36 @@ function applyRotation_UI(angle, fig, cfg)
     % Snap axes to new image bounds
     axis(guiData.imgAxes, 'image');
 
-    % Update polygon positions to maintain screen-space locations
-    for i = 1:numPolygons
-        if isvalid(guiData.polygons{i})
+    % Update quad positions to maintain screen-space locations
+    for i = 1:numQuads
+        if isvalid(guiData.quads{i})
             % Convert normalized coordinates back to new data coordinates
-            newPos = [1 + polygonNormalized{i}(:, 1) * newWidth, 1 + polygonNormalized{i}(:, 2) * newHeight];
-            guiData.polygons{i}.Position = newPos;
+            newPos = [1 + quadNormalized{i}(:, 1) * newWidth, 1 + quadNormalized{i}(:, 2) * newHeight];
+            guiData.quads{i}.Position = newPos;
         end
     end
 
-    % Reorder polygons to maintain concentration ordering after rotation
-    [guiData.polygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    % Reorder quads to maintain concentration ordering after rotation
+    [guiData.quads, order, newOrientation] = assignQuadLabels(guiData.quads);
     guiData.orientation = newOrientation;  % Update orientation based on new layout
 
-    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels);
-    if hasLabels && ~isempty(order) && numel(guiData.polygonLabels) >= numel(order)
-        guiData.polygonLabels = guiData.polygonLabels(order);
+    hasLabels = isfield(guiData, 'quadLabels') && iscell(guiData.quadLabels);
+    if hasLabels && ~isempty(order) && numel(guiData.quadLabels) >= numel(order)
+        guiData.quadLabels = guiData.quadLabels(order);
     end
 
-    numPolygons = numel(guiData.polygons);
-    totalForColor = max(numPolygons, 1);
-    for idx = 1:numPolygons
-        polyHandle = guiData.polygons{idx};
+    numQuads = numel(guiData.quads);
+    totalForColor = max(numQuads, 1);
+    for idx = 1:numQuads
+        polyHandle = guiData.quads{idx};
         if isvalid(polyHandle)
             gradColor = cfg.micropadUI.getConcentrationColor(idx - 1, totalForColor);
-            cfg.micropadUI.setPolygonColor(polyHandle, gradColor, 0.25);
+            cfg.micropadUI.setQuadColor(polyHandle, gradColor, 0.25);
 
         end
 
-        if hasLabels && idx <= numel(guiData.polygonLabels)
-            labelHandle = guiData.polygonLabels{idx};
+        if hasLabels && idx <= numel(guiData.quadLabels)
+            labelHandle = guiData.quadLabels{idx};
             if isvalid(labelHandle)
                 set(labelHandle, 'String', sprintf('con_%d', idx - 1));
             end
@@ -1969,10 +1969,10 @@ function applyRotation_UI(angle, fig, cfg)
     end
 
     if hasLabels
-        cfg.micropadUI.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        cfg.micropadUI.updateQuadLabels(guiData.quads, guiData.quadLabels);
     end
 
-    guiData.aiBaseColors = cfg.micropadUI.capturePolygonColors(guiData.polygons);
+    guiData.aiBaseColors = cfg.micropadUI.captureQuadColors(guiData.quads);
     guiData.autoZoomBounds = [];
 
     % Save guiData
@@ -2027,12 +2027,12 @@ function resetZoom(fig, cfg)
         end
     end
 
-    % Clear polygon focus for ellipse editing modes
+    % Clear quadfocus for ellipse editing modes
     if strcmp(guiData.mode, 'ellipse_editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
-        if isfield(guiData, 'focusedPolygonIndex')
-            guiData.focusedPolygonIndex = 0;
-            updatePolygonHighlight(fig, guiData, cfg);
-            updatePolygonIndicator(fig, guiData);
+        if isfield(guiData, 'focusedQuadIndex')
+            guiData.focusedQuadIndex = 0;
+            updateQuadHighlight(fig, guiData, cfg);
+            updateQuadIndicator(fig, guiData);
         end
     end
 
@@ -2043,7 +2043,7 @@ function resetZoom(fig, cfg)
 end
 
 function applyAutoZoom(fig, guiData, cfg)
-    % Auto-zoom to fit all polygons
+    % Auto-zoom to fit all quads
 
     if isempty(guiData) || ~isstruct(guiData)
         return;
@@ -2056,27 +2056,27 @@ function applyAutoZoom(fig, guiData, cfg)
 
     % Calculate bounding box based on available handles
     if strcmp(guiData.mode, 'ellipse_editing')
-        % Use polygonHandles for ellipse editing mode (has polygons)
-        [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+        % Use quadHandles for ellipse editing mode (has quads)
+        [xmin, xmax, ymin, ymax] = calculateQuadHandlesBounds(guiData);
     elseif strcmp(guiData.mode, 'ellipse_editing_grid')
-        % Use ellipse handles for grid mode (no polygons, only ellipses)
+        % Use ellipse handles for grid mode (no quads, only ellipses)
         [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
     elseif strcmp(guiData.mode, 'preview_readonly')
-        % Use polygon handles if available, otherwise ellipse handles
-        if isfield(guiData, 'polygonHandles') && ~isempty(guiData.polygonHandles)
-            [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+        % Use quadhandles if available, otherwise ellipse handles
+        if isfield(guiData, 'quadHandles') && ~isempty(guiData.quadHandles)
+            [xmin, xmax, ymin, ymax] = calculateQuadHandlesBounds(guiData);
         elseif isfield(guiData, 'ellipseHandles') && ~isempty(guiData.ellipseHandles)
             [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
         else
             return;
         end
     else
-        % Use polygons for editing mode
-        [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+        % Use quads for editing mode
+        [xmin, xmax, ymin, ymax] = calculateQuadBounds(guiData);
     end
 
     if isempty(xmin)
-        return;  % No valid polygons
+        return;  % No valid quads
     end
 
     % Store auto-zoom bounds in guiData
@@ -2099,7 +2099,7 @@ end
 
 function applyZoomToAxes(guiData, cfg)
     % Apply current zoom level to image axes
-    % zoomLevel: 0 = full image, 1 = auto-zoom to polygons
+    % zoomLevel: 0 = full image, 1 = auto-zoom to quads
 
     imgHeight = guiData.imageSize(1);
     imgWidth = guiData.imageSize(2);
@@ -2113,25 +2113,25 @@ function applyZoomToAxes(guiData, cfg)
         if isfield(guiData, 'autoZoomBounds') && ~isempty(guiData.autoZoomBounds)
             autoZoomBounds = guiData.autoZoomBounds;
         else
-            % Calculate bounds from polygons if they exist
+            % Calculate bounds from quads if they exist
             xmin = [];
 
-            % For preview_readonly mode, use polygonHandles or ellipseHandles
+            % For preview_readonly mode, use quadHandles or ellipseHandles
             if isfield(guiData, 'mode') && strcmp(guiData.mode, 'preview_readonly')
-                if isfield(guiData, 'polygonHandles') && ~isempty(guiData.polygonHandles)
-                    [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData);
+                if isfield(guiData, 'quadHandles') && ~isempty(guiData.quadHandles)
+                    [xmin, xmax, ymin, ymax] = calculateQuadHandlesBounds(guiData);
                 elseif isfield(guiData, 'ellipseHandles') && ~isempty(guiData.ellipseHandles)
                     [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData);
                 end
             else
-                [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData);
+                [xmin, xmax, ymin, ymax] = calculateQuadBounds(guiData);
             end
 
             if ~isempty(xmin)
-                % Use actual polygon bounds
+                % Use actual quadbounds
                 autoZoomBounds = [xmin, xmax, ymin, ymax];
             else
-                % No polygons yet - use center estimate
+                % No quads yet - use center estimate
                 [autoZoomBounds] = estimateSingleMicropadBounds(guiData, cfg);
             end
             guiData.autoZoomBounds = autoZoomBounds;
@@ -2153,21 +2153,21 @@ function applyZoomToAxes(guiData, cfg)
     end
 end
 
-function [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData)
-    % Calculate bounding box containing all polygons
+function [xmin, xmax, ymin, ymax] = calculateQuadBounds(guiData)
+    % Calculate bounding box containing all quads
     xmin = inf;
     xmax = -inf;
     ymin = inf;
     ymax = -inf;
 
-    if ~isfield(guiData, 'polygons') || isempty(guiData.polygons)
+    if ~isfield(guiData, 'quads') || isempty(guiData.quads)
         xmin = [];
         return;
     end
 
-    for i = 1:numel(guiData.polygons)
-        if isvalid(guiData.polygons{i})
-            pos = guiData.polygons{i}.Position;
+    for i = 1:numel(guiData.quads)
+        if isvalid(guiData.quads{i})
+            pos = guiData.quads{i}.Position;
             xmin = min(xmin, min(pos(:, 1)));
             xmax = max(xmax, max(pos(:, 1)));
             ymin = min(ymin, min(pos(:, 2)));
@@ -2191,7 +2191,7 @@ function [xmin, xmax, ymin, ymax] = calculatePolygonBounds(guiData)
 end
 
 function bounds = estimateSingleMicropadBounds(guiData, cfg)
-    % Estimate bounds for a single micropad size when no polygons available
+    % Estimate bounds for a single micropad size when no quads available
     imgHeight = guiData.imageSize(1);
     imgWidth = guiData.imageSize(2);
 
@@ -2217,25 +2217,25 @@ end
 
 
 
-function zoomToPolygon(fig, polygonIndex, cfg)
-    % Zoom to a specific polygon with 5% margin
+function zoomToQuad(fig, quadIndex, cfg)
+    % Zoom to a specific quad with 5% margin
     guiData = get(fig, 'UserData');
 
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         return;
     end
 
-    numPolygons = numel(guiData.polygonHandles);
-    if polygonIndex < 1 || polygonIndex > numPolygons
+    numQuads = numel(guiData.quadHandles);
+    if quadIndex < 1 || quadIndex > numQuads
         return;
     end
 
-    % Get vertices from polygon handle
-    if ~isvalid(guiData.polygonHandles{polygonIndex})
+    % Get vertices from quadhandle
+    if ~isvalid(guiData.quadHandles{quadIndex})
         return;
     end
 
-    vertices = guiData.polygonHandles{polygonIndex}.Position;
+    vertices = guiData.quadHandles{quadIndex}.Position;
 
     % Calculate bounding box with 5% margin
     xmin = min(vertices(:, 1));
@@ -2256,135 +2256,135 @@ function zoomToPolygon(fig, polygonIndex, cfg)
     ylim(guiData.imgAxes, [ymin, ymax]);
 
     % Update focused index
-    guiData.focusedPolygonIndex = polygonIndex;
+    guiData.focusedQuadIndex = quadIndex;
     set(fig, 'UserData', guiData);
 
     % Update highlight and indicator
-    updatePolygonHighlight(fig, guiData, cfg);
-    updatePolygonIndicator(fig, guiData);
+    updateQuadHighlight(fig, guiData, cfg);
+    updateQuadIndicator(fig, guiData);
 end
 
-function updatePolygonHighlight(~, guiData, cfg)
-    % Update polygon visual highlighting based on focused index
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+function updateQuadHighlight(~, guiData, cfg)
+    % Update quadvisual highlighting based on focused index
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         return;
     end
 
-    numPolygons = numel(guiData.polygonHandles);
-    focusedIdx = guiData.focusedPolygonIndex;
+    numQuads = numel(guiData.quadHandles);
+    focusedIdx = guiData.focusedQuadIndex;
 
-    for i = 1:numPolygons
-        if ~isvalid(guiData.polygonHandles{i})
+    for i = 1:numQuads
+        if ~isvalid(guiData.quadHandles{i})
             continue;
         end
 
-        baseColor = cfg.micropadUI.getConcentrationColor(i - 1, numPolygons);
+        baseColor = cfg.micropadUI.getConcentrationColor(i - 1, numQuads);
 
         if focusedIdx == i
-            % Focused polygon: thicker line, original color
-            guiData.polygonHandles{i}.LineWidth = 3;
-            guiData.polygonHandles{i}.Color = baseColor;
+            % Focused quad: thicker line, original color
+            guiData.quadHandles{i}.LineWidth = 3;
+            guiData.quadHandles{i}.Color = baseColor;
         elseif focusedIdx > 0
-            % Non-focused polygon when a polygon is focused: normal line, dimmed color
-            guiData.polygonHandles{i}.LineWidth = 2;
+            % Non-focused quad when a quad is focused: normal line, dimmed color
+            guiData.quadHandles{i}.LineWidth = 2;
             dimmedColor = baseColor * cfg.dimFactor + [1 1 1] * (1 - cfg.dimFactor);
-            guiData.polygonHandles{i}.Color = dimmedColor;
+            guiData.quadHandles{i}.Color = dimmedColor;
         else
             % No focus: normal line, original color
-            guiData.polygonHandles{i}.LineWidth = 2;
-            guiData.polygonHandles{i}.Color = baseColor;
+            guiData.quadHandles{i}.LineWidth = 2;
+            guiData.quadHandles{i}.Color = baseColor;
         end
     end
 end
 
-function updatePolygonIndicator(~, guiData)
-    % Update indicator text showing current polygon focus
+function updateQuadIndicator(~, guiData)
+    % Update indicator text showing current quadfocus
     if ~isfield(guiData, 'zoomIndicator') || ~ishandle(guiData.zoomIndicator)
         return;
     end
 
-    if ~isfield(guiData, 'focusedPolygonIndex')
+    if ~isfield(guiData, 'focusedQuadIndex')
         return;
     end
 
-    % Grid mode has no polygonHandles - nothing to indicate
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+    % Grid mode has no quadHandles - nothing to indicate
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         return;
     end
 
-    focusedIdx = guiData.focusedPolygonIndex;
+    focusedIdx = guiData.focusedQuadIndex;
 
     if focusedIdx == 0
         set(guiData.zoomIndicator, 'String', 'All');
     else
-        numPolygons = numel(guiData.polygonHandles);
-        set(guiData.zoomIndicator, 'String', sprintf('Polygon %d/%d', focusedIdx, numPolygons));
+        numQuads = numel(guiData.quadHandles);
+        set(guiData.zoomIndicator, 'String', sprintf('Quad %d/%d', focusedIdx, numQuads));
     end
 end
 
-function navigateToPrevPolygon(fig, cfg)
-    % Navigate to previous polygon (wrap from 1 to last)
+function navigateToPrevQuad(fig, cfg)
+    % Navigate to previous quad(wrap from 1 to last)
     guiData = get(fig, 'UserData');
 
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         return;
     end
 
-    numPolygons = numel(guiData.polygonHandles);
-    currentIdx = guiData.focusedPolygonIndex;
+    numQuads = numel(guiData.quadHandles);
+    currentIdx = guiData.focusedQuadIndex;
 
     if currentIdx <= 1
-        % Wrap to last polygon
-        newIdx = numPolygons;
+        % Wrap to last quad
+        newIdx = numQuads;
     else
         newIdx = currentIdx - 1;
     end
 
-    zoomToPolygon(fig, newIdx, cfg);
+    zoomToQuad(fig, newIdx, cfg);
 end
 
-function navigateToNextPolygon(fig, cfg)
-    % Navigate to next polygon (wrap from last to 1)
+function navigateToNextQuad(fig, cfg)
+    % Navigate to next quad(wrap from last to 1)
     guiData = get(fig, 'UserData');
 
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         return;
     end
 
-    numPolygons = numel(guiData.polygonHandles);
-    currentIdx = guiData.focusedPolygonIndex;
+    numQuads = numel(guiData.quadHandles);
+    currentIdx = guiData.focusedQuadIndex;
 
-    if currentIdx >= numPolygons || currentIdx == 0
-        % Wrap to first polygon
+    if currentIdx >= numQuads || currentIdx == 0
+        % Wrap to first quad
         newIdx = 1;
     else
         newIdx = currentIdx + 1;
     end
 
-    zoomToPolygon(fig, newIdx, cfg);
+    zoomToQuad(fig, newIdx, cfg);
 end
 
 function resetZoomEllipse(fig, cfg)
     % Reset zoom to fit all content for ellipse editing modes
-    % - ellipse_editing mode: fits all polygons
+    % - ellipse_editing mode: fits all quads
     % - ellipse_editing_grid mode: fits all ellipses
     guiData = get(fig, 'UserData');
 
-    % Clear polygon focus (if applicable)
-    if isfield(guiData, 'focusedPolygonIndex')
-        guiData.focusedPolygonIndex = 0;
+    % Clear quadfocus (if applicable)
+    if isfield(guiData, 'focusedQuadIndex')
+        guiData.focusedQuadIndex = 0;
         set(fig, 'UserData', guiData);
-        updatePolygonHighlight(fig, guiData, cfg);
-        updatePolygonIndicator(fig, guiData);
+        updateQuadHighlight(fig, guiData, cfg);
+        updateQuadIndicator(fig, guiData);
     end
 
     % Apply auto-zoom to fit all content
     applyAutoZoom(fig, guiData, cfg);
 end
 
-function zoomToPolygonCallback(~, fig, polygonIndex, cfg)
-    % Callback when polygon is clicked
-    zoomToPolygon(fig, polygonIndex, cfg);
+function zoomToQuadCallback(~, fig, quadIndex, cfg)
+    % Callback when quad is clicked
+    zoomToQuad(fig, quadIndex, cfg);
 end
 
 function axesClickCallback(~, ~, fig, cfg)
@@ -2392,28 +2392,28 @@ function axesClickCallback(~, ~, fig, cfg)
     if strcmp(get(fig, 'SelectionType'), 'open')  % Double-click
         guiData = get(fig, 'UserData');
         if strcmp(guiData.mode, 'ellipse_editing') || strcmp(guiData.mode, 'ellipse_editing_grid')
-            resetZoomEllipse(fig, cfg);  % Auto-zoom to fit all content (polygons or ellipses)
+            resetZoomEllipse(fig, cfg);  % Auto-zoom to fit all content (quads or ellipses)
         else
             resetZoom(fig, cfg);  % Reset to full image for other modes
         end
     end
 end
 
-function [xmin, xmax, ymin, ymax] = calculatePolygonHandlesBounds(guiData)
-    % Calculate bounding box containing all polygon handles (for ellipse editing mode)
+function [xmin, xmax, ymin, ymax] = calculateQuadHandlesBounds(guiData)
+    % Calculate bounding box containing all quadhandles (for ellipse editing mode)
     xmin = inf;
     xmax = -inf;
     ymin = inf;
     ymax = -inf;
 
-    if ~isfield(guiData, 'polygonHandles') || isempty(guiData.polygonHandles)
+    if ~isfield(guiData, 'quadHandles') || isempty(guiData.quadHandles)
         xmin = [];
         return;
     end
 
-    for i = 1:numel(guiData.polygonHandles)
-        if isvalid(guiData.polygonHandles{i})
-            pos = guiData.polygonHandles{i}.Position;
+    for i = 1:numel(guiData.quadHandles)
+        if isvalid(guiData.quadHandles{i})
+            pos = guiData.quadHandles{i}.Position;
             xmin = min(xmin, min(pos(:, 1)));
             xmax = max(xmax, max(pos(:, 1)));
             ymin = min(ymin, min(pos(:, 2)));
@@ -2476,11 +2476,11 @@ function [xmin, xmax, ymin, ymax] = calculateEllipseBounds(guiData)
     ymax = min(guiData.imageSize(1) + 0.5, ymax + ymargin);
 end
 
-function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, cfg)
-    % Convert polygons from rotated display coordinates back to original image coordinates
-    basePolygons = displayPolygons;
+function baseQuads = convertDisplayQuadsToBase(guiData, displayQuads, cfg)
+    % Convert quads from rotated display coordinates back to original image coordinates
+    baseQuads = displayQuads;
 
-    if isempty(displayPolygons)
+    if isempty(displayQuads)
         return;
     end
 
@@ -2505,12 +2505,12 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
     end
 
     if cfg.geomTform.isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [basePolygons, newSize] = cfg.geomTform.geom.rotatePolygonsDiscrete(displayPolygons, imageSize, -rotation);
+        [baseQuads, newSize] = cfg.geomTform.geom.rotateQuadsDiscrete(displayQuads, imageSize, -rotation);
 
         if isfield(guiData, 'baseImageSize') && ~isempty(guiData.baseImageSize)
             targetSize = guiData.baseImageSize(1:2);
             if any(newSize ~= targetSize)
-                basePolygons = scalePolygonsForImageSize(basePolygons, newSize, targetSize, cfg.numSquares);
+                baseQuads = scaleQuadsForImageSize(baseQuads, newSize, targetSize, cfg.numSquares);
             end
         end
         return;
@@ -2523,50 +2523,50 @@ function basePolygons = convertDisplayPolygonsToBase(guiData, displayPolygons, c
         targetSize = guiData.baseImageSize(1:2);
     end
 
-    numPolygons = size(displayPolygons, 1);
-    basePolygons = zeros(size(displayPolygons));
+    numQuads = size(displayQuads, 1);
+    baseQuads = zeros(size(displayQuads));
 
-    for i = 1:numPolygons
-        polyRot = squeeze(displayPolygons(i, :, :));
+    for i = 1:numQuads
+        polyRot = squeeze(displayQuads(i, :, :));
         % Clamp first to avoid NaNs during transform
-        polyRot = cfg.geomTform.geom.clampPolygonToImage(polyRot, rotatedSize);
+        polyRot = cfg.geomTform.geom.clampQuadToImage(polyRot, rotatedSize);
         polyBase = cfg.geomTform.geom.inverseRotatePoints(polyRot, rotatedSize, targetSize, rotation, cfg.rotation.angleTolerance);
-        basePolygons(i, :, :) = cfg.geomTform.geom.clampPolygonToImage(polyBase, targetSize);
+        baseQuads(i, :, :) = cfg.geomTform.geom.clampQuadToImage(polyBase, targetSize);
     end
 end
 
-function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageSize, displayImageSize, rotation, cfg)
-    displayPolygons = basePolygons;
-    if isempty(basePolygons)
+function displayQuads = convertBaseQuadsToDisplay(baseQuads, baseImageSize, displayImageSize, rotation, cfg)
+    displayQuads = baseQuads;
+    if isempty(baseQuads)
         return;
     end
 
     if rotation == 0
-        rotatedPolygons = basePolygons;
+        rotatedQuads = baseQuads;
         rotatedSize = baseImageSize;
     elseif cfg.geomTform.isMultipleOfNinety(rotation, cfg.rotation.angleTolerance)
-        [rotatedPolygons, rotatedSize] = cfg.geomTform.geom.rotatePolygonsDiscrete(basePolygons, baseImageSize, rotation);
+        [rotatedQuads, rotatedSize] = cfg.geomTform.geom.rotateQuadsDiscrete(baseQuads, baseImageSize, rotation);
     else
         % General-angle forward rotation: geometrically apply the imrotate transform
         originalSize = baseImageSize(1:2);
         rotatedSize = displayImageSize(1:2);
 
-        numPolygons = size(basePolygons, 1);
-        rotatedPolygons = zeros(size(basePolygons));
+        numQuads = size(baseQuads, 1);
+        rotatedQuads = zeros(size(baseQuads));
 
-        for i = 1:numPolygons
-            polyBase = squeeze(basePolygons(i, :, :));
-            polyBase = cfg.geomTform.geom.clampPolygonToImage(polyBase, originalSize);
+        for i = 1:numQuads
+            polyBase = squeeze(baseQuads(i, :, :));
+            polyBase = cfg.geomTform.geom.clampQuadToImage(polyBase, originalSize);
             polyRot = cfg.geomTform.geom.forwardRotatePoints(polyBase, originalSize, rotatedSize, rotation, cfg.rotation.angleTolerance);
-            rotatedPolygons(i, :, :) = cfg.geomTform.geom.clampPolygonToImage(polyRot, rotatedSize);
+            rotatedQuads(i, :, :) = cfg.geomTform.geom.clampQuadToImage(polyRot, rotatedSize);
         end
     end
 
     targetSize = displayImageSize(1:2);
     if any(rotatedSize ~= targetSize)
-        displayPolygons = scalePolygonsForImageSize(rotatedPolygons, rotatedSize, targetSize, size(basePolygons, 1));
+        displayQuads = scaleQuadsForImageSize(rotatedQuads, rotatedSize, targetSize, size(baseQuads, 1));
     else
-        displayPolygons = rotatedPolygons;
+        displayQuads = rotatedQuads;
     end
 end
 
@@ -2629,9 +2629,9 @@ function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSi
     displayEllipses(:, 7) = mod(ellipseData(:, 7) + rotation + 180, 360) - 180;
 end
 
-function updatePolygonLabelsCallback(polygon, varargin)
+function updateQuadLabelsCallback(quad, varargin)
     % Callback for ROIMoved event to keep labels/colors ordered along dominant axis
-    fig = ancestor(polygon, 'figure');
+    fig = ancestor(quad, 'figure');
     if isempty(fig) || ~ishandle(fig) || ~strcmp(get(fig, 'Type'), 'figure')
         return;
     end
@@ -2645,36 +2645,36 @@ function updatePolygonLabelsCallback(polygon, varargin)
     set(fig, 'UserData', guiData);
 end
 
-function [polygons, order, orientation] = assignPolygonLabels(polygons)
+function [quads, order, orientation] = assignQuadLabels(quads)
     % Reorder drawpolygon handles so con_0..con_N follow low→high concentration order.
     % Ordering direction matches the dominant layout axis: horizontal strips
     % sort left→right, vertical strips sort bottom→top.
     %
     % Returns:
-    %   polygons    - Reordered cell array of polygon handles
+    %   quads    - Reordered cell array of quadhandles
     %   order       - Permutation indices used for reordering
     %   orientation - 'horizontal' or 'vertical' based on layout
     order = [];
     orientation = 'horizontal';  % Default
 
-    if isempty(polygons) || ~iscell(polygons)
+    if isempty(quads) || ~iscell(quads)
         return;
     end
 
-    numPolygons = numel(polygons);
-    centroids = nan(numPolygons, 2);
-    minXs = nan(numPolygons, 1);
-    maxXs = nan(numPolygons, 1);
-    minYs = nan(numPolygons, 1);
-    maxYs = nan(numPolygons, 1);
-    validMask = false(numPolygons, 1);
+    numQuads = numel(quads);
+    centroids = nan(numQuads, 2);
+    minXs = nan(numQuads, 1);
+    maxXs = nan(numQuads, 1);
+    minYs = nan(numQuads, 1);
+    maxYs = nan(numQuads, 1);
+    validMask = false(numQuads, 1);
 
-    for i = 1:numPolygons
-        if ~isvalid(polygons{i})
+    for i = 1:numQuads
+        if ~isvalid(quads{i})
             continue;
         end
 
-        pos = polygons{i}.Position;
+        pos = quads{i}.Position;
         centroids(i, 1) = mean(pos(:, 1));
         centroids(i, 2) = mean(pos(:, 2));
         minXs(i) = min(pos(:, 1));
@@ -2728,7 +2728,7 @@ function [polygons, order, orientation] = assignPolygonLabels(polygons)
         countY = 0;
     end
 
-    sortKey = inf(numPolygons, 2);
+    sortKey = inf(numQuads, 2);
     if countX >= countY
         % Horizontal dominance: prioritize left→right, break ties bottom→top
         orientation = 'horizontal';
@@ -2742,7 +2742,7 @@ function [polygons, order, orientation] = assignPolygonLabels(polygons)
     end
 
     [~, order] = sortrows(sortKey);
-    polygons = polygons(order);
+    quads = quads(order);
 end
 
 function guiData = enforceConcentrationOrdering(guiData)
@@ -2750,7 +2750,7 @@ function guiData = enforceConcentrationOrdering(guiData)
     if nargin < 1 || isempty(guiData) || ~isstruct(guiData)
         return;
     end
-    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons) || isempty(guiData.polygons)
+    if ~isfield(guiData, 'quads') || ~iscell(guiData.quads) || isempty(guiData.quads)
         return;
     end
     if ~isfield(guiData, 'cfg') || ~isfield(guiData.cfg, 'micropadUI')
@@ -2758,80 +2758,80 @@ function guiData = enforceConcentrationOrdering(guiData)
     end
     ui = guiData.cfg.micropadUI;
 
-    [sortedPolygons, order, newOrientation] = assignPolygonLabels(guiData.polygons);
+    [sortedQuads, order, newOrientation] = assignQuadLabels(guiData.quads);
     guiData.orientation = newOrientation;  % Always update orientation based on current layout
-    numPolygons = numel(guiData.polygons);
-    needsReindex = ~isempty(order) && numel(order) == numPolygons && ...
-                   ~isequal(order(:).', 1:numPolygons);
+    numQuads = numel(guiData.quads);
+    needsReindex = ~isempty(order) && numel(order) == numQuads && ...
+                   ~isequal(order(:).', 1:numQuads);
     if needsReindex
-        guiData.polygons = sortedPolygons;
+        guiData.quads = sortedQuads;
     end
 
-    hasLabels = isfield(guiData, 'polygonLabels') && iscell(guiData.polygonLabels) && ...
-                ~isempty(guiData.polygonLabels);
+    hasLabels = isfield(guiData, 'quadLabels') && iscell(guiData.quadLabels) && ...
+                ~isempty(guiData.quadLabels);
     if hasLabels
-        labelCount = numel(guiData.polygonLabels);
-        if needsReindex && labelCount >= numPolygons
-            guiData.polygonLabels = guiData.polygonLabels(order);
+        labelCount = numel(guiData.quadLabels);
+        if needsReindex && labelCount >= numQuads
+            guiData.quadLabels = guiData.quadLabels(order);
         end
 
-        for idx = 1:min(numPolygons, labelCount)
-            labelHandle = guiData.polygonLabels{idx};
+        for idx = 1:min(numQuads, labelCount)
+            labelHandle = guiData.quadLabels{idx};
             if isvalid(labelHandle)
                 set(labelHandle, 'String', sprintf('con_%d', idx - 1));
             end
         end
 
-        ui.updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
+        ui.updateQuadLabels(guiData.quads, guiData.quadLabels);
     end
 
     if needsReindex
-        totalForColor = max(numPolygons, 1);
-        for idx = 1:numPolygons
-            polyHandle = guiData.polygons{idx};
+        totalForColor = max(numQuads, 1);
+        for idx = 1:numQuads
+            polyHandle = guiData.quads{idx};
             if isvalid(polyHandle)
                 gradColor = ui.getConcentrationColor(idx - 1, totalForColor);
-                ui.setPolygonColor(polyHandle, gradColor, 0.25);
+                ui.setQuadColor(polyHandle, gradColor, 0.25);
             end
         end
     end
 
     if needsReindex || ~isfield(guiData, 'aiBaseColors') || isempty(guiData.aiBaseColors)
-        guiData.aiBaseColors = ui.capturePolygonColors(guiData.polygons);
+        guiData.aiBaseColors = ui.captureQuadColors(guiData.quads);
     end
 end
 
-function [sortedPolygons, orientation] = sortPolygonArrayByX(polygons)
-    % Determine polygon ordering based on dominant axis coverage.
+function [sortedQuads, orientation] = sortQuadArrayByX(quads)
+    % Determine quad ordering based on dominant axis coverage.
     % Primary ordering follows the axis with the greater spread-to-size ratio:
     %   - Horizontal layouts: left-to-right (primary), bottom-to-top (secondary)
     %   - Vertical layouts: bottom-to-top (primary), left-to-right (secondary)
     %
     % Returns:
-    %   sortedPolygons - Polygons sorted by dominant axis
+    %   sortedQuads - Quads sorted by dominant axis
     %   orientation    - 'horizontal' or 'vertical' based on layout
-    sortedPolygons = polygons;
+    sortedQuads = quads;
     orientation = 'horizontal';  % Default
-    if isempty(polygons)
+    if isempty(quads)
         return;
     end
-    if ndims(polygons) ~= 3
-        return;
-    end
-
-    numPolygons = size(polygons, 1);
-    if numPolygons == 0
+    if ndims(quads) ~= 3
         return;
     end
 
-    centroids = nan(numPolygons, 2);
-    minXs = nan(numPolygons, 1);
-    maxXs = nan(numPolygons, 1);
-    minYs = nan(numPolygons, 1);
-    maxYs = nan(numPolygons, 1);
+    numQuads = size(quads, 1);
+    if numQuads == 0
+        return;
+    end
 
-    for i = 1:numPolygons
-        poly = squeeze(polygons(i, :, :));
+    centroids = nan(numQuads, 2);
+    minXs = nan(numQuads, 1);
+    maxXs = nan(numQuads, 1);
+    minYs = nan(numQuads, 1);
+    maxYs = nan(numQuads, 1);
+
+    for i = 1:numQuads
+        poly = squeeze(quads(i, :, :));
         if isempty(poly)
             continue;
         end
@@ -2893,7 +2893,7 @@ function [sortedPolygons, orientation] = sortPolygonArrayByX(polygons)
         countY = 0;
     end
 
-    sortKey = inf(numPolygons, 2);
+    sortKey = inf(numQuads, 2);
 
     if countX >= countY
         % Horizontal dominance: prioritize left→right, then bottom→top
@@ -2908,7 +2908,7 @@ function [sortedPolygons, orientation] = sortPolygonArrayByX(polygons)
     end
 
     [~, order] = sortrows(sortKey);
-    sortedPolygons = polygons(order, :, :);
+    sortedQuads = quads(order, :, :);
 end
 
 %% -------------------------------------------------------------------------
@@ -2940,7 +2940,7 @@ function stopExecution(fig)
 end
 
 function rerunAIDetection(fig, cfg)
-    % Re-run AI detection and replace current polygons with fresh detections
+    % Re-run AI detection and replace current quads with fresh detections
     guiData = get(fig, 'UserData');
 
     if ~strcmp(guiData.mode, 'editing')
@@ -2979,11 +2979,11 @@ function keyPressHandler(src, event)
     end
 end
 
-function [action, polygonParams, rotation] = waitForUserAction(fig)
+function [action, quadParams, rotation] = waitForUserAction(fig)
     uiwait(fig);
 
     action = '';
-    polygonParams = [];
+    quadParams = [];
     rotation = 0;
 
     if isvalid(fig)
@@ -2992,32 +2992,32 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
 
         if strcmp(action, 'accept')
             if strcmp(guiData.mode, 'preview')
-                polygonParams = guiData.savedPolygonParams;
+                quadParams = guiData.savedQuadParams;
                 if isfield(guiData, 'savedRotation')
                     rotation = guiData.savedRotation;
                 end
             elseif strcmp(guiData.mode, 'editing')
                 guiData = enforceConcentrationOrdering(guiData);
                 set(fig, 'UserData', guiData);
-                polygonParams = extractPolygonParameters(guiData);
-                if isempty(polygonParams)
+                quadParams = extractQuadParameters(guiData);
+                if isempty(quadParams)
                     action = 'skip';
                 else
                     rotation = guiData.totalRotation;
                 end
             elseif strcmp(guiData.mode, 'ellipse_editing')
                 % Get all ellipse data at once
-                numConcentrations = size(guiData.polygons, 1);
+                numConcentrations = size(guiData.quads, 1);
                 numReplicates = guiData.cfg.ellipse.replicatesPerMicropad;
                 totalEllipses = numConcentrations * numReplicates;
                 boundsPerConcentration = cell(numConcentrations, 1);
-                polygonSetForBounds = guiData.polygons;
-                if isfield(guiData, 'displayPolygons') && ~isempty(guiData.displayPolygons)
-                    polygonSetForBounds = guiData.displayPolygons;
+                quadSetForBounds = guiData.quads;
+                if isfield(guiData, 'displayQuads') && ~isempty(guiData.displayQuads)
+                    quadSetForBounds = guiData.displayQuads;
                 end
                 for concIdx = 1:numConcentrations
-                    currentPolygon = squeeze(polygonSetForBounds(concIdx, :, :));
-                    boundsPerConcentration{concIdx} = guiData.cfg.geomTform.geom.computeEllipseAxisBounds(currentPolygon, guiData.imageSize, guiData.cfg);
+                    currentQuad = squeeze(quadSetForBounds(concIdx, :, :));
+                    boundsPerConcentration{concIdx} = guiData.cfg.geomTform.geom.computeEllipseAxisBounds(currentQuad, guiData.imageSize, guiData.cfg);
                 end
 
                 ellipseData = zeros(totalEllipses, 7);
@@ -3062,10 +3062,10 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 end
 
                 % Return Nx7 matrix instead of cell array
-                polygonParams = ellipseData;
+                quadParams = ellipseData;
                 rotation = guiData.rotation;
             elseif strcmp(guiData.mode, 'ellipse_editing_grid')
-                % Mode 3: Ellipse-only with grid layout (no polygons)
+                % Mode 3: Ellipse-only with grid layout (no quads)
                 numGroups = guiData.cfg.numSquares;
                 numReplicates = guiData.cfg.ellipse.replicatesPerMicropad;
                 totalEllipses = numGroups * numReplicates;
@@ -3114,11 +3114,11 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
                 guiData.ellipseData = ellipseData;
                 set(fig, 'UserData', guiData);
 
-                polygonParams = []; % No polygons in grid mode
+                quadParams = []; % No quads in grid mode
                 rotation = guiData.rotation;
             elseif strcmp(guiData.mode, 'preview_readonly')
                 % Mode 4: Read-only preview, no outputs needed
-                polygonParams = [];
+                quadParams = [];
                 rotation = 0;
             end
         elseif strcmp(action, 'back')
@@ -3130,28 +3130,28 @@ function [action, polygonParams, rotation] = waitForUserAction(fig)
     end
 end
 
-function polygonParams = extractPolygonParameters(guiData)
-    polygonParams = [];
+function quadParams = extractQuadParameters(guiData)
+    quadParams = [];
 
-    if ~isfield(guiData, 'polygons') || ~iscell(guiData.polygons)
+    if ~isfield(guiData, 'quads') || ~iscell(guiData.quads)
         return;
     end
 
-    validMask = cellfun(@isvalid, guiData.polygons);
+    validMask = cellfun(@isvalid, guiData.quads);
     if ~any(validMask)
         return;
     end
 
-    validPolygons = guiData.polygons(validMask);
-    keptPositions = cell(1, numel(validPolygons));
+    validQuads = guiData.quads(validMask);
+    keptPositions = cell(1, numel(validQuads));
 
     keepIdx = 0;
-    for i = 1:numel(validPolygons)
-        pos = validPolygons{i}.Position;
+    for i = 1:numel(validQuads)
+        pos = validQuads{i}.Position;
 
         if isempty(pos) || size(pos, 1) < 4
-            warning('cut_micropads:invalid_polygon', ...
-                    'Polygon %d is missing vertices. Ignoring this polygon for extraction.', i);
+            warning('cut_micropads:invalid_quad', ...
+                    'Quad %d is missing vertices. Ignoring this quad for extraction.', i);
             continue;
         end
 
@@ -3160,25 +3160,25 @@ function polygonParams = extractPolygonParameters(guiData)
     end
 
     if keepIdx == 0
-        polygonParams = [];
+        quadParams = [];
         return;
     end
 
-    polygonParams = zeros(keepIdx, 4, 2);
+    quadParams = zeros(keepIdx, 4, 2);
     for i = 1:keepIdx
-        polygonParams(i, :, :) = keptPositions{i};
+        quadParams(i, :, :) = keptPositions{i};
     end
 
-    [polygonParams, ~] = sortPolygonArrayByX(polygonParams);
+    [quadParams, ~] = sortQuadArrayByX(quadParams);
 end
 
 %% -------------------------------------------------------------------------
 %% Image Cropping and Coordinate Saving (delegating wrappers to file_io_manager)
 %% -------------------------------------------------------------------------
 
-function [polygonParams, found] = loadPolygonCoordinates(coordFile, imageName, numExpected)
+function [quadParams, found] = loadQuadCoordinates(coordFile, imageName, numExpected)
     fileIO = file_io_manager();
-    [polygonParams, found] = fileIO.loadPolygonCoordinates(coordFile, imageName, numExpected);
+    [quadParams, found] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
 end
 
 function [ellipseData, found] = loadEllipseCoordinates(coordFile, imageName)
@@ -3256,9 +3256,9 @@ end
 %% File I/O Utilities (delegating wrappers to file_io_manager)
 %% -------------------------------------------------------------------------
 
-function outputDirs = createOutputDirectory(basePathPolygons, basePathEllipses, phoneName, numConcentrations, concFolderPrefix)
+function outputDirs = createOutputDirectory(basePathQuads, basePathEllipses, phoneName, numConcentrations, concFolderPrefix)
     fileIO = file_io_manager();
-    outputDirs = fileIO.createOutputDirectory(basePathPolygons, basePathEllipses, phoneName, numConcentrations, concFolderPrefix);
+    outputDirs = fileIO.createOutputDirectory(basePathQuads, basePathEllipses, phoneName, numConcentrations, concFolderPrefix);
 end
 
 function files = getImageFiles(dirPath, extensions)
@@ -3274,7 +3274,7 @@ function memory = initializeMemory()
     % Initialize empty memory structure
     memory = struct();
     memory.hasSettings = false;
-    memory.basePolygons = [];     % Base (unrotated) coordinates
+    memory.baseQuads = [];     % Base (unrotated) coordinates
     memory.rotation = 0;          % Image rotation angle
     memory.baseImageSize = [];    % Base image dimensions [height, width]
     memory.ellipses = {};         % Cell array indexed by concentration (0-based)
@@ -3282,11 +3282,11 @@ function memory = initializeMemory()
     memory.orientation = 'horizontal';  % Layout orientation: 'horizontal' or 'vertical'
 end
 
-function memory = updateMemory(memory, basePolygons, rotation, baseImageSize, ellipseData, cfg, orientation)
-    % Update memory with base (unrotated) polygon coordinates and rotation
+function memory = updateMemory(memory, baseQuads, rotation, baseImageSize, ellipseData, cfg, orientation)
+    % Update memory with base (unrotated) quad coordinates and rotation
     % When loading, we scale base→base then apply rotation to get display coords
     memory.hasSettings = true;
-    memory.basePolygons = basePolygons;
+    memory.baseQuads = baseQuads;
     memory.rotation = rotation;
     memory.baseImageSize = baseImageSize;
 
@@ -3295,11 +3295,11 @@ function memory = updateMemory(memory, basePolygons, rotation, baseImageSize, el
         memory.orientation = orientation;
     end
 
-    % Compute display polygons for ellipse scaling (needs display coordinates)
-    if ~isempty(basePolygons)
+    % Compute display quads for ellipse scaling (needs display coordinates)
+    if ~isempty(baseQuads)
         displayImageSize = computeDisplayImageSize(baseImageSize, rotation, cfg);
-        displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageSize, displayImageSize, rotation, cfg);
-        memory.polygons = displayPolygons;
+        displayQuads = convertBaseQuadsToDisplay(baseQuads, baseImageSize, displayImageSize, rotation, cfg);
+        memory.quads = displayQuads;
     end
 
     % Store ellipse data if provided
@@ -3319,24 +3319,24 @@ function memory = updateMemory(memory, basePolygons, rotation, baseImageSize, el
     end
 end
 
-function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img, cfg, memory, imageSize)
-    % Get initial polygons and rotation with progressive AI detection workflow
+function [initialQuads, rotation, source] = getInitialQuadsWithMemory(img, cfg, memory, imageSize)
+    % Get initial quads and rotation with progressive AI detection workflow
     % Priority: memory (if available) -> default -> AI updates later
     %
-    % Memory stores base (unrotated) polygons. We:
-    % 1. Scale base polygons from old base size to new base size
+    % Memory stores base (unrotated) quads. We:
+    % 1. Scale base quads from old base size to new base size
     % 2. Apply rotation to convert to display coordinates
 
     % Check memory FIRST (even when AI is enabled)
-    if memory.hasSettings && ~isempty(memory.basePolygons) && ~isempty(memory.baseImageSize)
-        % Scale base polygons from old base size to new base size
-        scaledBasePolygons = scalePolygonsForImageSize(memory.basePolygons, memory.baseImageSize, imageSize, cfg.numSquares);
+    if memory.hasSettings && ~isempty(memory.baseQuads) && ~isempty(memory.baseImageSize)
+        % Scale base quads from old base size to new base size
+        scaledBaseQuads = scaleQuadsForImageSize(memory.baseQuads, memory.baseImageSize, imageSize, cfg.numSquares);
 
-        % If polygon count mismatch, fall back to default geometry
-        if isempty(scaledBasePolygons)
-            fprintf('  Memory polygon count mismatch - using default geometry\n');
+        % If quadcount mismatch, fall back to default geometry
+        if isempty(scaledBaseQuads)
+            fprintf('  Memory quadcount mismatch - using default geometry\n');
             [imageHeight, imageWidth, ~] = size(img);
-            initialPolygons = cfg.geomTform.geom.calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+            initialQuads = cfg.geomTform.geom.calculateDefaultQuads(imageWidth, imageHeight, cfg);
             rotation = 0;
             source = 'default';
             return;
@@ -3344,10 +3344,10 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
 
         % Apply stored rotation to convert base→display coordinates
         displaySize = computeDisplayImageSize(imageSize, memory.rotation, cfg);
-        initialPolygons = convertBasePolygonsToDisplay(scaledBasePolygons, imageSize, displaySize, memory.rotation, cfg);
+        initialQuads = convertBaseQuadsToDisplay(scaledBaseQuads, imageSize, displaySize, memory.rotation, cfg);
 
         rotation = memory.rotation;
-        fprintf('  Using polygon shapes and rotation from memory (AI will update if enabled)\n');
+        fprintf('  Using quadshapes and rotation from memory (AI will update if enabled)\n');
         source = 'memory';
         return;
     end
@@ -3355,34 +3355,34 @@ function [initialPolygons, rotation, source] = getInitialPolygonsWithMemory(img,
     % No memory available: use default geometry for immediate display
     [imageHeight, imageWidth, ~] = size(img);
     fprintf('  Using default geometry (AI will update if enabled)\n');
-    initialPolygons = cfg.geomTform.geom.calculateDefaultPolygons(imageWidth, imageHeight, cfg);
+    initialQuads = cfg.geomTform.geom.calculateDefaultQuads(imageWidth, imageHeight, cfg);
     rotation = 0;
     source = 'default';
 
     % NOTE: AI detection will run asynchronously after GUI displays
 end
 
-function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, expectedCount)
-    % Scale polygon coordinates when image dimensions change
+function scaledQuads = scaleQuadsForImageSize(quads, oldSize, newSize, expectedCount)
+    % Scale quad coordinates when image dimensions change
     %
     % Inputs:
-    %   polygons - [N x 4 x 2] array of polygon vertices
+    %   quads - [N x 4 x 2] array of quadvertices
     %   oldSize - [height, width] of previous image
     %   newSize - [height, width] of current image
-    %   expectedCount - expected number of polygons (optional)
+    %   expectedCount - expected number of quads (optional)
     %
-    % Returns empty if polygon count doesn't match expectedCount
+    % Returns empty if quadcount doesn't match expectedCount
 
     if isempty(oldSize) || any(oldSize <= 0) || isempty(newSize) || any(newSize <= 0)
         error('cut_micropads:invalid_dimensions', ...
-            'Cannot scale polygons: invalid dimensions [%d %d] -> [%d %d]', ...
+            'Cannot scale quads: invalid dimensions [%d %d] -> [%d %d]', ...
             oldSize(1), oldSize(2), newSize(1), newSize(2));
     end
 
-    % Validate polygon count if expectedCount is provided
-    numPolygons = size(polygons, 1);
-    if nargin >= 4 && ~isempty(expectedCount) && numPolygons ~= expectedCount
-        scaledPolygons = [];
+    % Validate quadcount if expectedCount is provided
+    numQuads = size(quads, 1);
+    if nargin >= 4 && ~isempty(expectedCount) && numQuads ~= expectedCount
+        scaledQuads = [];
         return;
     end
 
@@ -3392,29 +3392,29 @@ function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, 
     newWidth = newSize(2);
 
     if oldHeight == newHeight && oldWidth == newWidth
-        scaledPolygons = polygons;
+        scaledQuads = quads;
         return;
     end
 
     scaleX = newWidth / oldWidth;
     scaleY = newHeight / oldHeight;
 
-    scaledPolygons = zeros(size(polygons));
+    scaledQuads = zeros(size(quads));
 
-    for i = 1:numPolygons
-        poly = squeeze(polygons(i, :, :));
+    for i = 1:numQuads
+        poly = squeeze(quads(i, :, :));
         poly(:, 1) = poly(:, 1) * scaleX;
         poly(:, 2) = poly(:, 2) * scaleY;
         poly(:, 1) = max(1, min(poly(:, 1), newWidth));
         poly(:, 2) = max(1, min(poly(:, 2), newHeight));
-        scaledPolygons(i, :, :) = poly;
+        scaledQuads(i, :, :) = poly;
     end
 end
 
 
 
 function runDeferredAIDetection(fig, cfg)
-    % Run AI detection asynchronously and update polygons when complete
+    % Run AI detection asynchronously and update quads when complete
     %
     % Called via timer after GUI is fully rendered
 
@@ -3487,7 +3487,7 @@ function runDeferredAIDetection(fig, cfg)
 end
 
 function pollDetectionStatus(fig, cfg)
-    % Poll for async detection completion and update polygons when ready
+    % Poll for async detection completion and update quads when ready
     %
     % Called by polling timer every 100ms
 
@@ -3530,7 +3530,7 @@ function pollDetectionStatus(fig, cfg)
         fprintf('  AI detection failed: %s\n', errorMsg);
     end
 
-    % Detection finished - update polygons if successful
+    % Detection finished - update quads if successful
     detectionSucceeded = false;
 
     if ~isempty(quads)
@@ -3566,15 +3566,15 @@ function pollDetectionStatus(fig, cfg)
 
             % Transform base-frame detections to current display frame
             % AI worked on baseImg, so quads are in base frame - rotate forward to match display
-            [newPolygons, ~] = cfg.geomTform.geom.rotatePolygonsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
+            [newQuads, ~] = cfg.geomTform.geom.rotateQuadsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
             
             % Sort by display-frame X coordinate for consistent labeling
-            [newPolygons, newOrientation] = sortPolygonArrayByX(newPolygons);
+            [newQuads, newOrientation] = sortQuadArrayByX(newQuads);
             guiData.orientation = newOrientation;  % Update orientation based on AI detection
 
-            % Apply detected polygons with race condition guard
+            % Apply detected quads with race condition guard
             try
-                guiData = applyDetectedPolygons(guiData, newPolygons, cfg, fig);
+                guiData = applyDetectedQuads(guiData, newQuads, cfg, fig);
                 detectionSucceeded = true;
 
                 fprintf('  AI detection complete: %d regions (avg confidence: %.2f)\n', ...
@@ -3595,7 +3595,7 @@ function pollDetectionStatus(fig, cfg)
         fprintf('  AI detection found no regions - keeping initial positions\n');
     end
 
-    % Re-check figure validity after polygon update (race condition guard)
+    % Re-check figure validity after quadupdate (race condition guard)
     if ~ishandle(fig) || ~isvalid(fig)
         return;
     end
@@ -3603,7 +3603,7 @@ function pollDetectionStatus(fig, cfg)
     % Clear cached zoom bounds after detection (with race condition guard)
     try
         if isvalid(fig)
-            % Force recalculation of zoom bounds from current polygon state
+            % Force recalculation of zoom bounds from current quadstate
             guiData.autoZoomBounds = [];
 
             % Save state to figure
@@ -3631,7 +3631,7 @@ function cleanupAsyncDetection(fig, guiData, success, cfg)
     % Inputs:
     %   fig - figure handle
     %   guiData - GUI data structure (may be modified)
-    %   success - true if detection succeeded and polygons updated
+    %   success - true if detection succeeded and quads updated
     %   cfg - configuration struct (for auto-zoom)
 
     % Stop and delete polling timer
@@ -3706,22 +3706,22 @@ function cancelActiveDetection(fig, guiData, cfg)
     cleanupAsyncDetection(fig, guiData, false, cfg);
 end
 
-function updatePolygonPositions(polygonHandles, newPositions, labelHandles, ui)
+function updateQuadPositions(quadHandles, newPositions, labelHandles, ui)
     % Update drawpolygon positions smoothly without recreating objects
     %
     % Inputs:
-    %   polygonHandles - cell array of drawpolygon objects
-    %   newPositions - [N x 4 x 2] array of new polygon positions
+    %   quadHandles - cell array of drawpolygon objects
+    %   newPositions - [N x 4 x 2] array of new quad positions
     %   labelHandles - cell array of text objects (optional)
 
-    n = numel(polygonHandles);
+    n = numel(quadHandles);
     if size(newPositions, 1) ~= n
-        warning('Polygon count mismatch: %d handles vs %d positions', n, size(newPositions, 1));
+        warning('Quad count mismatch: %d handles vs %d positions', n, size(newPositions, 1));
         return;
     end
 
     for i = 1:n
-        poly = polygonHandles{i};
+        poly = quadHandles{i};
         if ~isvalid(poly)
             continue;
         end
@@ -3736,10 +3736,10 @@ function updatePolygonPositions(polygonHandles, newPositions, labelHandles, ui)
         setappdata(poly, 'LastValidPosition', newPos);
     end
 
-    % NEW: Update labels after polygon positions change
+    % NEW: Update labels after quad positions change
     if nargin >= 3 && ~isempty(labelHandles)
         if nargin >= 4 && ~isempty(ui)
-            ui.updatePolygonLabels(polygonHandles, labelHandles);
+            ui.updateQuadLabels(quadHandles, labelHandles);
         end
     end
 

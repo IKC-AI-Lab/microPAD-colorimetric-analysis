@@ -12,8 +12,8 @@ function fileIO = file_io_manager()
     %
     % Usage:
     %   fileIO = file_io_manager();
-    %   fileIO.appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, cfg, rotation);
-    %   [polygonParams, found] = fileIO.loadPolygonCoordinates(coordFile, imageName, numExpected);
+    %   fileIO.appendQuadCoordinates(phoneOutputDir, baseName, concentration, quad, cfg, rotation);
+    %   [quadParams, found] = fileIO.loadQuadCoordinates(coordFile, imageName, numExpected);
     %
     % See also: coordinate_io, cut_micropads
 
@@ -22,9 +22,9 @@ function fileIO = file_io_manager()
 
     %% Public API
     % Coordinate I/O (delegated to coordinate_io.m)
-    fileIO.appendPolygonCoordinates = @(varargin) appendPolygonCoordinatesWrapper(coordIO, varargin{:});
+    fileIO.appendQuadCoordinates = @(varargin) appendQuadCoordinatesWrapper(coordIO, varargin{:});
     fileIO.appendEllipseCoordinates = @(varargin) appendEllipseCoordinatesWrapper(coordIO, varargin{:});
-    fileIO.loadPolygonCoordinates = coordIO.loadPolygonCoordinates;
+    fileIO.loadQuadCoordinates = coordIO.loadQuadCoordinates;
     fileIO.loadEllipseCoordinates = coordIO.loadEllipseCoordinates;
     fileIO.readExistingCoordinates = coordIO.readExistingCoordinates;
     fileIO.filterConflictingEntries = coordIO.filterConflictingEntries;
@@ -34,7 +34,7 @@ function fileIO = file_io_manager()
     fileIO.saveCroppedRegions = @saveCroppedRegions;
     fileIO.saveEllipseData = @saveEllipseData;
     fileIO.saveEllipticalPatches = @saveEllipticalPatches;
-    fileIO.cropImageWithPolygon = @cropImageWithPolygon;
+    fileIO.cropImageWithQuad = @cropImageWithQuad;
     fileIO.saveImageWithFormat = @saveImageWithFormat;
 
     % Directory management
@@ -46,7 +46,7 @@ end
 %% COORDINATE I/O WRAPPERS (delegate to coordinate_io.m)
 %% =========================================================================
 
-function appendPolygonCoordinatesWrapper(coordIO, phoneOutputDir, baseName, concentration, polygon, cfg, rotation)
+function appendQuadCoordinatesWrapper(coordIO, phoneOutputDir, baseName, concentration, quad, cfg, rotation)
     % Wrapper that extracts coordinateFileName from cfg and delegates to coordinate_io
     %
     % This wrapper exists because cut_micropads.m passes a cfg struct with
@@ -58,7 +58,7 @@ function appendPolygonCoordinatesWrapper(coordIO, phoneOutputDir, baseName, conc
         coordinateFileName = 'coordinates.txt';
     end
 
-    coordIO.appendPolygonCoordinates(phoneOutputDir, baseName, concentration, polygon, rotation, coordinateFileName);
+    coordIO.appendQuadCoordinates(phoneOutputDir, baseName, concentration, quad, rotation, coordinateFileName);
 end
 
 function appendEllipseCoordinatesWrapper(coordIO, phoneOutputDir, baseName, ellipseData, cfg)
@@ -80,16 +80,16 @@ end
 %% IMAGE SAVING - CROPPED REGIONS
 %% =========================================================================
 
-function saveCroppedRegions(img, imageName, polygons, outputDir, cfg, rotation, fileIOMgr)
+function saveCroppedRegions(img, imageName, quads, outputDir, cfg, rotation, fileIOMgr)
     [~, baseName, ~] = fileparts(imageName);
     outExt = '.png';
 
-    numRegions = size(polygons, 1);
+    numRegions = size(quads, 1);
 
     for concentration = 0:(numRegions - 1)
-        polygon = squeeze(polygons(concentration + 1, :, :));
+        quad = squeeze(quads(concentration + 1, :, :));
 
-        croppedImg = cropImageWithPolygon(img, polygon);
+        croppedImg = cropImageWithQuad(img, quad);
 
         concFolder = sprintf('%s%d', cfg.concFolderPrefix, concentration);
         concPath = fullfile(outputDir, concFolder);
@@ -101,7 +101,7 @@ function saveCroppedRegions(img, imageName, polygons, outputDir, cfg, rotation, 
 
         if cfg.output.saveCoordinates
             if nargin >= 7 && ~isempty(fileIOMgr)
-                fileIOMgr.appendPolygonCoordinates(outputDir, baseName, concentration, polygon, cfg, rotation);
+                fileIOMgr.appendQuadCoordinates(outputDir, baseName, concentration, quad, cfg, rotation);
             else
                 % Fallback: load coordinate_io directly
                 coordIO = coordinate_io();
@@ -109,7 +109,7 @@ function saveCroppedRegions(img, imageName, polygons, outputDir, cfg, rotation, 
                 if isfield(cfg, 'coordinateFileName')
                     coordinateFileName = cfg.coordinateFileName;
                 end
-                coordIO.appendPolygonCoordinates(outputDir, baseName, concentration, polygon, rotation, coordinateFileName);
+                coordIO.appendQuadCoordinates(outputDir, baseName, concentration, quad, rotation, coordinateFileName);
             end
         end
     end
@@ -216,20 +216,20 @@ end
 %% IMAGE SAVING - UTILITIES
 %% =========================================================================
 
-function croppedImg = cropImageWithPolygon(img, polygonVertices)
-    % Crop image to polygon region with mask applied
+function croppedImg = cropImageWithQuad(img, quadVertices)
+    % Crop image to quadrilateral region with mask applied
     %
-    % Delegates to mask_utils.cropWithPolygonMask for consistent masking
+    % Delegates to mask_utils.cropWithQuadMask for consistent masking
     % across all scripts. See mask_utils.m for authoritative implementation.
     %
-    % See also: mask_utils.cropWithPolygonMask
+    % See also: mask_utils.cropWithQuadMask
 
     persistent masks
     if isempty(masks)
         masks = mask_utils();
     end
 
-    [croppedImg, ~] = masks.cropWithPolygonMask(img, polygonVertices);
+    [croppedImg, ~] = masks.cropWithQuadMask(img, quadVertices);
 end
 
 function saveImageWithFormat(img, outPath)
@@ -252,16 +252,16 @@ end
 %% DIRECTORY MANAGEMENT
 %% =========================================================================
 
-function outputDirs = createOutputDirectory(basePathPolygons, basePathEllipses, phoneName, numConcentrations, concFolderPrefix)
-    % Create polygon output directories
-    phoneOutputDirPolygons = fullfile(basePathPolygons, phoneName);
-    if ~isfolder(phoneOutputDirPolygons)
-        mkdir(phoneOutputDirPolygons);
+function outputDirs = createOutputDirectory(basePathQuads, basePathEllipses, phoneName, numConcentrations, concFolderPrefix)
+    % Create quad output directories
+    phoneOutputDirQuads = fullfile(basePathQuads, phoneName);
+    if ~isfolder(phoneOutputDirQuads)
+        mkdir(phoneOutputDirQuads);
     end
 
     for i = 0:(numConcentrations - 1)
         concFolder = sprintf('%s%d', concFolderPrefix, i);
-        concPath = fullfile(phoneOutputDirPolygons, concFolder);
+        concPath = fullfile(phoneOutputDirQuads, concFolder);
         if ~isfolder(concPath)
             mkdir(concPath);
         end
@@ -283,7 +283,7 @@ function outputDirs = createOutputDirectory(basePathPolygons, basePathEllipses, 
 
     % Return both directories as struct
     outputDirs = struct();
-    outputDirs.polygonDir = phoneOutputDirPolygons;
+    outputDirs.quadDir = phoneOutputDirQuads;
     outputDirs.ellipseDir = phoneOutputDirEllipses;
 end
 

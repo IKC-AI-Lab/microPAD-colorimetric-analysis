@@ -1,12 +1,12 @@
 function utils = mask_utils()
     %% MASK_UTILS Returns a struct of function handles for mask operations
     %
-    % This utility module provides functions for creating polygon and ellipse
+    % This utility module provides functions for creating quadrilateral and ellipse
     % masks, with caching support for batch processing performance.
     %
     % Usage:
     %   masks = mask_utils();
-    %   [cropped, mask] = masks.cropWithPolygonMask(img, vertices);
+    %   [cropped, mask] = masks.cropWithQuadMask(img, vertices);
     %   ellipseMask = masks.createEllipseMask([h, w], cx, cy, a, b, theta);
     %
     % Caching:
@@ -25,9 +25,9 @@ function utils = mask_utils()
     % See also: coordinate_io, image_io, geometry_transform
 
     %% Public API
-    % Polygon masks
-    utils.createPolygonMask = @createPolygonMask;
-    utils.cropWithPolygonMask = @cropWithPolygonMask;
+    % Quad masks
+    utils.createQuadMask = @createQuadMask;
+    utils.cropWithQuadMask = @cropWithQuadMask;
 
     % Ellipse masks
     utils.createEllipseMask = @createEllipseMask;
@@ -47,18 +47,18 @@ function utils = mask_utils()
 end
 
 %% =========================================================================
-%% POLYGON MASKS
+%% QUAD MASKS
 %% =========================================================================
 
-function mask = createPolygonMask(imageSize, vertices)
-    % Create binary mask for polygon region
+function mask = createQuadMask(imageSize, vertices)
+    % Create binary mask for quadrilateral region
     %
     % INPUTS:
     %   imageSize - [height, width] of mask
-    %   vertices  - [N x 2] polygon vertices [x, y]
+    %   vertices  - [N x 2] quad vertices [x, y]
     %
     % OUTPUTS:
-    %   mask - Logical array (true inside polygon)
+    %   mask - Logical array (true inside quad)
 
     if numel(imageSize) >= 2
         h = imageSize(1);
@@ -75,18 +75,18 @@ function mask = createPolygonMask(imageSize, vertices)
     mask = poly2mask(vertices(:, 1), vertices(:, 2), h, w);
 end
 
-function [cropped, mask] = cropWithPolygonMask(img, vertices)
-    % Crop image to polygon region with mask applied
+function [cropped, mask] = cropWithQuadMask(img, vertices)
+    % Crop image to quadrilateral region with mask applied
     %
     % INPUTS:
     %   img      - Input image (H x W x C)
-    %   vertices - [N x 2] polygon vertices [x, y]
+    %   vertices - [N x 2] quad vertices [x, y]
     %
     % OUTPUTS:
     %   cropped - Cropped and masked image (bounding box size)
     %   mask    - Binary mask for cropped region
     %
-    % Pixels outside the polygon are set to 0 (black).
+    % Pixels outside the quad are set to 0 (black).
 
     [h, w, c] = size(img);
 

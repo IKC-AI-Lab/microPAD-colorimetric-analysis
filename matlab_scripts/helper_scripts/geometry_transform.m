@@ -1,15 +1,15 @@
 function geomTform = geometry_transform()
     %% GEOMETRY_TRANSFORM Returns a struct of function handles for geometry and homography operations
     %
-    % This utility module consolidates pure geometry math (polygon/ellipse transformations)
+    % This utility module consolidates pure geometry math (quad/ellipse transformations)
     % and projective/homography operations for the microPAD processing pipeline.
     %
     % Usage:
     %   geomTform = geometry_transform();
     %
     %   % Geometry operations
-    %   polygons = geomTform.geom.calculateDefaultPolygons(width, height, cfg);
-    %   [rotated, newSize] = geomTform.geom.rotatePolygonsDiscrete(polygons, imageSize, 90);
+    %   quads = geomTform.geom.calculateDefaultQuads(width, height, cfg);
+    %   [rotated, newSize] = geomTform.geom.rotateQuadsDiscrete(quads, imageSize, 90);
     %
     %   % Homography operations
     %   tform = geomTform.homog.computeHomography(imageSize, viewParams, cameraCfg);
@@ -18,20 +18,20 @@ function geomTform = geometry_transform()
     % Coordinate Conventions:
     %   - Image coordinates: (1,1) is top-left, Y increases downward
     %   - Rotation: Positive = clockwise in image coordinates
-    %   - Polygon vertices: 4x2 matrix, clockwise from top-left
+    %   - Quad vertices: 4x2 matrix, clockwise from top-left
     %   - Ellipse format: [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
     %
     % See also: coordinate_io, mask_utils
 
     %% Public API - Geometry: Default geometry generation
-    geomTform.geom.calculateDefaultPolygons = @calculateDefaultPolygons;
-    geomTform.geom.scaleAndCenterPolygons = @scaleAndCenterPolygons;
+    geomTform.geom.calculateDefaultQuads = @calculateDefaultQuads;
+    geomTform.geom.scaleAndCenterQuads = @scaleAndCenterQuads;
 
-    %% Public API - Geometry: Polygon transformations
-    geomTform.geom.rotatePolygonsDiscrete = @rotatePolygonsDiscrete;
+    %% Public API - Geometry: Quad transformations
+    geomTform.geom.rotateQuadsDiscrete = @rotateQuadsDiscrete;
     geomTform.geom.rotatePointsDiscrete = @rotatePointsDiscrete;
-    geomTform.geom.clampPolygonToImage = @clampPolygonToImage;
-    geomTform.geom.scalePolygonsForImageSize = @scalePolygonsForImageSize;
+    geomTform.geom.clampQuadToImage = @clampQuadToImage;
+    geomTform.geom.scaleQuadsForImageSize = @scaleQuadsForImageSize;
 
     %% Public API - Geometry: Coordinate frame transformations
     geomTform.geom.inverseRotatePoints = @inverseRotatePoints;
@@ -39,17 +39,17 @@ function geomTform = geometry_transform()
 
     %% Public API - Geometry: Display/base coordinate conversion
     geomTform.geom.computeDisplayImageSize = @computeDisplayImageSize;
-    geomTform.geom.convertBasePolygonsToDisplay = @convertBasePolygonsToDisplay;
-    geomTform.geom.convertDisplayPolygonsToBase = @convertDisplayPolygonsToBase;
+    geomTform.geom.convertBaseQuadsToDisplay = @convertBaseQuadsToDisplay;
+    geomTform.geom.convertDisplayQuadsToBase = @convertDisplayQuadsToBase;
 
     %% Public API - Geometry: Ellipse transformations
-    geomTform.geom.scaleEllipsesForPolygonChange = @scaleEllipsesForPolygonChange;
+    geomTform.geom.scaleEllipsesForQuadChange = @scaleEllipsesForQuadChange;
     geomTform.geom.convertBaseEllipsesToDisplay = @convertBaseEllipsesToDisplay;
     geomTform.geom.enforceEllipseAxisLimits = @enforceEllipseAxisLimits;
     geomTform.geom.computeEllipseAxisBounds = @computeEllipseAxisBounds;
 
     %% Public API - Geometry: Bounds calculation
-    geomTform.geom.computePolygonBounds = @computePolygonBounds;
+    geomTform.geom.computeQuadBounds = @computeQuadBounds;
     geomTform.geom.computeEllipseBounds = @computeEllipseBounds;
 
     %% Public API - Homography: Core computation
@@ -58,9 +58,9 @@ function geomTform = geometry_transform()
     geomTform.homog.projectCorners = @project_corners;
     geomTform.homog.fitPointsToFrame = @fit_points_to_frame;
 
-    %% Public API - Homography: Polygon transformation
-    geomTform.homog.transformPolygon = @transform_polygon;
-    geomTform.homog.transformPolygonContent = @transform_polygon_content;
+    %% Public API - Homography: Quad transformation
+    geomTform.homog.transformQuad = @transform_quad;
+    geomTform.homog.transformQuadContent = @transform_quad_content;
 
     %% Public API - Homography: Ellipse transformation
     geomTform.homog.transformEllipse = @transform_ellipse;
@@ -90,20 +90,20 @@ end
 %% GEOMETRY: DEFAULT GEOMETRY GENERATION
 %% =========================================================================
 
-function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
-    % Generate default polygon positions using geometry parameters
+function quads = calculateDefaultQuads(imageWidth, imageHeight, cfg)
+    % Generate default quadrilateral positions using geometry parameters
     %
     % INPUTS:
     %   imageWidth  - Image width in pixels
     %   imageHeight - Image height in pixels
     %   cfg         - Configuration struct with fields:
-    %                 .numSquares - Number of polygons
-    %                 .geometry.aspectRatio - Width/height ratio per polygon
-    %                 .geometry.gapPercentWidth - Gap as fraction of polygon width
+    %                 .numSquares - Number of quads
+    %                 .geometry.aspectRatio - Width/height ratio per quad
+    %                 .geometry.gapPercentWidth - Gap as fraction of quad width
     %                 .coverage - Fraction of image width to cover
     %
     % OUTPUTS:
-    %   polygons - [N x 4 x 2] array of polygon vertices
+    %   quads - [N x 4 x 2] array of quad vertices
 
     n = cfg.numSquares;
 
@@ -140,10 +140,10 @@ function polygons = calculateDefaultPolygons(imageWidth, imageHeight, cfg)
     end
 
     % Scale and center to image
-    polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg);
+    quads = scaleAndCenterQuads(worldCorners, imageWidth, imageHeight, cfg);
 end
 
-function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight, cfg)
+function quads = scaleAndCenterQuads(worldCorners, imageWidth, imageHeight, cfg)
     % Scale world coordinates to fit image with coverage factor
     %
     % INPUTS:
@@ -153,10 +153,10 @@ function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight
     %   cfg          - Configuration with .coverage field
     %
     % OUTPUTS:
-    %   polygons - [N x 4 x 2] array in pixel coordinates
+    %   quads - [N x 4 x 2] array in pixel coordinates
 
     n = size(worldCorners, 1);
-    polygons = zeros(n, 4, 2);
+    quads = zeros(n, 4, 2);
 
     % Find bounding box of all world corners
     allX = worldCorners(:, :, 1);
@@ -166,8 +166,8 @@ function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight
 
     % Validate non-degenerate input
     if worldW <= 0
-        error('geometry_transform:degeneratePolygon', ...
-            'World corners have zero width - cannot scale degenerate polygon');
+        error('geometry_transform:degenerateQuad', ...
+            'World corners have zero width - cannot scale degenerate quad');
     end
 
     % Scale to fit image width with coverage factor
@@ -183,32 +183,32 @@ function polygons = scaleAndCenterPolygons(worldCorners, imageWidth, imageHeight
         scaled = corners * scale;
         scaled(:, 1) = scaled(:, 1) + centerX;
         scaled(:, 2) = scaled(:, 2) + centerY;
-        polygons(i, :, :) = scaled;
+        quads(i, :, :) = scaled;
     end
 end
 
 %% =========================================================================
-%% GEOMETRY: POLYGON TRANSFORMATIONS
+%% GEOMETRY: QUAD TRANSFORMATIONS
 %% =========================================================================
 
-function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize, rotation)
-    % Rotate polygons by multiples of 90 degrees using rot90 conventions
+function [rotatedQuads, newSize] = rotateQuadsDiscrete(quads, imageSize, rotation)
+    % Rotate quads by multiples of 90 degrees using rot90 conventions
     %
     % INPUTS:
-    %   polygons  - [N x 4 x 2] array of polygon vertices
+    %   quads     - [N x 4 x 2] array of quad vertices
     %   imageSize - [height, width] of image
     %   rotation  - Rotation angle in degrees (will be rounded to nearest 90°)
     %
     % OUTPUTS:
-    %   rotatedPolygons - [N x 4 x 2] rotated vertices
-    %   newSize         - [height, width] of rotated image
+    %   rotatedQuads - [N x 4 x 2] rotated vertices
+    %   newSize      - [height, width] of rotated image
 
     imageSize = imageSize(1:2);
-    [numPolygons, numVertices, ~] = size(polygons);
-    rotatedPolygons = polygons;
+    [numQuads, numVertices, ~] = size(quads);
+    rotatedQuads = quads;
     newSize = imageSize;
 
-    if isempty(polygons)
+    if isempty(quads)
         return;
     end
 
@@ -219,35 +219,35 @@ function [rotatedPolygons, newSize] = rotatePolygonsDiscrete(polygons, imageSize
 
     H = imageSize(1);
     W = imageSize(2);
-    rotatedPolygons = zeros(size(polygons));
+    rotatedQuads = zeros(size(quads));
 
     switch k
         case 1  % 90 degrees clockwise
             newSize = [W, H];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
+            for i = 1:numQuads
+                quad = squeeze(quads(i, :, :));
                 transformed = zeros(numVertices, 2);
-                transformed(:, 1) = H - poly(:, 2) + 1;
-                transformed(:, 2) = poly(:, 1);
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+                transformed(:, 1) = H - quad(:, 2) + 1;
+                transformed(:, 2) = quad(:, 1);
+                rotatedQuads(i, :, :) = clampQuadToImage(transformed, newSize);
             end
         case 2  % 180 degrees
             newSize = [H, W];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
+            for i = 1:numQuads
+                quad = squeeze(quads(i, :, :));
                 transformed = zeros(numVertices, 2);
-                transformed(:, 1) = W - poly(:, 1) + 1;
-                transformed(:, 2) = H - poly(:, 2) + 1;
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+                transformed(:, 1) = W - quad(:, 1) + 1;
+                transformed(:, 2) = H - quad(:, 2) + 1;
+                rotatedQuads(i, :, :) = clampQuadToImage(transformed, newSize);
             end
         case 3  % 270 degrees clockwise (90 counter-clockwise)
             newSize = [W, H];
-            for i = 1:numPolygons
-                poly = squeeze(polygons(i, :, :));
+            for i = 1:numQuads
+                quad = squeeze(quads(i, :, :));
                 transformed = zeros(numVertices, 2);
-                transformed(:, 1) = poly(:, 2);
-                transformed(:, 2) = W - poly(:, 1) + 1;
-                rotatedPolygons(i, :, :) = clampPolygonToImage(transformed, newSize);
+                transformed(:, 1) = quad(:, 2);
+                transformed(:, 2) = W - quad(:, 1) + 1;
+                rotatedQuads(i, :, :) = clampQuadToImage(transformed, newSize);
             end
     end
 end
@@ -296,50 +296,50 @@ function [rotatedPoints, newSize] = rotatePointsDiscrete(points, imageSize, rota
     end
 end
 
-function clamped = clampPolygonToImage(poly, imageSize)
-    % Clamp polygon coordinates to lie within image extents
+function clamped = clampQuadToImage(quad, imageSize)
+    % Clamp quad coordinates to lie within image extents
     %
     % INPUTS:
-    %   poly      - [N x 2] polygon vertices [x, y]
+    %   quad      - [N x 2] quad vertices [x, y]
     %   imageSize - [height, width] of image
     %
     % OUTPUTS:
-    %   clamped - Clamped polygon vertices
+    %   clamped - Clamped quad vertices
 
-    if isempty(poly)
-        clamped = poly;
+    if isempty(quad)
+        clamped = quad;
         return;
     end
 
     width = imageSize(2);
     height = imageSize(1);
-    clamped = poly;
+    clamped = quad;
     clamped(:, 1) = max(1, min(width, clamped(:, 1)));
     clamped(:, 2) = max(1, min(height, clamped(:, 2)));
 end
 
-function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, expectedCount)
-    % Scale polygon coordinates when image dimensions change
+function scaledQuads = scaleQuadsForImageSize(quads, oldSize, newSize, expectedCount)
+    % Scale quad coordinates when image dimensions change
     %
     % INPUTS:
-    %   polygons      - [N x 4 x 2] array of polygon vertices
+    %   quads         - [N x 4 x 2] array of quad vertices
     %   oldSize       - [height, width] of previous image
     %   newSize       - [height, width] of current image
-    %   expectedCount - (Optional) expected number of polygons
+    %   expectedCount - (Optional) expected number of quads
     %
     % OUTPUTS:
-    %   scaledPolygons - Scaled polygon array, or [] if count mismatch
+    %   scaledQuads - Scaled quad array, or [] if count mismatch
 
     if isempty(oldSize) || any(oldSize <= 0) || isempty(newSize) || any(newSize <= 0)
         error('geometry_transform:invalid_dimensions', ...
-            'Cannot scale polygons: invalid dimensions [%d %d] -> [%d %d]', ...
+            'Cannot scale quads: invalid dimensions [%d %d] -> [%d %d]', ...
             oldSize(1), oldSize(2), newSize(1), newSize(2));
     end
 
-    % Validate polygon count if expectedCount is provided
-    numPolygons = size(polygons, 1);
-    if nargin >= 4 && ~isempty(expectedCount) && numPolygons ~= expectedCount
-        scaledPolygons = [];
+    % Validate quad count if expectedCount is provided
+    numQuads = size(quads, 1);
+    if nargin >= 4 && ~isempty(expectedCount) && numQuads ~= expectedCount
+        scaledQuads = [];
         return;
     end
 
@@ -349,22 +349,22 @@ function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize, 
     newWidth = newSize(2);
 
     if oldHeight == newHeight && oldWidth == newWidth
-        scaledPolygons = polygons;
+        scaledQuads = quads;
         return;
     end
 
     scaleX = newWidth / oldWidth;
     scaleY = newHeight / oldHeight;
 
-    scaledPolygons = zeros(size(polygons));
+    scaledQuads = zeros(size(quads));
 
-    for i = 1:numPolygons
-        poly = squeeze(polygons(i, :, :));
-        poly(:, 1) = poly(:, 1) * scaleX;
-        poly(:, 2) = poly(:, 2) * scaleY;
-        poly(:, 1) = max(1, min(poly(:, 1), newWidth));
-        poly(:, 2) = max(1, min(poly(:, 2), newHeight));
-        scaledPolygons(i, :, :) = poly;
+    for i = 1:numQuads
+        quad = squeeze(quads(i, :, :));
+        quad(:, 1) = quad(:, 1) * scaleX;
+        quad(:, 2) = quad(:, 2) * scaleY;
+        quad(:, 1) = max(1, min(quad(:, 1), newWidth));
+        quad(:, 2) = max(1, min(quad(:, 2), newHeight));
+        scaledQuads(i, :, :) = quad;
     end
 end
 
@@ -534,102 +534,102 @@ function displaySize = computeDisplayImageSize(baseSize, rotation, angleToleranc
     end
 end
 
-function displayPolygons = convertBasePolygonsToDisplay(basePolygons, baseImageSize, displayImageSize, rotation, angleTolerance)
-    % Convert polygons from base (unrotated) coordinates to display (rotated) coordinates
+function displayQuads = convertBaseQuadsToDisplay(baseQuads, baseImageSize, displayImageSize, rotation, angleTolerance)
+    % Convert quads from base (unrotated) coordinates to display (rotated) coordinates
     %
     % INPUTS:
-    %   basePolygons     - [N x 4 x 2] in original image frame
+    %   baseQuads        - [N x 4 x 2] in original image frame
     %   baseImageSize    - [height, width] of original image
     %   displayImageSize - [height, width] of display image
     %   rotation         - Applied rotation (degrees)
     %   angleTolerance   - (Optional) tolerance for 90° detection
     %
     % OUTPUTS:
-    %   displayPolygons - [N x 4 x 2] in display frame
+    %   displayQuads - [N x 4 x 2] in display frame
 
     if nargin < 5
         angleTolerance = 0.01;
     end
 
-    displayPolygons = basePolygons;
-    if isempty(basePolygons)
+    displayQuads = baseQuads;
+    if isempty(baseQuads)
         return;
     end
 
     originalSize = baseImageSize(1:2);
 
     if rotation ~= 0 && isMultipleOfNinety(rotation, angleTolerance)
-        [rotatedPolygons, rotatedSize] = rotatePolygonsDiscrete(basePolygons, originalSize, rotation);
+        [rotatedQuads, rotatedSize] = rotateQuadsDiscrete(baseQuads, originalSize, rotation);
     else
-        rotatedPolygons = basePolygons;
+        rotatedQuads = baseQuads;
         rotatedSize = originalSize;
 
         if rotation ~= 0
-            numPolygons = size(basePolygons, 1);
-            rotatedPolygons = zeros(size(basePolygons));
-            for i = 1:numPolygons
-                polyBase = squeeze(basePolygons(i, :, :));
-                polyBase = clampPolygonToImage(polyBase, originalSize);
-                polyRot = forwardRotatePoints(polyBase, originalSize, rotatedSize, rotation, angleTolerance);
-                rotatedPolygons(i, :, :) = clampPolygonToImage(polyRot, rotatedSize);
+            numQuads = size(baseQuads, 1);
+            rotatedQuads = zeros(size(baseQuads));
+            for i = 1:numQuads
+                quadBase = squeeze(baseQuads(i, :, :));
+                quadBase = clampQuadToImage(quadBase, originalSize);
+                quadRot = forwardRotatePoints(quadBase, originalSize, rotatedSize, rotation, angleTolerance);
+                rotatedQuads(i, :, :) = clampQuadToImage(quadRot, rotatedSize);
             end
         end
     end
 
     targetSize = displayImageSize(1:2);
     if any(rotatedSize ~= targetSize)
-        displayPolygons = scalePolygonsForImageSize(rotatedPolygons, rotatedSize, targetSize, size(basePolygons, 1));
+        displayQuads = scaleQuadsForImageSize(rotatedQuads, rotatedSize, targetSize, size(baseQuads, 1));
     else
-        displayPolygons = rotatedPolygons;
+        displayQuads = rotatedQuads;
     end
 end
 
-function basePolygons = convertDisplayPolygonsToBase(displayPolygons, displayImageSize, baseImageSize, rotation, angleTolerance)
-    % Convert polygons from display (rotated) coordinates to base (unrotated) coordinates
+function baseQuads = convertDisplayQuadsToBase(displayQuads, displayImageSize, baseImageSize, rotation, angleTolerance)
+    % Convert quads from display (rotated) coordinates to base (unrotated) coordinates
     %
     % INPUTS:
-    %   displayPolygons  - [N x 4 x 2] in display frame
+    %   displayQuads     - [N x 4 x 2] in display frame
     %   displayImageSize - [height, width] of display image
     %   baseImageSize    - [height, width] of original image
     %   rotation         - Applied rotation (degrees)
     %   angleTolerance   - (Optional) tolerance for 90° detection
     %
     % OUTPUTS:
-    %   basePolygons - [N x 4 x 2] in original frame
+    %   baseQuads - [N x 4 x 2] in original frame
 
     if nargin < 5
         angleTolerance = 0.01;
     end
 
-    basePolygons = displayPolygons;
-    if isempty(displayPolygons)
+    baseQuads = displayQuads;
+    if isempty(displayQuads)
         return;
     end
 
     displaySize = displayImageSize(1:2);
     originalSize = baseImageSize(1:2);
-    numPolygons = size(displayPolygons, 1);
+    numQuads = size(displayQuads, 1);
 
     % Compute what size would be after rotation (for inverse transform)
     rotatedSize = computeDisplayImageSize(originalSize, rotation, angleTolerance);
 
     % First scale from display to rotated size if needed
     if any(displaySize ~= rotatedSize)
-        scaledPolygons = scalePolygonsForImageSize(displayPolygons, displaySize, rotatedSize, numPolygons);
+        scaledQuads = scaleQuadsForImageSize(displayQuads, displaySize, rotatedSize, numQuads);
     else
-        scaledPolygons = displayPolygons;
+        scaledQuads = displayQuads;
     end
 
     % Then inverse rotate to get base coordinates
     if rotation ~= 0
-        basePolygons = zeros(size(scaledPolygons));
-        for i = 1:numPolygons
-            polyDisplay = squeeze(scaledPolygons(i, :, :));
-            polyBase = inverseRotatePoints(polyDisplay, rotatedSize, originalSize, rotation, angleTolerance);
-            basePolygons(i, :, :) = clampPolygonToImage(polyBase, originalSize);
+        baseQuads = zeros(size(scaledQuads));
+        for i = 1:numQuads
+            quadDisplay = squeeze(scaledQuads(i, :, :));
+            quadBase = inverseRotatePoints(quadDisplay, rotatedSize, originalSize, rotation, angleTolerance);
+            baseQuads(i, :, :) = clampQuadToImage(quadBase, originalSize);
         end
     else
-        basePolygons = scaledPolygons;
+        baseQuads = scaledQuads;
     end
 end
 
@@ -637,12 +637,12 @@ end
 %% GEOMETRY: ELLIPSE TRANSFORMATIONS
 %% =========================================================================
 
-function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, oldEllipses, imageSize, cfg)
-    % Scale ellipse positions when polygon geometry changes
+function scaledEllipses = scaleEllipsesForQuadChange(oldCorners, newCorners, oldEllipses, imageSize, cfg)
+    % Scale ellipse positions when quad geometry changes
     %
     % INPUTS:
-    %   oldCorners  - [4 x 2] old polygon vertices
-    %   newCorners  - [4 x 2] new polygon vertices
+    %   oldCorners  - [4 x 2] old quad vertices
+    %   newCorners  - [4 x 2] new quad vertices
     %   oldEllipses - [N x 7] matrix [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
     %   imageSize   - [height, width] for bounds calculation
     %   cfg         - Configuration struct
@@ -655,7 +655,7 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
         return;
     end
 
-    % Calculate old polygon centroid and dimensions
+    % Calculate old quad centroid and dimensions
     oldCentroid = mean(oldCorners, 1);
     oldMinX = min(oldCorners(:, 1));
     oldMaxX = max(oldCorners(:, 1));
@@ -664,7 +664,7 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
     oldWidth = oldMaxX - oldMinX;
     oldHeight = oldMaxY - oldMinY;
 
-    % Calculate new polygon centroid and dimensions
+    % Calculate new quad centroid and dimensions
     newCentroid = mean(newCorners, 1);
     newMinX = min(newCorners(:, 1));
     newMaxX = max(newCorners(:, 1));
@@ -673,10 +673,10 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
     newWidth = newMaxX - newMinX;
     newHeight = newMaxY - newMinY;
 
-    % Validate polygon dimensions
+    % Validate quad dimensions
     if oldWidth <= 0 || oldHeight <= 0 || newWidth <= 0 || newHeight <= 0
-        warning('geometry_transform:degenerate_polygon', ...
-                'Polygon has zero or negative dimensions - returning empty ellipses');
+        warning('geometry_transform:degenerate_quad', ...
+                'Quad has zero or negative dimensions - returning empty ellipses');
         scaledEllipses = [];
         return;
     end
@@ -701,7 +701,7 @@ function scaledEllipses = scaleEllipsesForPolygonChange(oldCorners, newCorners, 
         oldSemiMinor = oldEllipses(i, 6);
         oldRotation = oldEllipses(i, 7);
 
-        % Transform centers relative to polygon centroid
+        % Transform centers relative to quad centroid
         newX = (oldX - oldCentroid(1)) * axisScale + newCentroid(1);
         newY = (oldY - oldCentroid(2)) * axisScale + newCentroid(2);
 
@@ -806,7 +806,7 @@ function bounds = computeEllipseAxisBounds(~, imageSize, cfg)
     % Compute min/max semi-axis lengths for ellipse editing
     %
     % INPUTS:
-    %   (unused)  - Polygon vertices (unused, for API compatibility)
+    %   (unused)  - Quad vertices (unused, for API compatibility)
     %   imageSize - [height, width] of image
     %   cfg       - Configuration with .ellipse.minAxisPercent
     %
@@ -825,33 +825,33 @@ end
 %% GEOMETRY: BOUNDS CALCULATION
 %% =========================================================================
 
-function bounds = computePolygonBounds(polygons)
-    % Compute bounding box of all polygon vertices
+function bounds = computeQuadBounds(quads)
+    % Compute bounding box of all quad vertices
     %
     % INPUTS:
-    %   polygons - [N x 4 x 2] array or cell array of polygon vertices
+    %   quads - [N x 4 x 2] array or cell array of quad vertices
     %
     % OUTPUTS:
     %   bounds - struct with .minX, .maxX, .minY, .maxY
 
-    if iscell(polygons)
+    if iscell(quads)
         % Handle cell array of drawpolygon objects or vertex matrices
         allX = [];
         allY = [];
-        for i = 1:numel(polygons)
-            if isobject(polygons{i}) && isprop(polygons{i}, 'Position')
-                pos = polygons{i}.Position;
+        for i = 1:numel(quads)
+            if isobject(quads{i}) && isprop(quads{i}, 'Position')
+                pos = quads{i}.Position;
                 allX = [allX; pos(:, 1)]; %#ok<AGROW>
                 allY = [allY; pos(:, 2)]; %#ok<AGROW>
-            elseif isnumeric(polygons{i})
-                allX = [allX; polygons{i}(:, 1)]; %#ok<AGROW>
-                allY = [allY; polygons{i}(:, 2)]; %#ok<AGROW>
+            elseif isnumeric(quads{i})
+                allX = [allX; quads{i}(:, 1)]; %#ok<AGROW>
+                allY = [allY; quads{i}(:, 2)]; %#ok<AGROW>
             end
         end
     else
         % Handle [N x 4 x 2] array
-        allX = polygons(:, :, 1);
-        allY = polygons(:, :, 2);
+        allX = quads(:, :, 1);
+        allY = quads(:, :, 2);
         allX = allX(:);
         allY = allY(:);
     end
@@ -924,7 +924,7 @@ function tform = compute_homography_from_points(srcPoints, dstPoints)
     %
     % Inputs:
     %   srcPoints: Nx2 matrix of source points (e.g., unit square corners)
-    %   dstPoints: Nx2 matrix of destination points (e.g., polygon vertices)
+    %   dstPoints: Nx2 matrix of destination points (e.g., quad vertices)
     %
     % Output:
     %   tform: projective2d transformation object
@@ -987,30 +987,30 @@ function aligned = fit_points_to_frame(projected, imgWidth, imgHeight, coverage)
 end
 
 %% =========================================================================
-%% HOMOGRAPHY: POLYGON TRANSFORMATION
+%% HOMOGRAPHY: QUAD TRANSFORMATION
 %% =========================================================================
 
-function polygonOut = transform_polygon(vertices, tform)
-    % Apply geometric transformation to polygon vertices
+function quadOut = transform_quad(vertices, tform)
+    % Apply geometric transformation to quad vertices
     %
     % Inputs:
-    %   vertices: Nx2 matrix of polygon vertex coordinates
+    %   vertices: Nx2 matrix of quad vertex coordinates
     %   tform: geometric transformation object (projective2d or affine2d)
     %
     % Output:
-    %   polygonOut: Nx2 matrix of transformed vertex coordinates
+    %   quadOut: Nx2 matrix of transformed vertex coordinates
 
     [x, y] = transformPointsForward(tform, vertices(:,1), vertices(:,2));
-    polygonOut = [x, y];
+    quadOut = [x, y];
 end
 
-function augImg = transform_polygon_content(content, origVerts, augVerts, bbox)
-    % Warp polygon image content to match target geometry
+function augImg = transform_quad_content(content, origVerts, augVerts, bbox)
+    % Warp quad image content to match target geometry
     %
     % Inputs:
-    %   content: image patch containing the polygon
-    %   origVerts: 4x2 original polygon vertices
-    %   augVerts: 4x2 target polygon vertices
+    %   content: image patch containing the quad
+    %   origVerts: 4x2 original quad vertices
+    %   augVerts: 4x2 target quad vertices
     %   bbox: [x, y, width, height] bounding box of content in original image
     %
     % Output:
@@ -1088,9 +1088,9 @@ function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, con
     %   ellipseList: array of ellipse structs with replicate, center, semiMajor, semiMinor, rotation
     %   paperBase: base name for logging
     %   concentration: concentration index for logging
-    %   origVertices: 4x2 original polygon vertices
+    %   origVertices: 4x2 original quad vertices
     %   contentBbox: [x, y, w, h] bounding box of content
-    %   augVertices: 4x2 augmented polygon vertices
+    %   augVertices: 4x2 augmented quad vertices
     %   minXCrop, minYCrop: crop offset for coordinate conversion
     %   tformPersp: perspective transformation
     %   tformRot: shared rotation transformation
@@ -1119,11 +1119,11 @@ function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, con
         % Map ellipse from crop space to original image coordinates
         ellipseInImageSpace = map_ellipse_crop_to_image(ellipseIn, contentBbox);
 
-        % Validate ellipse lies inside the original polygon before augmentations
+        % Validate ellipse lies inside the original quad before augmentations
         if ~inpolygon(ellipseInImageSpace.center(1), ellipseInImageSpace.center(2), ...
                       origVertices(:,1), origVertices(:,2))
             warning('geometry_transform:ellipseOutsideOriginal', ...
-                    '  ! Ellipse %s con %d rep %d outside original polygon. Skipping.', ...
+                    '  ! Ellipse %s con %d rep %d outside original quad. Skipping.', ...
                     paperBase, concentration, ellipseIn.replicate);
             continue;
         end
@@ -1153,16 +1153,16 @@ function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, con
             continue;
         end
 
-        % Ensure ellipse stays inside the augmented polygon footprint
+        % Ensure ellipse stays inside the augmented quad footprint
         if ~inpolygon(ellipseAug.center(1), ellipseAug.center(2), ...
                       augVertices(:,1), augVertices(:,2))
             warning('geometry_transform:ellipseOutside', ...
-                    '  ! Ellipse %s con %d rep %d outside transformed polygon. Skipping.', ...
+                    '  ! Ellipse %s con %d rep %d outside transformed quad. Skipping.', ...
                     paperBase, concentration, ellipseIn.replicate);
             continue;
         end
 
-        % Convert to polygon-crop coordinates
+        % Convert to quad-crop coordinates
         ellipseCrop = ellipseAug;
         ellipseCrop.center = ellipseAug.center - [minXCrop, minYCrop];
 

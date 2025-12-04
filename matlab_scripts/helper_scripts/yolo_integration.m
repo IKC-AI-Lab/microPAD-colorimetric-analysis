@@ -397,7 +397,7 @@ function [quads, confidences] = parseDetectionOutput(lines, imageHeight, imageWi
     quads = quads(validMask, :, :);
     confidences = confidences(validMask);
 
-    % NOTE: Polygon ordering is handled by sortPolygonArrayByX in caller
+    % NOTE: Quad ordering is handled by sortQuadArrayByX in caller
     % (adaptive orientation-aware sorting for horizontal vs vertical strips)
 end
 

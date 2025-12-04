@@ -66,11 +66,11 @@ The pipeline processes images through **4 sequential stages**. Each stage reads 
 
 ![Stage 1 to 2](demo_images/stage2_micropad.jpeg)
 
-Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered polygon detection (YOLOv11 segmentation) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
+Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered quad detection (YOLOv11 pose keypoints) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
 
 **Key Features:**
-- AI-based auto-detection of test zones (YOLOv11n segmentation, 99.5% mask mAP@50)
-- Graceful fallback to manual polygon selection if auto-detection fails
+- AI-based auto-detection of test zones (YOLOv11s pose keypoints)
+- Graceful fallback to manual quad selection if auto-detection fails
 - Interactive rotation control with cumulative rotation memory
 - Saves 10-column coordinate format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation`
 
@@ -262,7 +262,7 @@ matlab -batch "addpath('matlab_scripts'); extract_features('preset','robust','ch
 
 **Script:** `augment_dataset.m` (optional, recommended for AI training)
 
-Generates synthetic training data by transforming real microPAD images and concentration polygons and composing them onto procedural backgrounds. Essential for training robust polygon detection models for the Android smartphone application.
+Generates synthetic training data by transforming real microPAD images and concentration quadrilaterals and composing them onto procedural backgrounds. Essential for training robust quad detection models for the Android smartphone application.
 
 ![Augmented Dataset](demo_images/augmented_dataset_1.png)
 *Synthetic scene with transformed microPAD under simulated lighting*
@@ -310,17 +310,17 @@ The final Android application will use AI-based **auto-detection** to locate tes
 - **Placement**: Unconstrained (can extend beyond frame)
 - **Sharpness**: Sharp by default, matching concentration rectangle behavior
 - **Rendering**: Nearest-neighbor interpolation to preserve crisp edges
-- **Purpose**: Train polygon detector to ignore false positives while maintaining realistic appearance
+- **Purpose**: Train quad detector to ignore false positives while maintaining realistic appearance
 
-**Distractor Polygons (Synthetic Look-Alikes)**
-- **Count**: Random 1-10 per image (independent of real polygon count)
-- **Size Variation**: Each distractor randomly scaled 50%-150% of source polygon size
-- **Appearance**: Synthesized from real polygons with jittered colors and textures
+**Distractor Quads (Synthetic Look-Alikes)**
+- **Count**: Random 1-10 per image (independent of real quad count)
+- **Size Variation**: Each distractor randomly scaled 50%-150% of source quad size
+- **Appearance**: Synthesized from real quads with jittered colors and textures
 - **Placement**: Non-overlapping collision detection, respects spacing constraints
 - **Purpose**: Train AI to distinguish real test zones from similar-looking objects by position/context rather than appearance alone
 
 **Blur and Occlusions (Optional)**
-- **Scene-wide blur** - Applied to entire image (polygons + artifacts) when enabled
+- **Scene-wide blur** - Applied to entire image (quads + artifacts) when enabled
 - **Motion blur** - Camera shake simulation (15% probability)
 - **Gaussian blur** - Focus variation (25% probability, sigma 0.25-0.65px)
 - **Thin occlusions** - Hair/strap-like artifacts across test zones (disabled by default)
@@ -347,7 +347,7 @@ The final Android application will use AI-based **auto-detection** to locate tes
 - **Guard mechanisms:**
   - Ellipse zones + 12px margin protected by dilation
   - Bridge paths connecting ellipses to centroid (prevent isolated regions)
-  - Core polygon region (60% inner area) enforces maxAreaRemoval limit
+  - Core quad region (60% inner area) enforces maxAreaRemoval limit
 - **Purpose**: Train AI to handle real-world paper degradation from storage, handling, and environmental factors
 
 ![Damaged microPAD Example](demo_images/damaged_micropad_cornerchew.png)
@@ -420,7 +420,7 @@ augment_dataset('damageSeed', 42)
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `paperDamageProbability` | 0.5 | 0-1 | Fraction of polygons with damage |
+| `paperDamageProbability` | 0.5 | 0-1 | Fraction of quads with damage |
 | `damageProfileWeights` | See below | Sums to 1.0 | Profile selection probabilities |
 | `maxAreaRemovalFraction` | 0.40 | 0-1 | Max removable fraction (per ellipse or per micropad fallback) |
 | `damageSeed` | (random) | Any integer | RNG seed for reproducible damage |
@@ -441,7 +441,7 @@ These internal constants control damage severity and can be found in `PAPER_DAMA
 | Tapered edges | `taperStrengthRange` | [0.10, 0.30] | Fraction of perpendicular dim |
 | Edge waves | `edgeWaveAmplitudeRange` | [0.01, 0.05] | Fraction of min dimension |
 | Edge waves | `edgeWaveFrequencyRange` | [1.5, 3.0] | Cycles along perimeter |
-| Max operations | `maxOperations` | 3 | Max structural cuts per polygon |
+| Max operations | `maxOperations` | 3 | Max structural cuts per quad |
 
 ---
 
@@ -449,19 +449,19 @@ These internal constants control damage severity and can be found in `PAPER_DAMA
 
 **Speed**: ~1.0 second per augmented image (3x faster than v1)
 - Grid-based spatial acceleration (O(1) collision detection vs O(n^2))
-- Simplified polygon warping (nearest-neighbor vs bilinear)
+- Simplified quad warping (nearest-neighbor vs bilinear)
 - Background texture pooling (reuses 4 procedural types with cached surfaces instead of regenerating each frame)
 - ROI-based meshgrid allocation for ellipse protection (5-10× memory reduction)
 - Fast approximate signed distance for edge noise (3-5× faster than bwdist)
 - Precomputed profile sampling arrays (eliminates fieldnames() overhead)
-- Size-based bypass for small polygons (<200px, <150px for edge noise)
+- Size-based bypass for small quads (<200px, <150px for edge noise)
 
 **Memory**: Low overhead
 - Processes one paper at a time
 - Temporary buffers released after each scene
 
 **Scalability**: Handles large datasets
-- Automatic background expansion if polygons don't fit
+- Automatic background expansion if quads don't fit
 - Graceful degradation on positioning failures
 
 ---
@@ -470,7 +470,7 @@ These internal constants control damage severity and can be found in `PAPER_DAMA
 
 **Inputs:**
 - `1_dataset/{phone}/` - Original smartphone images
-- `2_micropads/{phone}/coordinates.txt` - Polygon vertices (required)
+- `2_micropads/{phone}/coordinates.txt` - Quad vertices (required)
 - `3_elliptical_regions/{phone}/coordinates.txt` - Ellipse parameters (optional)
 
 **Outputs:**
@@ -488,7 +488,7 @@ These internal constants control damage severity and can be found in `PAPER_DAMA
 
 ### **Integration with ML Pipeline**
 
-**For Polygon Detection (YOLO, Faster R-CNN)**
+**For Quad Detection (YOLO, Faster R-CNN)**
 ```python
 # 1. Generate augmented data in MATLAB
 augment_dataset('numAugmentations', 5)
@@ -508,7 +508,7 @@ extract_features('preset','robust','chemical','lactate')
 ```
 
 **For Android Deployment**
-1. Train polygon detector on `augmented_1_dataset/`
+1. Train quad detector on `augmented_1_dataset/`
 2. Export to TensorFlow Lite (.tflite)
 3. Train concentration predictor on features from augmented ellipses
 4. Embed both models in Android app
@@ -524,7 +524,7 @@ extract_features('preset','robust','chemical','lactate')
 **Coordinate preservation:**
 - All transformations (perspective, rotation, translation) are recorded in output coordinates.txt files
 - Ellipse transformations use conic section mathematics to preserve accuracy
-- Coordinates are validated (degenerate ellipses/polygons are skipped with warnings)
+- Coordinates are validated (degenerate ellipses/quads are skipped with warnings)
 
 **Quality control:**
 - Original version (aug_000) uses identity transformations for debugging
@@ -558,7 +558,7 @@ Run this script to recreate any missing processed images from your saved coordin
 
 ### **preview_overlays.m**
 
-Opens a viewer that shows how well your coordinates match the actual images. Displays rectangles, polygons, and ellipses overlaid on the original photos.
+Opens a viewer that shows how well your coordinates match the actual images. Displays quads and ellipses overlaid on the original photos.
 
 **Use this to:**
 - Check if your annotations are accurate
@@ -670,7 +670,7 @@ Sample rows from `4_extract_features/robust_lactate_features.xlsx` (showing subs
 This MATLAB pipeline serves as the **data preparation and training infrastructure** for an Android smartphone application that will:
 
 1. **Capture microPAD photos** using the smartphone camera
-2. **Auto-detect test zones** using polygon detection AI (YOLOv11 segmentation - already integrated in MATLAB)
+2. **Auto-detect test zones** using quad detection AI (YOLOv11 pose keypoints - already integrated in MATLAB)
 3. **Predict biomarker concentrations** (urea, creatinine, lactate) using regression models (trained on features from `4_extract_features/`)
 4. **Display results** to the user in real-time
 
@@ -679,7 +679,7 @@ This MATLAB pipeline serves as the **data preparation and training infrastructur
 ```
 MATLAB Pipeline (this repository)
     ↓
-augmented_1_dataset/ → Train polygon detector (YOLOv11n segmentation)
+augmented_1_dataset/ → Train quad detector (YOLOv11s pose keypoints)
     ↓
 4_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
     ↓
@@ -690,7 +690,7 @@ Android Application (separate repository, coming soon)
 
 ### **Key Features of Android App**
 
-- **Real-time detection** - Auto-locate test zones in live camera feed (using YOLOv11n model)
+- **Real-time detection** - Auto-locate test zones in live camera feed (using YOLOv11s-pose model)
 - **Lighting compensation** - White reference strategy (same as MATLAB pipeline)
 - **Multi-biomarker support** - Separate models for urea, creatinine, lactate
 - **Offline inference** - Embedded TensorFlow Lite models (no internet required)
@@ -699,7 +699,7 @@ Android Application (separate repository, coming soon)
 ### **Current Status**
 
 ✅ **Completed**: MATLAB data preparation pipeline (4-stage pipeline)
-✅ **Completed**: AI polygon detection training (YOLOv11n, 99.5% mask mAP@50)
+✅ **Completed**: AI quad detection training (YOLOv11s-pose)
 ✅ **Completed**: MATLAB integration with graceful fallback to manual selection
 📋 **Planned**: Android application development with TFLite deployment
 

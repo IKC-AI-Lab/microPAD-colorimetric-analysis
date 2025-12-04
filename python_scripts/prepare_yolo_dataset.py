@@ -9,7 +9,7 @@ This script restructures the augmented dataset for YOLO training:
 5. Selects validation phones using formula: ceil(num_phones / 5) when num_phones >= 3
 6. Creates train.txt and val.txt with absolute paths (val.txt omitted if < 3 phones)
 
-MATLAB scripts (augment_dataset.m) generate images and polygon coordinates.
+MATLAB scripts (augment_dataset.m) generate images and quad coordinates.
 This Python script converts coordinates to YOLO pose keypoint format and restructures directories.
 
 Label Format (YOLOv11-pose - DEFAULT):
@@ -283,10 +283,10 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
         label_format: Label format to generate ('pose' or 'seg')
 
     Returns:
-        Tuple of (total_labels_created, total_polygons_processed)
+        Tuple of (total_labels_created, total_quads_processed)
     """
     total_labels = 0
-    total_polygons = 0
+    total_quads = 0
 
     micropads_dir = PROJECT_ROOT / "augmented_2_micropads"
 
@@ -307,8 +307,8 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
         if lines and lines[0].strip().lower().startswith('image'):
             lines = lines[1:]
 
-        # Group polygons by image
-        image_polygons = {}
+        # Group quads by image
+        image_quads = {}
         for line in lines:
             parts = line.strip().split()
             if len(parts) < 10:
@@ -326,17 +326,17 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
                 # Fallback: no _con_ suffix (shouldn't happen but safe)
                 base_name = img_name
 
-            # Extract polygon vertices (columns 2-9: x1 y1 x2 y2 x3 y3 x4 y4)
+            # Extract quad vertices (columns 2-9: x1 y1 x2 y2 x3 y3 x4 y4)
             vertices = [float(parts[i]) for i in range(2, 10)]
-            polygon = [(vertices[i], vertices[i+1]) for i in range(0, 8, 2)]
+            quad = [(vertices[i], vertices[i+1]) for i in range(0, 8, 2)]
 
-            if base_name not in image_polygons:
-                image_polygons[base_name] = []
-            image_polygons[base_name].append(polygon)
+            if base_name not in image_quads:
+                image_quads[base_name] = []
+            image_quads[base_name].append(quad)
 
         # Get image dimensions and create labels
         images_dir = AUGMENTED_DATASET / phone / "images"
-        for base_name, polygons in image_polygons.items():
+        for base_name, quads in image_quads.items():
             # Find corresponding image file
             img_path = None
             for ext in ['.png']:
@@ -357,23 +357,23 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
             height, width = img.shape[:2]
 
             # Validate coordinates are within image bounds
-            valid_polygons = []
-            for polygon in polygons:
-                if all(0 <= x < width and 0 <= y < height for x, y in polygon):
-                    valid_polygons.append(polygon)
+            valid_quads = []
+            for quad in quads:
+                if all(0 <= x < width and 0 <= y < height for x, y in quad):
+                    valid_quads.append(quad)
                 else:
-                    print(f"⚠️  Warning: polygon outside image bounds in {base_name} (image: {width}x{height})")
+                    print(f"⚠️  Warning: quad outside image bounds in {base_name} (image: {width}x{height})")
 
-            if not valid_polygons:
-                print(f"⚠️  Warning: no valid polygons for {base_name}, skipping")
+            if not valid_quads:
+                print(f"⚠️  Warning: no valid quads for {base_name}, skipping")
                 continue
 
-            # Write label file with only valid polygons
+            # Write label file with only valid quads
             label_path = labels_dir / f"{base_name}.txt"
             with open(label_path, 'w') as f:
-                for polygon in valid_polygons:
+                for quad in valid_quads:
                     # Convert to numpy array for ordering
-                    vertices = np.array(polygon, dtype=np.float64)
+                    vertices = np.array(quad, dtype=np.float64)
 
                     # Order vertices clockwise from top-left
                     ordered_vertices = order_keypoints_clockwise(vertices)
@@ -385,7 +385,7 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
 
                     # Verify ordering is correct
                     if not validate_clockwise_order(ordered_vertices):
-                        print(f"⚠️  Warning: failed to establish clockwise ordering for polygon in {base_name}")
+                        print(f"⚠️  Warning: failed to establish clockwise ordering for quad in {base_name}")
                         continue
 
                     # Write label based on format
@@ -410,12 +410,12 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
                         coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_vertices])
                         f.write(f"0 {coords_str}\n")
 
-                    total_polygons += 1
+                    total_quads += 1
 
             total_labels += 1
 
-    print(f"✅ Generated {total_labels} label files ({total_polygons} polygons)")
-    return total_labels, total_polygons
+    print(f"✅ Generated {total_labels} label files ({total_quads} quads)")
+    return total_labels, total_quads
 
 
 def create_train_val_txt(
@@ -525,7 +525,7 @@ def print_summary(
     train_count: int,
     val_count: int,
     label_count: int,
-    polygon_count: int
+    quad_count: int
 ) -> None:
     """Print dataset summary with dynamic phone assignments.
 
@@ -535,7 +535,7 @@ def print_summary(
         train_count: Number of training images
         val_count: Number of validation images
         label_count: Number of label files created
-        polygon_count: Total number of polygons labeled
+        quad_count: Total number of quads labeled
     """
     num_phones = len(train_phones) + len(val_phones)
     num_val_phones = len(val_phones)
@@ -555,7 +555,7 @@ def print_summary(
     print(f"Val images: {val_count}")
     print(f"Total images: {train_count + val_count}")
     print(f"YOLO labels: {label_count} files")
-    print(f"Total polygons: {polygon_count}")
+    print(f"Total quads: {quad_count}")
     print(f"Classes: 1 (concentration_zone)")
     print(f"Config directory: {CONFIGS_DIR}")
     print("="*60)
@@ -676,7 +676,7 @@ def main() -> None:
 
     # Generate YOLO labels from MATLAB coordinates
     print("Generating YOLO labels from MATLAB coordinates...")
-    label_count, polygon_count = generate_yolo_labels(phone_dirs, label_format=args.format)
+    label_count, quad_count = generate_yolo_labels(phone_dirs, label_format=args.format)
     print()
 
     verify_labels(phone_dirs)
@@ -699,7 +699,7 @@ def main() -> None:
     )
 
     # Task 1.4: Print summary with dynamic phone assignments
-    print_summary(train_phones, val_phones, train_count, val_count, label_count, polygon_count)
+    print_summary(train_phones, val_phones, train_count, val_count, label_count, quad_count)
 
 
 if __name__ == "__main__":
