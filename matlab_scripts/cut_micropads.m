@@ -519,8 +519,8 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         % Wait for user action
         [action, ~, ~] = waitForUserAction(fig);
 
-        if strcmp(action, 'stop')
-            return;
+        if strcmp(action, 'stop') || isempty(action)
+            terminateExecution(fig);
         elseif strcmp(action, 'retry')
             % Re-process same image - recurse
             [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fig, phoneName, memory);
@@ -785,10 +785,7 @@ function [quadParams, displayQuads, fig, rotation, ellipseData, orientation] = s
                         case 'skip'
                             return;
                         case 'stop'
-                            if isvalid(fig)
-                                delete(fig);
-                            end
-                            error('User stopped execution');
+                            terminateExecution(fig);
                         case 'accept'
                             % Store ellipse data and proceed to preview
                             savedEllipseData = ellipseCoords;
@@ -2937,6 +2934,15 @@ function stopExecution(fig)
     guiData.action = 'stop';
     set(fig, 'UserData', guiData);
     uiresume(fig);
+end
+
+function terminateExecution(fig)
+    % Centralized handler for terminating script execution
+    % Called when 'stop' action is detected or figure is closed
+    if nargin > 0 && isvalid(fig)
+        delete(fig);
+    end
+    error('cut_micropads:userStopped', 'User stopped execution');
 end
 
 function rerunAIDetection(fig, cfg)
