@@ -369,12 +369,23 @@ function featureStruct = extractFeaturesFromCoordinates(originalImage, labOrigin
         imageColorCache = struct();
     end
 
+    % Extract maskUtils from cfg modules (required for local functions)
+    maskUtils = cfg.modules.maskUtils;
+
     featureStruct = [];
 
     try
         [height, width, ~] = size(originalImage);
-        [patchMask, bbox] = createEllipticalPatchMask([height, width], patch.xCenter, patch.yCenter, ...
-                                                       patch.semiMajorAxis, patch.semiMinorAxis, patch.rotationAngle);
+        patchMask = maskUtils.createEllipseMask([height, width], patch.xCenter, patch.yCenter, ...
+                                                 patch.semiMajorAxis, patch.semiMinorAxis, patch.rotationAngle);
+        % Calculate bounding box from mask
+        rows = find(any(patchMask, 2));
+        cols = find(any(patchMask, 1));
+        if ~isempty(rows) && ~isempty(cols)
+            bbox = [rows(1), rows(end), cols(1), cols(end)];
+        else
+            bbox = [1, height, 1, width];
+        end
 
         if sum(patchMask(:)) < cfg.upad.minPatchPixels
             warning('extract_features:patchPixels', 'Insufficient patch pixels (%d) for %s patch %d', sum(patchMask(:)), imageName, patch.patchID);
@@ -2438,9 +2449,12 @@ end
 
 function allPatchFeatures = processOriginalImageWithCoordinates(imageName, patches, phoneName, cfg)
     %% Process original image with coordinate data to extract features from all patches
-    
+
+    % Extract maskUtils from cfg modules (required for local functions)
+    maskUtils = cfg.modules.maskUtils;
+
     allPatchFeatures = [];
-    
+
     try
         % Load original image
         originalImage = loadAndValidateImage(imageName);
@@ -2451,7 +2465,7 @@ function allPatchFeatures = processOriginalImageWithCoordinates(imageName, patch
         %
         
         % Extract paper background mask (excluding all patch areas)
-        paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalImage, patches, cfg);
+        paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalImage, patches, cfg, maskUtils);
         if isempty(paperBackgroundMask)
             warning('extract_features:paperStatsMissing', 'Could not extract paper background for %s', imageName);
             return;
@@ -3427,7 +3441,7 @@ function coordinateData = parseCoordinatesFile(coordinatesFilePath)
         rotationAngles = rotationAngles(validRows);
 
         % Validate ellipse geometry constraints
-        % 1. Check if semiMajorAxis >= semiMinorAxis (enforced in createEllipticalPatchMask but validate at parse time)
+        % 1. Check if semiMajorAxis >= semiMinorAxis (enforced in mask_utils.createEllipseMask but validate at parse time)
         invalidGeometry = semiMajorAxes < semiMinorAxes;
         if any(invalidGeometry)
             numInvalid = sum(invalidGeometry);
@@ -3516,7 +3530,7 @@ function coordinateData = parseCoordinatesFile(coordinatesFilePath)
     end
 end
 
-function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalImage, patches, cfg)
+function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalImage, patches, cfg, maskUtils)
     %% Extract paper background mask by excluding all elliptical patch areas
     % Uses Otsu thresholding on the remaining pixels to isolate bright paper
 
@@ -3530,8 +3544,8 @@ function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalIma
 
         for i = 1:length(patches)
             patch = patches(i);
-            [patchMask, ~] = createEllipticalPatchMask([height, width], patch.xCenter, patch.yCenter, ...
-                                                        patch.semiMajorAxis, patch.semiMinorAxis, patch.rotationAngle);
+            patchMask = maskUtils.createEllipseMask([height, width], patch.xCenter, patch.yCenter, ...
+                                                     patch.semiMajorAxis, patch.semiMinorAxis, patch.rotationAngle);
 
             % Add margin around patch to ensure clean separation
             if cfg.upad.patchMaskMarginFactor > 0
@@ -3620,99 +3634,6 @@ function paperBackgroundMask = extractPaperBackgroundMaskWithPatches(originalIma
     end
 end
 
-function [mask, bbox] = createEllipticalPatchMask(imageSize, xCenter, yCenter, semiMajorAxis, semiMinorAxis, rotationAngle)
-    %% Create elliptical mask for patch area with cached meshgrid
-    %% Author: Veysel Y. Yilmaz
-    %
-    % Creates a binary mask for an elliptical region within an image, optimized
-    % for repeated calls on the same image size using persistent meshgrid caching.
-    %
-    % Inputs:
-    %   imageSize       - [height, width] vector specifying image dimensions
-    %   xCenter         - X-coordinate of ellipse center (pixels)
-    %   yCenter         - Y-coordinate of ellipse center (pixels)
-    %   semiMajorAxis   - Semi-major axis length (pixels, a >= b)
-    %   semiMinorAxis   - Semi-minor axis length (pixels, b <= a)
-%   rotationAngle   - Rotation angle in degrees (-180 to 180, clockwise from horizontal)
-    %
-    % Outputs:
-    %   mask - Logical array (height x width) where true indicates pixels inside ellipse
-    %   bbox - [rowMin, rowMax, colMin, colMax] minimal bounding box around ellipse
-    %
-    % Algorithm:
-    %   1. Rotate coordinate grid to ellipse's principal axes frame
-    %   2. Apply standard ellipse equation: (x_rot/a)^2 + (y_rot/b)^2 <= 1
-    %   3. Calculate tight axis-aligned bounding box accounting for rotation
-    %
-    % Performance:
-    %   - Uses persistent meshgrid cache for repeated calls on same image size
-    %   - Vectorized operations for all mask pixels simultaneously
-    %
-    % Example:
-    %   [mask, bbox] = createEllipticalPatchMask([480, 640], 320, 240, 50, 30, 45);
-    %   imagesc(mask); axis equal;
-
-    % Input validation
-    validateattributes(imageSize, {'numeric'}, {'vector','numel',2,'positive','finite'}, ...
-                      'createEllipticalPatchMask', 'imageSize');
-    validateattributes(xCenter, {'numeric'}, {'scalar','finite'}, ...
-                      'createEllipticalPatchMask', 'xCenter');
-    validateattributes(yCenter, {'numeric'}, {'scalar','finite'}, ...
-                      'createEllipticalPatchMask', 'yCenter');
-    validateattributes(semiMajorAxis, {'numeric'}, {'scalar','finite','positive'}, ...
-                      'createEllipticalPatchMask', 'semiMajorAxis');
-    validateattributes(semiMinorAxis, {'numeric'}, {'scalar','finite','positive'}, ...
-                      'createEllipticalPatchMask', 'semiMinorAxis');
-    validateattributes(rotationAngle, {'numeric'}, {'scalar','finite','>=',-180,'<=',180}, ...
-                      'createEllipticalPatchMask', 'rotationAngle');
-
-    % Enforce ellipse constraint: semi-minor axis <= semi-major axis
-    if semiMinorAxis > semiMajorAxis
-        warning('createEllipticalPatchMask:axisSwap', ...
-               'Semi-minor axis (%g) > semi-major axis (%g). Swapping axes.', ...
-               semiMinorAxis, semiMajorAxis);
-        [semiMajorAxis, semiMinorAxis] = deal(semiMinorAxis, semiMajorAxis);
-    end
-
-    [height, width] = deal(imageSize(1), imageSize(2));
-
-    % Persistent meshgrid cache for performance (reused across patches of same parent image)
-    persistent lastSize Xcache Ycache;
-    if isempty(lastSize) || numel(lastSize) ~= 2 || any(lastSize ~= [height, width])
-        [Xcache, Ycache] = meshgrid(1:width, 1:height);
-        lastSize = [height, width];
-    end
-
-    % Convert rotation angle to radians
-    theta_rad = deg2rad(rotationAngle);
-
-    % Translate coordinate grid to ellipse center
-    dx = Xcache - xCenter;
-    dy = Ycache - yCenter;
-
-    % Rotate coordinates to ellipse's principal axes frame
-    % Rotation matrix: [cos(θ)  sin(θ)]
-    %                  [-sin(θ) cos(θ)]
-    x_rot =  dx * cos(theta_rad) + dy * sin(theta_rad);
-    y_rot = -dx * sin(theta_rad) + dy * cos(theta_rad);
-
-    % Apply ellipse equation: (x_rot/a)^2 + (y_rot/b)^2 <= 1
-    % Use squared terms to avoid sqrt (more efficient)
-    mask = (x_rot ./ semiMajorAxis).^2 + (y_rot ./ semiMinorAxis).^2 <= 1;
-
-    % Calculate minimal axis-aligned bounding box
-    if nargout > 1
-        if any(mask(:))
-            % Find rows and columns containing mask pixels
-            rowIdx = find(any(mask, 2));
-            colIdx = find(any(mask, 1));
-            bbox = [rowIdx(1), rowIdx(end), colIdx(1), colIdx(end)];
-        else
-            % Degenerate case: empty mask (shouldn't happen with valid inputs)
-            bbox = [1, height, 1, width];
-        end
-    end
-end
 
 
 

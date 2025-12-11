@@ -334,6 +334,9 @@ function extract_elliptical_patches(coordPath, quadInputDir, patchOutputBase, cf
     ensure_folder(patchOutputBase);
     quadConDirs = find_concentration_dirs(quadInputDir, cfg.concFolderPrefix);
 
+    % Load mask_utils for ellipse mask creation
+    maskUtils = mask_utils();
+
     for i = 1:numel(rows)
         row = rows(i);
         srcPath = resolve_quad_source(quadInputDir, row, cfg, quadConDirs);
@@ -358,9 +361,9 @@ function extract_elliptical_patches(coordPath, quadInputDir, patchOutputBase, cf
         patchRegion = img(y1:y2, x1:x2, :);
         [h, w, ~] = size(patchRegion);
 
-        % OPTIMIZATION: Use cached elliptical masks
+        % OPTIMIZATION: Use cached elliptical masks (delegate to mask_utils)
         cx = xCenter - x1 + 1; cy = yCenter - y1 + 1;
-        mask = get_elliptical_mask(h, w, cx, cy, a, b, theta, cfg);
+        mask = maskUtils.createEllipseMaskCached([h, w], cx, cy, a, b, theta, cfg.ellipticalMaskCache);
 
         % OPTIMIZATION: Apply mask more efficiently
         if size(patchRegion,3) > 1
@@ -446,41 +449,9 @@ function cropped = crop_with_quad(img, quad)
     end
 end
 
-function mask = get_elliptical_mask(h, w, cx, cy, a, b, theta, cfg)
-    % OPTIMIZATION: Cache elliptical masks by dimensions, center, and ellipse parameters
-    % Most patches have identical dimensions, so this saves significant computation
-    cacheKey = sprintf('%d_%d_%.4f_%.4f_%.4f_%.4f_%.4f', h, w, cx, cy, a, b, theta);
-
-    if isKey(cfg.ellipticalMaskCache, cacheKey)
-        mask = cfg.ellipticalMaskCache(cacheKey);
-        return;
-    end
-
-    % Generate new elliptical mask with rotation
-    [X, Y] = meshgrid(1:w, 1:h);
-    theta_rad = deg2rad(theta);
-
-    % Translate to center
-    dx = X - cx;
-    dy = Y - cy;
-
-    % Rotate coordinates to ellipse's principal axes frame
-    x_rot =  dx * cos(theta_rad) + dy * sin(theta_rad);
-    y_rot = -dx * sin(theta_rad) + dy * cos(theta_rad);
-
-    % Apply ellipse equation: (x_rot/a)^2 + (y_rot/b)^2 <= 1
-    mask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
-
-    % Cache for reuse (cache masks up to ~1000x1000 pixels)
-    if h * w < 1e6
-        cfg.ellipticalMaskCache(cacheKey) = mask;
-    end
-end
-
-function save_image_with_format(img, outPath, outExt, cfg)
-    % Save image honoring requested extension and JPEG size limits.
+function save_image_with_format(img, outPath, ~, ~)
+    % Save image (format determined from outPath extension by imwrite).
     ensure_folder(fileparts(outPath));
-    ext = lower(outExt);
     try
         imwrite(img, outPath);
     catch ME

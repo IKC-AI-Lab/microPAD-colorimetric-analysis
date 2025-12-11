@@ -81,7 +81,7 @@ function cut_micropads(varargin)
 
     % === ELLIPSE EDITING CONFIGURATION ===
     DEFAULT_ENABLE_ELLIPSE_EDITING = true;
-    DEFAULT_ENABLE_QUAD_EDITING = false;
+    DEFAULT_ENABLE_QUAD_EDITING = true;
     REPLICATES_PER_CONCENTRATION = 3;
 
     % Ellipse definitions in normalized micropad coordinates [0,1]×[0,1]

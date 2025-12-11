@@ -952,7 +952,7 @@ function setQuadColor(quadHandle, colorValue, faceAlpha)
     end
 end
 
-function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, bounds, cfg)
+function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor, rotationAngle, color, bounds, ~)
     % Helper to instantiate drawellipse overlays with consistent constraints
     %
     % INPUTS:
@@ -1069,14 +1069,16 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
 
                 ellipseColor = getConcentrationColor(concIdx, cfg.numSquares);
 
-                % Draw ellipse using parametric form
-                % Use CW rotation to match image coordinate convention
+                % Draw ellipse using parametric form (clockwise rotation)
                 t = linspace(0, 2*pi, 100);
                 theta_rad = deg2rad(theta);
                 x_ellipse = a * cos(t);
                 y_ellipse = b * sin(t);
-                x_rot = x + x_ellipse * cos(theta_rad) - y_ellipse * sin(theta_rad);
-                y_rot = y + x_ellipse * sin(theta_rad) + y_ellipse * cos(theta_rad);
+                % Clockwise transform: [dx; dy] = [cos sin; -sin cos] * [x_ellipse; y_ellipse]
+                dx =  x_ellipse * cos(theta_rad) + y_ellipse * sin(theta_rad);
+                dy = -x_ellipse * sin(theta_rad) + y_ellipse * cos(theta_rad);
+                x_rot = x + dx;
+                y_rot = y + dy;
 
                 plot(leftAxes, x_rot, y_rot, 'Color', ellipseColor, 'LineWidth', 1.5);
             end
@@ -1132,10 +1134,10 @@ function maskedImg = createMaskedPreview(img, quadParams, ellipseData, cfg)
 
                 [X, Y] = meshgrid(1:width, 1:height);
                 % Inverse rotation (CCW) to map world points to unrotated ellipse frame
-                theta_rad = deg2rad(-theta);
+                % Matches mask_utils.createEllipseMask rotation convention
+                theta_rad = deg2rad(theta);
                 dx = X - x;
                 dy = Y - y;
-                % Match cut_micropads mask rotation (Y-down image coordinates)
                 x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);
                 y_rot =  dx * sin(theta_rad) + dy * cos(theta_rad);
 

@@ -166,17 +166,17 @@ function mask = createEllipseMask(imageSize, cx, cy, semiMajor, semiMinor, rotat
     % Create coordinate grids
     [X, Y] = meshgrid(1:w, 1:h);
 
-    % Convert rotation to radians
+    % Convert rotation to radians (ellipse rotation is specified clockwise;
+    % we rotate points counterclockwise to undo it)
     theta = deg2rad(rotationAngle);
 
     % Translate to ellipse center
     dx = X - cx;
     dy = Y - cy;
 
-    % Rotate coordinates to ellipse's principal axes frame
-    % For clockwise rotation in Y-down coordinates:
-    x_rot =  dx * cos(theta) + dy * sin(theta);
-    y_rot = -dx * sin(theta) + dy * cos(theta);
+    % Rotate coordinates into the ellipse's principal frame (CCW by theta)
+    x_rot =  dx * cos(theta) - dy * sin(theta);
+    y_rot =  dx * sin(theta) + dy * cos(theta);
 
     % Apply standard ellipse equation: (x/a)^2 + (y/b)^2 <= 1
     mask = (x_rot ./ semiMajor).^2 + (y_rot ./ semiMinor).^2 <= 1;
