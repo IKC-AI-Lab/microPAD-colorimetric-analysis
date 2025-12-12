@@ -93,9 +93,9 @@ function cut_micropads(varargin)
     % The homography transform will adjust for perspective distortion.
     ELLIPSE_DEFAULT_RECORDS = [
         % x,    y,    semiMajor, semiMinor, rotationAngle
-        0.25,  0.40,  0.08,      0.07,      -45;  % Replicate 0 (Urea)
-        0.50,  0.35,  0.08,      0.07,       90;  % Replicate 1 (Creatinine) - vertical
-        0.75,  0.40,  0.08,      0.07,       45   % Replicate 2 (Lactate)
+        0.263306,  0.434395,  0.077779,  0.071073,  178.189;  % Replicate 0 (Urea)
+        0.497134,  0.342967,  0.076068,  0.069731,  176.362;  % Replicate 1 (Creatinine)
+        0.721795,  0.435818,  0.074423,  0.068091,  175.217   % Replicate 2 (Lactate)
     ];
 
     % === ELLIPSE LAYOUT PARAMETERS (legacy, for fallback) ===
@@ -500,6 +500,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
         quadCoordFile = fullfile(outputDirs.quadDir, cfg.coordinateFileName);
         [loadedQuads, quadsFound, loadedRotation] = loadQuadCoordinates(quadCoordFile, imageName, cfg.numSquares);
 
+        orientation = 'horizontal';
         if quadsFound
             % Use loaded quads for positioning
             quadParams = loadedQuads;
@@ -507,8 +508,16 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             initialRotation = loadedRotation;
             fprintf('  Mode 3: Loaded %d quad coordinates with rotation=%.1f° for ellipse positioning\n', size(quadParams, 1), initialRotation);
 
+            % Determine strip orientation in DISPLAY space to seed ellipses correctly.
+            % Loaded quads are in base (unrotated) coordinates, but ellipse defaults
+            % are defined relative to the rotated display view.
+            baseSize = [imageHeight, imageWidth];
+            displaySize = computeDisplayImageSize(baseSize, initialRotation, cfg);
+            displayQuadsForOrientation = convertBaseQuadsToDisplay(quadParams, baseSize, displaySize, initialRotation, cfg);
+            [~, orientation] = sortQuadArrayByX(displayQuadsForOrientation);
+
             % Go directly to ellipse editing with quad overlays (image will be rotated for display)
-            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation, memory);
+            buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, initialRotation, memory, orientation);
 
         else
             % No quads - use default grid layout
@@ -542,7 +551,7 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
             end
 
             % Transition to preview mode before saving (like Mode 1)
-            clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, quadParams, initialRotation, memory, [], 'horizontal', ellipseData);
+            clearAndRebuildUI(fig, 'preview', img, imageName, phoneName, cfg, quadParams, initialRotation, memory, [], orientation, ellipseData);
 
             % Wait for preview action
             [prevAction, ~, ~] = waitForUserAction(fig);
@@ -582,11 +591,6 @@ function [success, fig, memory] = processOneImage(imageName, outputDirs, cfg, fi
 
     % Memory quads are exact display coordinates - use them directly
     [initialQuads, orientation] = sortQuadArrayByX(initialQuads);
-
-    % Use memory orientation if available (quads may come from memory with known orientation)
-    if memory.hasSettings && ~isempty(memory.orientation)
-        orientation = memory.orientation;
-    end
 
     % Display GUI immediately with memory/default quads and rotation
     [quadParams, ~, fig, rotation, ellipseData, orientation] = showInteractiveGUI(img, imageName, phoneName, cfg, initialQuads, fig, initialRotation, memory, orientation);
@@ -2543,6 +2547,12 @@ function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSi
         scaleY = targetSize(1) / rotatedSize(1);
         rotCenters(:, 1) = rotCenters(:, 1) * scaleX;
         rotCenters(:, 2) = rotCenters(:, 2) * scaleY;
+
+        % Scale ellipse axes to match display image resizing.
+        % Use geometric mean to preserve area under uniform scaling.
+        axisScale = sqrt(scaleX * scaleY);
+        displayEllipses(:, 5) = ellipseData(:, 5) * axisScale;
+        displayEllipses(:, 6) = ellipseData(:, 6) * axisScale;
     end
 
     displayEllipses(:, 3:4) = rotCenters;

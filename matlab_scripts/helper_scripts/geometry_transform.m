@@ -48,6 +48,7 @@ function geomTform = geometry_transform()
     geomTform.geom.enforceEllipseAxisLimits = @enforceEllipseAxisLimits;
     geomTform.geom.computeEllipseAxisBounds = @computeEllipseAxisBounds;
     geomTform.geom.transformDefaultEllipsesToQuad = @transformDefaultEllipsesToQuad;
+    geomTform.geom.reorderQuadToPhysical = @reorderQuadToPhysical;
 
     %% Public API - Geometry: Bounds calculation
     geomTform.geom.computeQuadBounds = @computeQuadBounds;
@@ -85,6 +86,7 @@ function geomTform = geometry_transform()
 
     %% Constants
     geomTform.DEFAULT_ANGLE_TOLERANCE = 0.01;  % degrees
+    geomTform.PHYSICAL_ORIENTATION_ASPECT_THRESHOLD = 1.05;  % min aspect ratio to detect rotation
 end
 
 %% =========================================================================
@@ -656,25 +658,11 @@ function scaledEllipses = scaleEllipsesForQuadChange(oldCorners, newCorners, old
         return;
     end
 
-    % Calculate old quad centroid and dimensions
-    oldCentroid = mean(oldCorners, 1);
-    oldMinX = min(oldCorners(:, 1));
-    oldMaxX = max(oldCorners(:, 1));
-    oldMinY = min(oldCorners(:, 2));
-    oldMaxY = max(oldCorners(:, 2));
-    oldWidth = oldMaxX - oldMinX;
-    oldHeight = oldMaxY - oldMinY;
-
-    % Calculate new quad centroid and dimensions
-    newCentroid = mean(newCorners, 1);
-    newMinX = min(newCorners(:, 1));
-    newMaxX = max(newCorners(:, 1));
-    newMinY = min(newCorners(:, 2));
-    newMaxY = max(newCorners(:, 2));
-    newWidth = newMaxX - newMinX;
-    newHeight = newMaxY - newMinY;
-
-    % Validate quad dimensions
+    % Validate quad dimensions using axis-aligned extents
+    oldWidth = max(oldCorners(:, 1)) - min(oldCorners(:, 1));
+    oldHeight = max(oldCorners(:, 2)) - min(oldCorners(:, 2));
+    newWidth = max(newCorners(:, 1)) - min(newCorners(:, 1));
+    newHeight = max(newCorners(:, 2)) - min(newCorners(:, 2));
     if oldWidth <= 0 || oldHeight <= 0 || newWidth <= 0 || newHeight <= 0
         warning('geometry_transform:degenerate_quad', ...
                 'Quad has zero or negative dimensions - returning empty ellipses');
@@ -682,15 +670,15 @@ function scaledEllipses = scaleEllipsesForQuadChange(oldCorners, newCorners, old
         return;
     end
 
-    % Compute uniform scale factor using geometric mean
-    scaleX = newWidth / oldWidth;
-    scaleY = newHeight / oldHeight;
-    axisScale = sqrt(scaleX * scaleY);
+    % Ensure both quads are ordered consistently before fitting homography
+    oldCorners = orderQuadVerticesClockwise(oldCorners);
+    newCorners = orderQuadVerticesClockwise(newCorners);
 
-    % Scale ellipse parameters
+    % Compute projective transform from old quad to new quad
+    tform = compute_homography_from_points(oldCorners, newCorners);
+
     numEllipses = size(oldEllipses, 1);
     scaledEllipses = zeros(size(oldEllipses));
-
     bounds = computeEllipseAxisBounds(newCorners, imageSize, cfg);
 
     for i = 1:numEllipses
@@ -702,22 +690,33 @@ function scaledEllipses = scaleEllipsesForQuadChange(oldCorners, newCorners, old
         oldSemiMinor = oldEllipses(i, 6);
         oldRotation = oldEllipses(i, 7);
 
-        % Transform centers relative to quad centroid
-        newX = (oldX - oldCentroid(1)) * axisScale + newCentroid(1);
-        newY = (oldY - oldCentroid(2)) * axisScale + newCentroid(2);
+        ellipseIn.center = [oldX, oldY];
+        ellipseIn.semiMajor = oldSemiMajor;
+        ellipseIn.semiMinor = oldSemiMinor;
+        ellipseIn.rotation = oldRotation;
+        ellipseIn.valid = true;
 
-        % Scale axes uniformly
-        newSemiMajor = oldSemiMajor * axisScale;
-        newSemiMinor = oldSemiMinor * axisScale;
+        ellipseOut = transform_ellipse(ellipseIn, tform);
+        if ~ellipseOut.valid || ~all(isfinite([ellipseOut.center, ellipseOut.semiMajor, ellipseOut.semiMinor, ellipseOut.rotation])) || ...
+           ellipseOut.semiMajor <= 0 || ellipseOut.semiMinor <= 0
+            warning('geometry_transform:ellipseInvalidScale', ...
+                    'Ellipse transform invalid after quad change. Discarding memory for this quad.');
+            scaledEllipses = [];
+            return;
+        end
+
+        newX = ellipseOut.center(1);
+        newY = ellipseOut.center(2);
+        newSemiMajor = ellipseOut.semiMajor;
+        newSemiMinor = ellipseOut.semiMinor;
+        newRotation = ellipseOut.rotation;
 
         % Enforce constraint: semiMajor >= semiMinor
         if newSemiMinor > newSemiMajor
             temp = newSemiMajor;
             newSemiMajor = newSemiMinor;
             newSemiMinor = temp;
-            newRotation = mod(oldRotation + 90, 360);
-        else
-            newRotation = oldRotation;
+            newRotation = newRotation + 90;
         end
 
         % Enforce configured limits
@@ -763,6 +762,11 @@ function displayEllipses = convertBaseEllipsesToDisplay(ellipseData, baseImageSi
         scaleY = targetSize(1) / rotatedSize(1);
         rotCenters(:, 1) = rotCenters(:, 1) * scaleX;
         rotCenters(:, 2) = rotCenters(:, 2) * scaleY;
+
+        % Scale ellipse axes to match display image resizing.
+        axisScale = sqrt(scaleX * scaleY);
+        displayEllipses(:, 5) = ellipseData(:, 5) * axisScale;
+        displayEllipses(:, 6) = ellipseData(:, 6) * axisScale;
     end
 
     displayEllipses(:, 3:4) = rotCenters;
@@ -803,98 +807,94 @@ function [semiMajor, semiMinor, rotationAngle] = enforceEllipseAxisLimits(semiMa
     rotationAngle = mod(rotationAngle + 180, 360) - 180;
 end
 
-function bounds = computeEllipseAxisBounds(~, imageSize, cfg)
+function bounds = computeEllipseAxisBounds(quadVertices, imageSize, cfg)
     % Compute min/max semi-axis lengths for ellipse editing
     %
     % INPUTS:
-    %   (unused)  - Quad vertices (unused, for API compatibility)
-    %   imageSize - [height, width] of image
-    %   cfg       - Configuration with .ellipse.minAxisPercent
+    %   quadVertices - 4x2 quad corners in display/image coordinates
+    %   imageSize    - [height, width] of image (fallback only)
+    %   cfg          - Configuration with .ellipse.minAxisPercent
     %
     % OUTPUTS:
     %   bounds - struct with .minAxis and .maxAxis
 
-    imgHeight = imageSize(1);
-    imgWidth = imageSize(2);
-    baseExtent = max(imgWidth, imgHeight);
+    % Prefer quad-based scaling so far/foreshortened quads allow smaller ellipses.
+    baseExtent = [];
+    if nargin >= 1 && ~isempty(quadVertices) && isnumeric(quadVertices) && size(quadVertices, 1) == 4 && size(quadVertices, 2) == 2
+        pts = double(quadVertices);
+        if all(isfinite(pts(:)))
+            pts = orderQuadVerticesClockwise(pts);
+            nextPts = pts([2:4, 1], :);
+            sides = sqrt(sum((pts - nextPts).^2, 2));
+            if all(sides > 0) && all(isfinite(sides))
+                baseExtent = mean(sides);
+            end
+        end
+    end
+
+    if isempty(baseExtent)
+        imgHeight = imageSize(1);
+        imgWidth = imageSize(2);
+        baseExtent = max(imgWidth, imgHeight);
+    end
+
     minAxis = max(1, baseExtent * cfg.ellipse.minAxisPercent);
     maxAxis = baseExtent;
     bounds = struct('minAxis', minAxis, 'maxAxis', maxAxis);
 end
 
-function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orientation, rotation)
+function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orientation, ~)
     % Transform normalized ellipse records to pixel coordinates via homography
     %
     % Computes a homography from the unit square [0,1]x[0,1] to the actual
     % quadvertices, then transforms each ellipse from ELLIPSE_DEFAULT_RECORDS
     % through this homography to get pixel-space ellipse parameters.
     %
+    % IMPORTANT: This function uses PHYSICAL vertex ordering, not visual.
+    % The quad vertices are reordered so that:
+    %   - Unit square [TL,TR,BR,BL] maps to PHYSICAL micropad corners
+    %   - ELLIPSE_DEFAULT_RECORDS (defined in physical space) map correctly
+    %   - No need to transform ellipse positions based on orientation
+    %
     % Args:
-    %   quadVertices - 4x2 matrix of quadcorners [TL; TR; BR; BL] in pixels
-    %   cfg             - Configuration struct with cfg.ellipse.defaultRecords
-    %                     and cfg.homography
-    %   orientation     - 'horizontal' or 'vertical' (strip layout on screen)
-    %                     Determines how ELLIPSE_DEFAULT_RECORDS are transformed
-    %                     before applying homography. Default: 'horizontal'
-    %   rotation        - Rotation angle applied to image (degrees). Used to
-    %                     re-align vertex order (Vertex 1 = Visual Top-Left).
+    %   quadVertices - 4x2 matrix of quad corners (any order, will be reordered)
+    %   cfg          - Configuration struct with cfg.ellipse.defaultRecords
+    %   orientation  - 'horizontal' or 'vertical' (strip layout hint for
+    %                  physical orientation detection). Default: 'horizontal'
+    %   ~            - Unused (kept for API compatibility)
     %
     % Returns:
     %   ellipseParams - Nx5 matrix [x, y, semiMajor, semiMinor, rotation] in pixels
+    %
+    % See also: reorderQuadToPhysical, orderQuadVerticesClockwise
 
     if nargin < 3 || isempty(orientation)
         orientation = 'horizontal';
     end
 
-    if nargin < 4
-        rotation = 0;
-    end
-
-    % Adjust quadvertices based on rotation to ensure Vertex 1 is always Top-Left
-    % relative to the visual display.
-    % Rotation is positive clockwise (e.g. 90 = 1x CW).
-    % Default vertex order [TL, TR, BR, BL] cycles with rotation.
-    if rotation ~= 0
-        k = mod(round(rotation / 90), 4);
-        if k > 0
-            quadVertices = circshift(quadVertices, k, 1);
-        end
-    end
-
-    defaultRecords = cfg.ellipse.defaultRecords;
-    
     % Use local geometry transform handles
     geomTform = geometry_transform();
 
-    % Transform default records based on micropad strip orientation
-    % ELLIPSE_DEFAULT_RECORDS is defined for horizontal strip layout (reading position)
-    % When strip is vertical (rotated 90 deg CCW), transform positions accordingly
-    if strcmp(orientation, 'vertical')
-        % Paper strip rotated 90 deg CCW: physical left -> screen bottom
-        % Transform in unit square: (x, y) -> (y, 1-x)
-        % Ellipse rotation: +90 deg to account for paper rotation
-        transformedRecords = zeros(size(defaultRecords));
-        transformedRecords(:, 1) = defaultRecords(:, 2);           % new x = old y
-        transformedRecords(:, 2) = 1 - defaultRecords(:, 1);       % new y = 1 - old x
-        transformedRecords(:, 3:4) = defaultRecords(:, 3:4);       % axes unchanged
-        transformedRecords(:, 5) = defaultRecords(:, 5) + 90;      % rotation +90 deg
-        defaultRecords = transformedRecords;
-    end
+    % CRITICAL FIX: Reorder quad vertices to PHYSICAL order (not visual)
+    % This ensures the homography maps from physical unit square to physical
+    % quad corners, so ELLIPSE_DEFAULT_RECORDS (defined in physical space)
+    % are correctly transformed to screen coordinates.
+    %
+    % Previous bug: orderQuadVerticesClockwise gave VISUAL order, causing
+    % ellipses to appear in wrong positions when micropad was rotated.
+    physicalQuad = reorderQuadToPhysical(quadVertices, orientation);
 
-    % Unit square corners (source reference frame)
-    % Order: TL, TR, BR, BL to match quad vertex order
-    unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];
+    % Use original default records WITHOUT orientation transformation
+    % The physical vertex reordering handles the rotation implicitly
+    defaultRecords = cfg.ellipse.defaultRecords;
 
-    % Compute homography from unit square to quadrilateral
-    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, quadVertices);
+    % Unit square corners (PHYSICAL reference frame for canonical micropad)
+    % In normalized coords: (0,0)=TL, (1,0)=TR, (1,1)=BR, (0,1)=BL
+    % This matches the physical micropad layout where ELLIPSE_DEFAULT_RECORDS are defined
+    unitSquare = [0, 0; 1, 0; 1, 1; 0, 1];  % [TL; TR; BR; BL]
 
-    % Compute quadscale (average side length for axis scaling)
-    sides = zeros(4, 1);
-    for i = 1:4
-        j = mod(i, 4) + 1;
-        sides(i) = norm(quadVertices(i,:) - quadVertices(j,:));
-    end
-    quadScale = mean(sides);
+    % Compute homography from unit square to PHYSICAL quad vertices
+    tform = geomTform.homog.computeHomographyFromPoints(unitSquare, physicalQuad);
 
     numEllipses = size(defaultRecords, 1);
     ellipseParams = zeros(numEllipses, 5);
@@ -911,24 +911,20 @@ function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orien
         % Transform through homography
         ellipseOut = geomTform.homog.transformEllipse(ellipseIn, tform);
 
-        if ellipseOut.valid
-            % Scale axes by quadsize (normalized -> pixels)
-            ellipseParams(i, :) = [
-                ellipseOut.center(1), ellipseOut.center(2), ...
-                ellipseOut.semiMajor * quadScale, ...
-                ellipseOut.semiMinor * quadScale, ...
-                ellipseOut.rotation
-            ];
-        else
-            % Fallback: simple center transform without shape distortion
-            centerPt = geomTform.homog.transformQuad(defaultRecords(i, 1:2), tform);
-            ellipseParams(i, :) = [
-                centerPt(1), centerPt(2), ...
-                defaultRecords(i, 3) * quadScale, ...
-                defaultRecords(i, 4) * quadScale, ...
-                defaultRecords(i, 5)
-            ];
+        if ~ellipseOut.valid || ~all(isfinite([ellipseOut.center, ellipseOut.semiMajor, ellipseOut.semiMinor, ellipseOut.rotation])) || ...
+           ellipseOut.semiMajor <= 0 || ellipseOut.semiMinor <= 0
+            % Under strong perspective, the conic conjugation can become numerically unstable.
+            % Approximate the transformed ellipse using the local affine Jacobian of the homography
+            % at the ellipse center (gives correct local scaling/foreshortening).
+            ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform);
         end
+
+        ellipseParams(i, :) = [
+            ellipseOut.center(1), ellipseOut.center(2), ...
+            ellipseOut.semiMajor, ...
+            ellipseOut.semiMinor, ...
+            ellipseOut.rotation
+        ];
 
         % Enforce semiMajor >= semiMinor convention
         if ellipseParams(i, 3) < ellipseParams(i, 4)
@@ -940,6 +936,221 @@ function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orien
 
         % Normalize rotation to [-180, 180]
         ellipseParams(i, 5) = geomTform.normalizeAngle(ellipseParams(i, 5));
+    end
+end
+
+function ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform)
+    % Approximate homography-warped ellipse by local affine linearization.
+    % Uses numerical Jacobian at center to map shape matrix.
+
+    ellipseOut = invalid_ellipse();
+    if isempty(ellipseIn) || ~isfield(ellipseIn, 'center')
+        return;
+    end
+
+    u0 = double(ellipseIn.center(1));
+    v0 = double(ellipseIn.center(2));
+
+    % Small perturbation in unit-square coordinates
+    epsStep = 1e-3;
+    [x0, y0] = transformPointsForward(tform, u0, v0);
+    [x1, y1] = transformPointsForward(tform, u0 + epsStep, v0);
+    [x2, y2] = transformPointsForward(tform, u0, v0 + epsStep);
+
+    if ~all(isfinite([x0, y0, x1, y1, x2, y2]))
+        return;
+    end
+
+    J = [ (x1 - x0) / epsStep, (x2 - x0) / epsStep; ...
+          (y1 - y0) / epsStep, (y2 - y0) / epsStep ];
+
+    a = double(ellipseIn.semiMajor);
+    b = double(ellipseIn.semiMinor);
+    theta = deg2rad(double(ellipseIn.rotation));
+    c = cos(theta);
+    s = sin(theta);
+    R = [c -s; s c];
+    S = R * diag([a^2, b^2]) * R';  % shape matrix in canonical coords
+
+    S2 = J * S * J';
+    if any(~isfinite(S2(:)))
+        return;
+    end
+
+    [V, D] = eig((S2 + S2') / 2);  % enforce symmetry
+    axesSq = diag(D);
+    if any(axesSq <= 0) || any(~isfinite(axesSq))
+        return;
+    end
+
+    [axesSorted, idx] = sort(sqrt(axesSq), 'descend');
+    vMajor = V(:, idx(1));
+
+    rotDeg = rad2deg(atan2(vMajor(2), vMajor(1)));
+    ellipseOut = struct( ...
+        'center', [x0, y0], ...
+        'semiMajor', axesSorted(1), ...
+        'semiMinor', axesSorted(2), ...
+        'rotation', rotDeg, ...
+        'valid', true);
+end
+
+function ordered = orderQuadVerticesClockwise(quadVertices)
+    % Order 4 quad vertices clockwise from visual top-left.
+    % Input/Output: 4x2 matrix [x, y] in image/display coordinates.
+
+    ordered = quadVertices;
+    if isempty(quadVertices) || size(quadVertices, 1) ~= 4 || size(quadVertices, 2) ~= 2
+        return;
+    end
+
+    pts = double(quadVertices);
+    if any(~isfinite(pts(:)))
+        return;
+    end
+
+    centroid = mean(pts, 1);
+    angles = atan2(pts(:, 2) - centroid(2), pts(:, 1) - centroid(1));
+
+    % In image coordinates (y increases downward), sorting angles ascending
+    % yields clockwise order around the centroid.
+    [~, idx] = sort(angles, 'ascend');
+    ptsSorted = pts(idx, :);
+
+    % Rotate so that the first vertex is visual top-left (min x+y).
+    [~, tlIdx] = min(sum(ptsSorted, 2));
+    ordered = circshift(ptsSorted, 1 - tlIdx, 1);
+end
+
+function physicalQuad = reorderQuadToPhysical(quadVertices, orientation)
+    % Reorder quad vertices from VISUAL order to PHYSICAL (micropad) order.
+    %
+    % PROBLEM SOLVED:
+    %   When a micropad is photographed rotated (e.g., vertical strip), the
+    %   visual top-left corner is NOT the physical top-left of the micropad.
+    %   This function detects the physical orientation and reorders vertices
+    %   so that homography correctly maps canonical ellipse positions.
+    %
+    % APPROACH:
+    %   1. Order vertices visually (clockwise from visual TL)
+    %   2. Detect physical rotation using quad aspect ratio (edge lengths)
+    %   3. Use orientation hint as fallback for ambiguous cases
+    %   4. Reorder to physical [TL, TR, BR, BL] order
+    %
+    % INPUTS:
+    %   quadVertices - 4x2 matrix of quad corners (any order)
+    %   orientation  - 'horizontal' or 'vertical' (strip layout hint)
+    %                  Derived from sortQuadArrayByX() based on how quads are
+    %                  arranged on screen. Used as fallback when aspect ratio
+    %                  is ambiguous (near-square quads).
+    %
+    % OUTPUTS:
+    %   physicalQuad - 4x2 matrix ordered as physical [TL, TR, BR, BL]
+    %
+    % MICROPAD GEOMETRY CONSTRAINT:
+    %   Micropads are slightly taller than wide (height > width).
+    %   - Physical "top" and "bottom" edges are the shorter (horizontal) edges
+    %   - Physical "left" and "right" edges are the longer (vertical) edges
+    %
+    % LIMITATIONS:
+    %   - 180° rotation (upside-down) cannot be distinguished from 0° (upright)
+    %     using aspect ratio alone. Both have the same edge length pattern.
+    %   - For single-quad scenarios without strip context, orientation defaults
+    %     to 'horizontal' which may be incorrect for isolated vertical quads.
+    %
+    % See also: orderQuadVerticesClockwise, transformDefaultEllipsesToQuad
+
+    % Input validation
+    if nargin < 2 || isempty(orientation)
+        orientation = 'horizontal';
+    end
+
+    % Validate orientation parameter
+    if ~ischar(orientation) && ~isstring(orientation)
+        warning('geometry_transform:invalidOrientationType', ...
+            'Orientation must be a string, got %s. Defaulting to horizontal.', class(orientation));
+        orientation = 'horizontal';
+    elseif ~ismember(orientation, {'horizontal', 'vertical'})
+        warning('geometry_transform:invalidOrientation', ...
+            'Invalid orientation "%s". Expected ''horizontal'' or ''vertical''. Defaulting to horizontal.', orientation);
+        orientation = 'horizontal';
+    end
+
+    % First, ensure consistent visual ordering: clockwise from visual top-left
+    visualQuad = orderQuadVerticesClockwise(quadVertices);
+
+    % Initialize output
+    physicalQuad = visualQuad;
+
+    if isempty(visualQuad) || size(visualQuad, 1) ~= 4
+        return;
+    end
+
+    % Compute edge lengths in visual order: [TL→TR, TR→BR, BR→BL, BL→TL]
+    % These correspond to [top, right, bottom, left] edges visually
+    edges = zeros(4, 1);
+    for i = 1:4
+        j = mod(i, 4) + 1;
+        edges(i) = norm(visualQuad(i, :) - visualQuad(j, :));
+    end
+
+    % Compare horizontal vs vertical edge pairs
+    % For an UPRIGHT micropad: horizontal edges (1,3) < vertical edges (2,4)
+    horizontalSum = edges(1) + edges(3);  % top + bottom
+    verticalSum = edges(2) + edges(4);    % left + right
+
+    % Aspect ratio threshold: minimum ratio to reliably detect rotation
+    % Must match geomTform.PHYSICAL_ORIENTATION_ASPECT_THRESHOLD (defined at module level)
+    % Value of 1.05 means 5% difference required to distinguish orientation
+    ASPECT_THRESHOLD = 1.05;
+    aspectRatio = max(horizontalSum, verticalSum) / max(min(horizontalSum, verticalSum), eps);
+
+    % Determine rotation steps (number of 90° CCW rotations from visual to physical)
+    rotationSteps = 0;
+
+    if aspectRatio >= ASPECT_THRESHOLD
+        % Aspect ratio is distinguishable - use edge lengths to detect orientation
+        if horizontalSum < verticalSum
+            % Horizontal edges shorter → micropad appears UPRIGHT (0° or 180°)
+            % NOTE: Cannot distinguish 0° from 180° with aspect ratio alone.
+            % Assume 0° (visual TL = physical TL) - user must manually correct 180° cases
+            rotationSteps = 0;
+        else
+            % Vertical edges shorter → micropad appears ROTATED 90°
+            % Use orientation hint to determine CW vs CCW
+            if strcmp(orientation, 'vertical')
+                % Vertical strip: paper typically rotated 90° CCW (strip standing up)
+                % Visual BL corresponds to physical TL
+                rotationSteps = 1;
+            else
+                % Horizontal strip but quad is landscape - less common scenario
+                % Assume 90° CW rotation (visual TR corresponds to physical TL)
+                rotationSteps = 3;  % 270° CCW = 90° CW
+            end
+        end
+    else
+        % Aspect ratio is ambiguous (near-square quad) - rely on orientation hint
+        if strcmp(orientation, 'vertical')
+            rotationSteps = 1;  % Assume 90° CCW for vertical strips
+        else
+            rotationSteps = 0;  % Assume upright for horizontal strips
+        end
+    end
+
+    % Apply rotation to get physical vertex order
+    % circshift(A, k, 1) shifts rows DOWN by k positions (with wrap-around)
+    %
+    % Visual quad order: [vis-TL; vis-TR; vis-BR; vis-BL] (indices 1,2,3,4)
+    %
+    % After circshift by rotationSteps:
+    %   k=0: [vis-TL, vis-TR, vis-BR, vis-BL] - no change (upright)
+    %   k=1: [vis-BL, vis-TL, vis-TR, vis-BR] - 90° CCW paper rotation
+    %   k=2: [vis-BR, vis-BL, vis-TL, vis-TR] - 180° paper rotation
+    %   k=3: [vis-TR, vis-BR, vis-BL, vis-TL] - 90° CW paper rotation
+    %
+    % The result maps to physical [phys-TL, phys-TR, phys-BR, phys-BL]
+    if rotationSteps > 0
+        physicalQuad = circshift(visualQuad, rotationSteps, 1);
     end
 end
 
@@ -1333,7 +1544,9 @@ function conic = ellipse_to_conic(ellipse)
     % Output:
     %   conic: 3x3 symmetric matrix (or zeros if invalid)
 
-    MIN_AXIS = 0.1;  % Minimum ellipse axis length in pixels
+    % Minimum ellipse axis length to avoid degenerate conics.
+    % Must be small enough to allow normalized unit-square ellipses.
+    MIN_AXIS = 1e-6;
 
     xc = ellipse.center(1);
     yc = ellipse.center(2);
