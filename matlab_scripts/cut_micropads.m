@@ -81,7 +81,7 @@ function cut_micropads(varargin)
 
     % === ELLIPSE EDITING CONFIGURATION ===
     DEFAULT_ENABLE_ELLIPSE_EDITING = true;
-    DEFAULT_ENABLE_QUAD_EDITING = true;
+    DEFAULT_ENABLE_QUAD_EDITING = false;
     REPLICATES_PER_CONCENTRATION = 3;
 
     % Ellipse definitions in normalized micropad coordinates [0,1]×[0,1]
@@ -1296,6 +1296,10 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
+
+    % Auto-zoom to fit all content after UI is created
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
 end
 
 function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, ellipsePositions, rotation, memory)
@@ -1403,6 +1407,10 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
+
+    % Auto-zoom to fit all content after UI is created
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
 end
 
 function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, hasQuads, ...
@@ -1537,6 +1545,10 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
+
+    % Auto-zoom to fit all content after UI is created
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
 end
 
 function showAIProgressIndicator(fig, show)
@@ -1881,6 +1893,10 @@ function applyRotation_UI(angle, fig, cfg)
 
     % Save guiData
     set(fig, 'UserData', guiData);
+
+    % Auto-zoom to fit all content after rotation
+    guiData = get(fig, 'UserData');
+    applyAutoZoom(fig, guiData, cfg);
 
     % Re-trigger detection after rotation completes
     if cfg.useAIDetection
