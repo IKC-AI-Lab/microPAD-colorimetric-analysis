@@ -386,7 +386,9 @@ if numEllipses > 0
         center = ellipse.center;
         a = ellipse.semiMajorAxis;
         b = ellipse.semiMinorAxis;
-        theta_rad = deg2rad(ellipse.rotationAngle);
+        % Convert from user convention (from vertical) to math convention (from horizontal)
+        % for parametric equations: math_angle = 90° - user_angle
+        theta_rad = deg2rad(90 - ellipse.rotationAngle);
 
         % Parametric ellipse with rotation
         ellipseX = center(1) + a * cosTheta * cos(theta_rad) - b * sinTheta * sin(theta_rad);

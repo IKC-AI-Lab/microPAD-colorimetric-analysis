@@ -818,10 +818,11 @@ function draw_overlays(ax, entry, ellipseRenderPoints, overlayColor)
             ellipse = entry.ellipses{i}; % [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
             xc = ellipse(1); yc = ellipse(2);
             a = ellipse(3); b = ellipse(4);
-            theta_deg = ellipse(5);
+            theta_deg = ellipse(5);  % User convention: from vertical, CW+
 
-            % Convert rotation angle to radians
-            theta_rad = deg2rad(theta_deg);
+            % Convert from user convention (from vertical) to math convention (from horizontal)
+            % for parametric equations: math_angle = 90° - user_angle
+            theta_rad = deg2rad(90 - theta_deg);
 
             % Parametric ellipse equations with rotation
             ellipseX = xc + a * cosTheta * cos(theta_rad) - b * sinTheta * sin(theta_rad);

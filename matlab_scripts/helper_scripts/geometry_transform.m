@@ -17,9 +17,17 @@ function geomTform = geometry_transform()
     %
     % Coordinate Conventions:
     %   - Image coordinates: (1,1) is top-left, Y increases downward
-    %   - Rotation: Positive = clockwise in image coordinates
     %   - Quad vertices: 4x2 matrix, clockwise from top-left
     %   - Ellipse format: [concIdx, repIdx, x, y, semiMajor, semiMinor, rotation]
+    %
+    % ELLIPSE ROTATION CONVENTION:
+    %   All ellipse rotation angles in this codebase use 'angle from vertical (up),
+    %   clockwise positive' convention:
+    %     0° = semi-major axis points UP (toward top of image)
+    %    45° = semi-major axis points upper-right (45° CW from up)
+    %   -45° = semi-major axis points upper-left (45° CCW from up)
+    %   This matches the physical micropad layout where middle ellipse is vertical,
+    %   left ellipse tilts -45°, and right ellipse tilts +45°.
     %
     % See also: coordinate_io, mask_utils
 
@@ -942,6 +950,10 @@ end
 function ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform)
     % Approximate homography-warped ellipse by local affine linearization.
     % Uses numerical Jacobian at center to map shape matrix.
+    %
+    % ROTATION CONVENTION: Input and output rotations use 'angle from vertical
+    % (up), clockwise positive' convention. Math is done in standard convention
+    % (angle from horizontal X-axis, CCW positive).
 
     ellipseOut = invalid_ellipse();
     if isempty(ellipseIn) || ~isfield(ellipseIn, 'center')
@@ -966,7 +978,8 @@ function ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform)
 
     a = double(ellipseIn.semiMajor);
     b = double(ellipseIn.semiMinor);
-    theta = deg2rad(double(ellipseIn.rotation));
+    % Convert input from user convention to math convention: math = 90° - user
+    theta = deg2rad(90 - double(ellipseIn.rotation));
     c = cos(theta);
     s = sin(theta);
     R = [c -s; s c];
@@ -986,7 +999,8 @@ function ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform)
     [axesSorted, idx] = sort(sqrt(axesSq), 'descend');
     vMajor = V(:, idx(1));
 
-    rotDeg = rad2deg(atan2(vMajor(2), vMajor(1)));
+    % atan2 gives math convention angle; convert to user convention: user = 90° - math
+    rotDeg = 90 - rad2deg(atan2(vMajor(2), vMajor(1)));
     ellipseOut = struct( ...
         'center', [x0, y0], ...
         'semiMajor', axesSorted(1), ...
@@ -1205,12 +1219,13 @@ function bounds = computeEllipseBounds(x, y, semiMajor, semiMinor, rotationAngle
     %   x, y              - Ellipse center
     %   semiMajor         - Semi-major axis length
     %   semiMinor         - Semi-minor axis length
-    %   rotationAngle     - Rotation in degrees
+    %   rotationAngle     - Rotation in degrees from vertical (up), CW positive
     %
     % OUTPUTS:
     %   bounds - struct with .minX, .maxX, .minY, .maxY
 
-    theta = deg2rad(rotationAngle);
+    % Convert from user convention (from vertical) to math convention (from horizontal)
+    theta = deg2rad(90 - rotationAngle);
 
     % Compute axis-aligned extents
     ux = sqrt((semiMajor * cos(theta))^2 + (semiMinor * sin(theta))^2);
@@ -1538,8 +1553,13 @@ function conic = ellipse_to_conic(ellipse)
     % The conic matrix C represents the ellipse equation x'*C*x = 0
     % in homogeneous coordinates.
     %
+    % ROTATION CONVENTION: Input rotation uses 'angle from vertical (up),
+    % clockwise positive' convention. Internally converted to math convention
+    % (angle from horizontal X-axis, CCW positive) for matrix construction.
+    %
     % Input:
     %   ellipse: struct with center, semiMajor, semiMinor, rotation fields
+    %            rotation: degrees from vertical (up), CW positive
     %
     % Output:
     %   conic: 3x3 symmetric matrix (or zeros if invalid)
@@ -1552,7 +1572,9 @@ function conic = ellipse_to_conic(ellipse)
     yc = ellipse.center(2);
     a = ellipse.semiMajor;
     b = ellipse.semiMinor;
-    theta = deg2rad(ellipse.rotation);
+    % Convert from user convention (angle from vertical, CW+) to math convention
+    % (angle from horizontal X-axis, CCW+): math_angle = 90° - user_angle
+    theta = deg2rad(90 - ellipse.rotation);
 
     % Validate axes are positive to prevent division by zero
     if a < MIN_AXIS || b < MIN_AXIS || ~isfinite(a) || ~isfinite(b)
@@ -1576,11 +1598,16 @@ function ellipse = conic_to_ellipse(C)
     %
     % Extracts center, axes lengths, and rotation through algebraic manipulation.
     %
+    % ROTATION CONVENTION: Output rotation uses 'angle from vertical (up),
+    % clockwise positive' convention. Internally computed in math convention
+    % (angle from horizontal X-axis, CCW positive) then converted.
+    %
     % Input:
     %   C: 3x3 conic matrix
     %
     % Output:
     %   ellipse: struct with center, semiMajor, semiMinor, rotation, valid fields
+    %            rotation: degrees from vertical (up), CW positive
 
     % Validate C(3,3) is not zero before normalization to prevent division by zero
     if abs(C(3,3)) < 1e-10
@@ -1637,11 +1664,13 @@ function ellipse = conic_to_ellipse(C)
         theta = theta + pi/2;
     end
 
+    % Convert from math convention (angle from horizontal, CCW+) to user convention
+    % (angle from vertical, CW+): user_angle = 90° - math_angle
     ellipse = struct( ...
         'center', [xc, yc], ...
         'semiMajor', a, ...
         'semiMinor', b, ...
-        'rotation', rad2deg(theta), ...
+        'rotation', 90 - rad2deg(theta), ...
         'valid', true);
 end
 

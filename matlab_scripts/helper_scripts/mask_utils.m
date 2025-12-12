@@ -19,8 +19,10 @@ function utils = mask_utils()
     %   Masks larger than 1e6 pixels are not cached.
     %
     % Ellipse Rotation Convention:
-    %   Positive angle = clockwise rotation from horizontal major axis
-    %   (matches MATLAB image coordinate system where Y increases downward)
+    %   All rotation angles use 'angle from vertical (up), clockwise positive':
+    %     0° = semi-major axis points UP (toward top of image)
+    %    45° = semi-major axis points upper-right (45° CW from up)
+    %   -45° = semi-major axis points upper-left (45° CCW from up)
     %
     % See also: coordinate_io, image_io, geometry_transform
 
@@ -136,14 +138,15 @@ function mask = createEllipseMask(imageSize, cx, cy, semiMajor, semiMinor, rotat
     %   cx, cy        - Ellipse center coordinates
     %   semiMajor     - Semi-major axis length (must be >= semiMinor)
     %   semiMinor     - Semi-minor axis length
-    %   rotationAngle - Rotation in degrees (clockwise from horizontal)
+    %   rotationAngle - Rotation in degrees from vertical (up), clockwise positive
+    %                   0° = major axis points UP, 45° = upper-right, -45° = upper-left
     %
     % OUTPUTS:
     %   mask - Logical array (true inside ellipse)
     %
     % Rotation Convention:
-    %   Positive angle rotates the major axis clockwise from horizontal.
-    %   This matches MATLAB's image coordinate system (Y increases downward).
+    %   Input uses 'angle from vertical (up), clockwise positive' convention.
+    %   Internally converted to math convention for mask computation.
 
     if numel(imageSize) >= 2
         h = imageSize(1);
@@ -166,9 +169,9 @@ function mask = createEllipseMask(imageSize, cx, cy, semiMajor, semiMinor, rotat
     % Create coordinate grids
     [X, Y] = meshgrid(1:w, 1:h);
 
-    % Convert rotation to radians (ellipse rotation is specified clockwise;
-    % we rotate points counterclockwise to undo it)
-    theta = deg2rad(rotationAngle);
+    % Convert from user convention (from vertical) to math convention (from horizontal):
+    % math_angle = 90° - user_angle
+    theta = deg2rad(90 - rotationAngle);
 
     % Translate to ellipse center
     dx = X - cx;
@@ -312,13 +315,14 @@ function [x1, y1, x2, y2] = computeEllipseBoundingBox(cx, cy, semiMajor, semiMin
     %   cx, cy        - Ellipse center
     %   semiMajor     - Semi-major axis
     %   semiMinor     - Semi-minor axis
-    %   rotationAngle - Rotation in degrees
+    %   rotationAngle - Rotation in degrees from vertical (up), CW positive
     %   imgW, imgH    - Image dimensions for clamping
     %
     % OUTPUTS:
     %   x1, y1, x2, y2 - Bounding box corners (clamped to image bounds)
 
-    theta = deg2rad(rotationAngle);
+    % Convert from user convention (from vertical) to math convention (from horizontal)
+    theta = deg2rad(90 - rotationAngle);
 
     % Compute extent in each direction
     % Using parametric ellipse: x = a*cos(t)*cos(theta) - b*sin(t)*sin(theta)

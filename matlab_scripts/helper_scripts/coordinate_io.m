@@ -41,7 +41,10 @@ function io = coordinate_io()
     %
     % Stage 3 "rotationAngle" field (8th column):
     %   - Purpose: GEOMETRIC orientation of the ellipse shape
-    %   - Frame: Degrees, positive = clockwise rotation from horizontal
+    %   - Frame: Degrees from vertical (up), clockwise positive
+    %       0° = semi-major axis points UP (toward top of image)
+    %      45° = semi-major axis points upper-right (45° CW from up)
+    %     -45° = semi-major axis points upper-left (45° CCW from up)
     %   - Usage: Defines ellipse orientation for masking and feature extraction
     %   - Values: Degrees, normalized to [-180, 180] range
     %   - Note: This is NOT a UI hint - it's the actual ellipse geometry

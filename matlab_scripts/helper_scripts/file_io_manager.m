@@ -174,16 +174,9 @@ function saveEllipticalPatches(img, baseName, ellipseData, outputDir, cfg)
             b = ellipseData(i, 6);
             theta = ellipseData(i, 7);
 
-            % Calculate axis-aligned bounding box
-            % Note: sign of theta doesn't matter for bounding box since we square sin/cos
-            theta_rad = deg2rad(theta);
-            ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
-            uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
-
-            x1 = max(1, floor(x - ux));
-            y1 = max(1, floor(y - uy));
-            x2 = min(imgW, ceil(x + ux));
-            y2 = min(imgH, ceil(y + uy));
+            % Calculate axis-aligned bounding box (delegate to mask_utils for
+            % consistent rotation convention handling)
+            [x1, y1, x2, y2] = masks.computeEllipseBoundingBox(x, y, a, b, theta, imgW, imgH);
 
             % Extract region
             patchRegion = img(y1:y2, x1:x2, :);

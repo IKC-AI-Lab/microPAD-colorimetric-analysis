@@ -349,13 +349,9 @@ function extract_elliptical_patches(coordPath, quadInputDir, patchOutputBase, cf
         xCenter = row.x; yCenter = row.y;
         a = row.semiMajorAxis; b = row.semiMinorAxis; theta = row.rotationAngle;
 
-        % Calculate rotated bounding box
-        theta_rad = deg2rad(theta);
-        ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
-        uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
-
-        x1 = max(1, floor(xCenter - ux)); y1 = max(1, floor(yCenter - uy));
-        x2 = min(size(img,2), ceil(xCenter + ux)); y2 = min(size(img,1), ceil(yCenter + uy));
+        % Calculate rotated bounding box (delegate to mask_utils for consistent
+        % rotation convention handling)
+        [x1, y1, x2, y2] = maskUtils.computeEllipseBoundingBox(xCenter, yCenter, a, b, theta, size(img,2), size(img,1));
         if x2 < x1, x2 = x1; end
         if y2 < y1, y2 = y1; end
         patchRegion = img(y1:y2, x1:x2, :);
@@ -734,4 +730,3 @@ function r = relpath(pathStr, root)
         r = char(pathStr);
     end
 end
-

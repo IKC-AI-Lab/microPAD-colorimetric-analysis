@@ -960,7 +960,8 @@ function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor
     %   center        - [x, y] center
     %   semiMajor     - Semi-major axis length
     %   semiMinor     - Semi-minor axis length
-    %   rotationAngle - Rotation in degrees
+    %   rotationAngle - Rotation in degrees from vertical (up), CW positive
+    %                   0° = major axis points UP, 45° = upper-right, -45° = upper-left
     %   color         - ROI color
     %   bounds        - (Optional) Axis limits struct (.minAxis, .maxAxis)
     %   cfg           - (Optional) Configuration struct
@@ -988,13 +989,16 @@ function ellipseHandle = createEllipseROI(axHandle, center, semiMajor, semiMinor
         semiMinor = min(max(semiMinor, minAxis), semiMajor);
     end
 
-    % Normalize rotation
-    rotationAngle = mod(rotationAngle + 180, 360) - 180;
+    % Convert from user convention (from vertical, CW+) to MATLAB's drawellipse convention
+    % (from horizontal, CCW+): drawellipse = 90° - user
+    matlabRotation = 90 - rotationAngle;
+    % Normalize rotation to [-180, 180]
+    matlabRotation = mod(matlabRotation + 180, 360) - 180;
 
     ellipseHandle = drawellipse(axHandle, ...
         'Center', center, ...
         'SemiAxes', [semiMajor, semiMinor], ...
-        'RotationAngle', rotationAngle, ...
+        'RotationAngle', matlabRotation, ...
         'Color', color, ...
         'LineWidth', 2, ...
         'FaceAlpha', 0.2, ...
@@ -1069,9 +1073,10 @@ function [leftAxes, rightAxes, leftImgHandle, rightImgHandle] = createPreviewAxe
 
                 ellipseColor = getConcentrationColor(concIdx, cfg.numSquares);
 
-                % Draw ellipse using parametric form (clockwise rotation)
+                % Draw ellipse using parametric form
                 t = linspace(0, 2*pi, 100);
-                theta_rad = deg2rad(theta);
+                % Convert from user convention (from vertical, CW+) to math convention (from horizontal, CCW+)
+                theta_rad = deg2rad(90 - theta);
                 x_ellipse = a * cos(t);
                 y_ellipse = b * sin(t);
                 % Clockwise transform: [dx; dy] = [cos sin; -sin cos] * [x_ellipse; y_ellipse]
@@ -1135,7 +1140,7 @@ function maskedImg = createMaskedPreview(img, quadParams, ellipseData, cfg)
                 [X, Y] = meshgrid(1:width, 1:height);
                 % Inverse rotation (CCW) to map world points to unrotated ellipse frame
                 % Matches mask_utils.createEllipseMask rotation convention
-                theta_rad = deg2rad(theta);
+                theta_rad = deg2rad(90 - theta);
                 dx = X - x;
                 dy = Y - y;
                 x_rot =  dx * cos(theta_rad) - dy * sin(theta_rad);

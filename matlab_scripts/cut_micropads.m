@@ -88,14 +88,17 @@ function cut_micropads(varargin)
     % Each row: [x, y, semiMajorAxis, semiMinorAxis, rotationAngle]
     % - x, y: center position (0,0 = top-left, 1,1 = bottom-right)
     % - semiMajorAxis, semiMinorAxis: fraction of micropad side length
-    % - rotationAngle: degrees, positive = clockwise from horizontal (matches image coordinates)
+    % - rotationAngle: degrees from vertical (up), clockwise positive
+    %     0° = semi-major axis points UP (toward top of image)
+    %    45° = semi-major axis points upper-right (45° CW from up)
+    %   -45° = semi-major axis points upper-left (45° CCW from up)
     % These values define ellipse positions relative to an ideal square micropad.
     % The homography transform will adjust for perspective distortion.
     ELLIPSE_DEFAULT_RECORDS = [
-        % x,    y,    semiMajor, semiMinor, rotationAngle
-        0.263306,  0.434395,  0.077779,  0.071073,  178.189;  % Replicate 0 (Urea)
-        0.497134,  0.342967,  0.076068,  0.069731,  176.362;  % Replicate 1 (Creatinine)
-        0.721795,  0.435818,  0.074423,  0.068091,  175.217   % Replicate 2 (Lactate)
+        % x,    y,    semiMajor, semiMinor, rotationAngle (from vertical, CW+)
+        0.263306,  0.434395,  0.077779,  0.071073,  -45;  % Replicate 0 (Urea) - tilted left
+        0.497134,  0.342967,  0.076068,  0.069731,    0;  % Replicate 1 (Creatinine) - vertical
+        0.721795,  0.435818,  0.074423,  0.068091,   45   % Replicate 2 (Lactate) - tilted right
     ];
 
     % === ELLIPSE LAYOUT PARAMETERS (legacy, for fallback) ===
@@ -1494,6 +1497,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
             semiMajor = displayEllipsesPreview(i, 5);
             semiMinor = displayEllipsesPreview(i, 6);
             rotationAngle = displayEllipsesPreview(i, 7);
+            matlabRotation = mod((90 - rotationAngle) + 180, 360) - 180;
 
             % Use same color as corresponding quad
             if hasQuads
@@ -1506,7 +1510,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
             guiData.ellipseHandles{i} = drawellipse(guiData.imgAxes, ...
                 'Center', center, ...
                 'SemiAxes', [semiMajor, semiMinor], ...
-                'RotationAngle', rotationAngle, ...
+                'RotationAngle', matlabRotation, ...
                 'Color', ellipseColor, 'LineWidth', 2, 'FaceAlpha', 0.2, ...
                 'InteractionsAllowed', 'none');
         end
@@ -2968,7 +2972,9 @@ function [action, quadParams, rotation] = waitForUserAction(fig)
                             ellipse = guiData.ellipses{ellipseIdx};
                             center = ellipse.Center;
                             semiAxes = ellipse.SemiAxes;
-                            rotationAngle = ellipse.RotationAngle;
+                            % Convert from MATLAB's drawellipse convention (from horizontal)
+                            % to user convention (from vertical): user = 90° - matlab
+                            rotationAngle = 90 - ellipse.RotationAngle;
 
                             bounds = boundsPerConcentration{concIdx};
                             [semiMajor, semiMinor, rotationAngle] = guiData.cfg.geomTform.geom.enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, bounds);
@@ -3023,7 +3029,9 @@ function [action, quadParams, rotation] = waitForUserAction(fig)
                             ellipse = guiData.ellipses{ellipseIdx};
                             center = ellipse.Center;
                             semiAxes = ellipse.SemiAxes;
-                            rotationAngle = ellipse.RotationAngle;
+                            % Convert from MATLAB's drawellipse convention (from horizontal)
+                            % to user convention (from vertical): user = 90° - matlab
+                            rotationAngle = 90 - ellipse.RotationAngle;
 
                             [semiMajor, semiMinor, rotationAngle] = guiData.cfg.geomTform.geom.enforceEllipseAxisLimits(semiAxes(1), semiAxes(2), rotationAngle, gridBounds);
 
