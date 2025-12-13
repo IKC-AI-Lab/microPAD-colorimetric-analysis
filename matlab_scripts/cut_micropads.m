@@ -1235,9 +1235,11 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
     end
 
     displayQuads = guiData.displayQuads;
+    defaultEllipseParamsByQuad = cfg.geomTform.geom.transformDefaultEllipsesToQuads(displayQuads, cfg, orientation, rotation);
     for concIdx = 1:numConcentrations
         quadColor = cfg.micropadUI.getConcentrationColor(concIdx - 1, numConcentrations);
         currentQuad = squeeze(displayQuads(concIdx, :, :));
+        defaultParamsForConc = reshape(defaultEllipseParamsByQuad(concIdx, :, :), [numReplicates, 5]);
 
         % Compute axis bounds for this quad
         ellipseBounds = cfg.geomTform.geom.computeEllipseAxisBounds(currentQuad, guiData.imageSize, cfg);
@@ -1256,12 +1258,11 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
                     ellipseSemiMinor = memEllipses(repIdx, 6);
                     ellipseRotation = memEllipses(repIdx, 7);
                 else
-                    % Fallback to homography-transformed defaults if memory incomplete
-                    ellipseParams = cfg.geomTform.geom.transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
-                    ellipseCenter = ellipseParams(repIdx, 1:2);
-                    ellipseSemiMajor = ellipseParams(repIdx, 3);
-                    ellipseSemiMinor = ellipseParams(repIdx, 4);
-                    ellipseRotation = ellipseParams(repIdx, 5);
+                    % Fallback to strip-homography-transformed defaults if memory incomplete
+                    ellipseCenter = defaultParamsForConc(repIdx, 1:2);
+                    ellipseSemiMajor = defaultParamsForConc(repIdx, 3);
+                    ellipseSemiMinor = defaultParamsForConc(repIdx, 4);
+                    ellipseRotation = defaultParamsForConc(repIdx, 5);
                 end
 
                 guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseCenter, ...
@@ -1269,12 +1270,9 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
                 ellipseIdx = ellipseIdx + 1;
             end
         else
-            % No memory - use homography-transformed defaults from ELLIPSE_DEFAULT_RECORDS
-            ellipseParams = cfg.geomTform.geom.transformDefaultEllipsesToQuad(currentQuad, cfg, orientation, rotation);
-
             for repIdx = 1:numReplicates
-                guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, ellipseParams(repIdx, 1:2), ...
-                    ellipseParams(repIdx, 3), ellipseParams(repIdx, 4), ellipseParams(repIdx, 5), quadColor, ellipseBounds, cfg);
+                guiData.ellipses{ellipseIdx} = cfg.micropadUI.createEllipseROI(guiData.imgAxes, defaultParamsForConc(repIdx, 1:2), ...
+                    defaultParamsForConc(repIdx, 3), defaultParamsForConc(repIdx, 4), defaultParamsForConc(repIdx, 5), quadColor, ellipseBounds, cfg);
                 ellipseIdx = ellipseIdx + 1;
             end
         end

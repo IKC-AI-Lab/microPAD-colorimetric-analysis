@@ -56,6 +56,7 @@ function geomTform = geometry_transform()
     geomTform.geom.enforceEllipseAxisLimits = @enforceEllipseAxisLimits;
     geomTform.geom.computeEllipseAxisBounds = @computeEllipseAxisBounds;
     geomTform.geom.transformDefaultEllipsesToQuad = @transformDefaultEllipsesToQuad;
+    geomTform.geom.transformDefaultEllipsesToQuads = @transformDefaultEllipsesToQuads;
     geomTform.geom.reorderQuadToPhysical = @reorderQuadToPhysical;
 
     %% Public API - Geometry: Bounds calculation
@@ -945,6 +946,136 @@ function ellipseParams = transformDefaultEllipsesToQuad(quadVertices, cfg, orien
         % Normalize rotation to [-180, 180]
         ellipseParams(i, 5) = geomTform.normalizeAngle(ellipseParams(i, 5));
     end
+end
+
+function ellipseParamsByQuad = transformDefaultEllipsesToQuads(quads, cfg, orientation, ~)
+    % Transform default ellipse records to each quad using a SINGLE strip-level homography.
+    %
+    % This function estimates a projective transform (homography) from a canonical
+    % micropad strip coordinate frame to the observed set of concentration quads,
+    % then applies that same transform to the default ellipse definitions for each
+    % concentration zone. This preserves perspective-induced foreshortening and
+    % rotation changes consistently across the whole strip.
+    %
+    % INPUTS:
+    %   quads        - [N x 4 x 2] concentration quads in image/display coordinates
+    %   cfg          - Configuration struct with cfg.ellipse.defaultRecords and cfg.geometry.*
+    %   orientation  - 'horizontal' or 'vertical' (strip layout hint)
+    %
+    % OUTPUT:
+    %   ellipseParamsByQuad - [N x R x 5] [x, y, semiMajor, semiMinor, rotation] for each quad
+
+    if nargin < 3 || isempty(orientation)
+        orientation = 'horizontal';
+    end
+
+    ellipseParamsByQuad = zeros(0, 0, 5);
+    if isempty(quads)
+        return;
+    end
+    if ndims(quads) ~= 3 || size(quads, 2) ~= 4 || size(quads, 3) ~= 2
+        error('geometry_transform:invalidQuadArray', ...
+            'Expected quads as [N x 4 x 2] numeric array');
+    end
+
+    defaultRecords = cfg.ellipse.defaultRecords;
+    numQuads = size(quads, 1);
+    numEllipses = size(defaultRecords, 1);
+
+    ellipseParamsByQuad = zeros(numQuads, numEllipses, 5);
+    if numQuads == 0 || numEllipses == 0
+        return;
+    end
+
+    [tformStrip, quadOffsets, quadWidth, quadHeight, sideLen] = computeStripHomographyForQuads(quads, cfg, orientation);
+
+    for q = 1:numQuads
+        offset = quadOffsets(q, :);
+
+        for i = 1:numEllipses
+            ellipseIn = struct();
+            ellipseIn.center = offset + [defaultRecords(i, 1) * quadWidth, defaultRecords(i, 2) * quadHeight];
+            ellipseIn.semiMajor = defaultRecords(i, 3) * sideLen;
+            ellipseIn.semiMinor = defaultRecords(i, 4) * sideLen;
+            ellipseIn.rotation = defaultRecords(i, 5);
+            ellipseIn.valid = true;
+
+            ellipseOut = transform_ellipse(ellipseIn, tformStrip);
+            if ~ellipseOut.valid || ~all(isfinite([ellipseOut.center, ellipseOut.semiMajor, ellipseOut.semiMinor, ellipseOut.rotation])) || ...
+               ellipseOut.semiMajor <= 0 || ellipseOut.semiMinor <= 0
+                ellipseOut = approximateEllipseUnderHomography(ellipseIn, tformStrip);
+            end
+
+            params = [
+                ellipseOut.center(1), ellipseOut.center(2), ...
+                ellipseOut.semiMajor, ellipseOut.semiMinor, ...
+                ellipseOut.rotation
+            ];
+
+            if params(3) < params(4)
+                params([3, 4]) = params([4, 3]);
+                params(5) = params(5) + 90;
+            end
+
+            params(5) = normalizeAngle(params(5));
+            ellipseParamsByQuad(q, i, :) = params;
+        end
+    end
+end
+
+function [tformStrip, quadOffsets, quadWidth, quadHeight, sideLen] = computeStripHomographyForQuads(quads, cfg, orientation)
+    % Compute a strip-level homography from canonical strip coordinates to observed quads.
+
+    numQuads = size(quads, 1);
+    if numQuads < 1
+        error('geometry_transform:invalidStrip', 'At least one quad is required to compute strip homography.');
+    end
+
+    gap = 0;
+    if isfield(cfg, 'geometry') && isfield(cfg.geometry, 'gapPercentWidth') && isfinite(cfg.geometry.gapPercentWidth)
+        gap = max(cfg.geometry.gapPercentWidth, 0);
+    end
+
+    aspect = 1.0;
+    if isfield(cfg, 'geometry') && isfield(cfg.geometry, 'aspectRatio') && isfinite(cfg.geometry.aspectRatio)
+        aspect = max(cfg.geometry.aspectRatio, eps);
+    end
+
+    quadWidth = 1.0;
+    quadHeight = quadWidth / aspect;
+    sideLen = min(quadWidth, quadHeight);
+
+    quadOffsets = zeros(numQuads, 2);
+    if strcmp(orientation, 'vertical')
+        step = quadHeight * (1 + gap);
+        quadOffsets(:, 2) = ((numQuads - 1):-1:0)' * step;  % con_0 at bottom (largest y)
+    else
+        step = quadWidth * (1 + gap);
+        quadOffsets(:, 1) = (0:(numQuads - 1))' * step;     % con_0 at left
+    end
+
+    numPts = 4 * numQuads;
+    srcPoints = zeros(numPts, 2);
+    dstPoints = zeros(numPts, 2);
+
+    for q = 1:numQuads
+        x0 = quadOffsets(q, 1);
+        y0 = quadOffsets(q, 2);
+        srcQuad = [x0, y0; x0 + quadWidth, y0; x0 + quadWidth, y0 + quadHeight; x0, y0 + quadHeight];
+
+        dstQuad = reorderQuadToPhysical(squeeze(quads(q, :, :)), orientation);
+        dstQuad = double(dstQuad);
+
+        if size(dstQuad, 1) ~= 4 || size(dstQuad, 2) ~= 2 || any(~isfinite(dstQuad(:)))
+            error('geometry_transform:invalidQuadVertices', 'Invalid quad vertices encountered while computing strip homography.');
+        end
+
+        idx = (q - 1) * 4 + (1:4);
+        srcPoints(idx, :) = srcQuad;
+        dstPoints(idx, :) = dstQuad;
+    end
+
+    tformStrip = compute_homography_from_points(srcPoints, dstPoints);
 end
 
 function ellipseOut = approximateEllipseUnderHomography(ellipseIn, tform)
