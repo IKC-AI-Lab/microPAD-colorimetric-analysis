@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Akademik Poster - µPAD ve Yapay Zeka Tabanlı Kolorimetrik Analiz</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Source+Serif+Pro:wght@400;600;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --ink: #0f172a;
+            --muted: #475569;
+            --accent: #1e3a8a;
+            --accent-2: #0f766e;
+            --accent-3: #b45309;
+            --panel: #ffffff;
+            --panel-soft: #f8fafc;
+            --border: #dbeafe;
+            --shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+        }
+
+        @page {
+            size: 1189mm 841mm;
+            margin: 0;
+        }
+
+        body {
+            font-family: 'Source Serif Pro', Georgia, serif;
+            background: #eaf0f7;
+            color: var(--ink);
+            line-height: 1.45;
+            font-size: 22pt;
+        }
+
+        .poster {
+            width: 1189mm;
+            height: 841mm;
+            margin: 0 auto;
+            background: linear-gradient(180deg, #f8fafc 0%, #edf2f7 100%);
+            padding: 12mm;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            gap: 8mm;
+        }
+
+        /* ============ HEADER ============ */
+        .header {
+            background: linear-gradient(135deg, #0f2d4a 0%, #1e3a8a 100%);
+            border-radius: 8px;
+            padding: 9mm 16mm;
+            display: grid;
+            grid-template-columns: 130mm 1fr 130mm;
+            align-items: center;
+            gap: 10mm;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image: url('micropad_lactat.jpeg');
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: cover;
+            opacity: 0.14;
+            filter: grayscale(1) contrast(1.08) brightness(1.15);
+            transform: none;
+            pointer-events: none;
+        }
+
+        .header > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .logo-container {
+            background: var(--panel);
+            border-radius: 8px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            padding: 6mm;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .logo-container img {
+            width: 95mm;
+            height: auto;
+            max-height: 48mm;
+            object-fit: contain;
+        }
+
+        .logo-text {
+            color: #123456;
+            font-size: 16pt;
+            text-align: center;
+            margin-top: 3mm;
+            font-weight: 600;
+        }
+
+        .title-section {
+            text-align: center;
+        }
+
+        .main-title {
+            font-family: 'Open Sans', Arial, sans-serif;
+            font-size: 85pt;
+            font-weight: 700;
+            color: #ffffff;
+            line-height: 1.1;
+            margin-bottom: 5mm;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 32pt;
+            color: #bfdbfe;
+            font-weight: 400;
+            margin-bottom: 6mm;
+        }
+
+        .authors {
+            font-size: 36pt;
+            color: #ffffff;
+            font-weight: 700;
+        }
+
+        .affiliation {
+            font-size: 22pt;
+            color: #93c5fd;
+            margin-top: 2mm;
+        }
+
+        /* ============ MAIN CONTENT ============ */
+        .content {
+            display: grid;
+            grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.96fr) minmax(0, 1.12fr);
+            gap: 10mm;
+            min-height: 0;
+        }
+
+        .section.giris, .section.yontem {
+            flex: 0 0 auto;
+        }
+
+        .section.giris .section-header, .section.yontem .section-header {
+            margin-bottom: 3mm;
+        }
+
+        .section.giris .section-content p, .section.yontem .section-content p {
+            margin-bottom: 2mm;
+        }
+
+        .column {
+            display: flex;
+            flex-direction: column;
+            gap: 4mm;
+            min-height: 0;
+            justify-content: space-between;
+        }
+
+        /* ============ SECTIONS ============ */
+        .section {
+            background: var(--panel);
+            border-radius: 8px;
+            padding: 7mm 9mm;
+            border: 2px solid var(--border);
+            box-shadow: var(--shadow);
+            flex: 1;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 6mm;
+            margin-bottom: 4mm;
+            padding-bottom: 3mm;
+            border-bottom: 3px solid;
+        }
+
+        .section.giris .section-header { border-color: #2563eb; }
+        .section.yontem .section-header { border-color: #059669; }
+        .section.bulgular .section-header { border-color: #d97706; }
+        .section.sonuc .section-header { border-color: #7c3aed; }
+        .section.kaynaklar .section-header { border-color: #64748b; }
+        .section.gaps .section-header { border-color: #dc2626; }
+
+        .section.sonuc {
+            flex: 0 0 auto;
+        }
+
+        .section.bulgular {
+            flex: 0 0 auto;
+        }
+
+        .section-icon {
+            width: 18mm;
+            height: 18mm;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .section.giris .section-icon { background: #2563eb; }
+        .section.yontem .section-icon { background: #059669; }
+        .section.bulgular .section-icon { background: #d97706; }
+        .section.sonuc .section-icon { background: #7c3aed; }
+        .section.kaynaklar .section-icon { background: #64748b; }
+        .section.gaps .section-icon { background: #dc2626; }
+
+        .section-icon svg {
+            width: 10mm;
+            height: 10mm;
+            fill: white;
+        }
+
+        .section-title {
+            font-family: 'Open Sans', Arial, sans-serif;
+            font-size: 36pt;
+            font-weight: 700;
+        }
+
+        .section.giris .section-title { color: #2563eb; }
+        .section.yontem .section-title { color: #059669; }
+        .section.bulgular .section-title { color: #d97706; }
+        .section.sonuc .section-title { color: #7c3aed; }
+        .section.kaynaklar .section-title { color: #64748b; }
+        .section.gaps .section-title { color: #dc2626; }
+
+        .section-content {
+            font-size: 24pt;
+            line-height: 1.4;
+        }
+
+        .section.kaynaklar .section-content {
+            font-size: 16pt;
+            line-height: 1.25;
+        }
+
+        .section.kaynaklar {
+            padding: 7mm 8mm;
+        }
+
+        .section.kaynaklar .section-header {
+            margin-bottom: 5mm;
+        }
+
+        .section.kaynaklar .section-content p {
+            margin-bottom: 1mm;
+        }
+
+        .section-content p {
+            margin-bottom: 4mm;
+            text-align: left;
+        }
+
+        .section-content ul {
+            margin-left: 8mm;
+            margin-bottom: 2mm;
+        }
+
+        .section-content li {
+            margin-bottom: 1.5mm;
+        }
+
+        /* ============ HIGHLIGHT BOXES ============ */
+        .highlight-box {
+            background: #f1f5f9;
+            border-left: 5px solid #2563eb;
+            border-radius: 6px;
+            padding: 4mm 6mm;
+            margin: 4mm 0;
+        }
+
+        .highlight-box.success {
+            background: #ecfdf5;
+            border-color: #0f766e;
+        }
+
+        .highlight-box.warning {
+            background: #fffbeb;
+            border-color: #b45309;
+        }
+
+        .highlight-box strong {
+            font-size: 22pt;
+        }
+
+        /* ============ STAT BOXES ============ */
+        .stats-row {
+            display: flex;
+            gap: 6mm;
+            justify-content: center;
+            margin: 5mm 0;
+            flex-wrap: wrap;
+        }
+
+        .stat-box {
+            background: #1e40af;
+            color: white;
+            padding: 5mm 8mm;
+            border-radius: 8px;
+            text-align: center;
+            min-width: 60mm;
+        }
+
+        .stat-number {
+            font-size: 36pt;
+            font-weight: 700;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 18pt;
+            opacity: 0.9;
+        }
+
+        /* ============ DIAGRAM CONTAINERS ============ */
+        .diagram-box {
+            background: var(--panel);
+            border-radius: 8px;
+            padding: 7mm;
+            border: 2px solid var(--border);
+            box-shadow: var(--shadow);
+        }
+
+        .diagram-title {
+            font-family: 'Open Sans', Arial, sans-serif;
+            font-size: 26pt;
+            font-weight: 700;
+            color: var(--accent);
+            text-align: center;
+            margin-bottom: 5mm;
+        }
+
+        .diagram-caption {
+            font-size: 18pt;
+            color: var(--muted);
+            text-align: center;
+            margin-top: 4mm;
+            font-style: italic;
+        }
+
+        /* ============ TABLE ============ */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 20pt;
+            margin: 4mm 0;
+        }
+
+        .diagram-box.table-box .data-table {
+            font-size: 22pt;
+            line-height: 1.2;
+        }
+
+        .data-table th {
+            background: #1e40af;
+            color: white;
+            padding: 5mm 5mm;
+            text-align: left;
+            font-weight: 700;
+            font-size: 20pt;
+        }
+
+        .diagram-box.table-box .data-table th {
+            font-size: 22pt;
+            padding: 3.5mm 4mm;
+        }
+
+        .data-table td {
+            padding: 5mm;
+            border-bottom: 2px solid #e5e7eb;
+            font-size: 20pt;
+        }
+
+        .diagram-box.table-box .data-table td {
+            font-size: 22pt;
+            padding: 3.5mm 4mm;
+        }
+
+        .data-table tr:nth-child(even) {
+            background: #f8fafc;
+        }
+
+        .data-table tr:hover {
+            background: #eff6ff;
+        }
+
+        /* ============ RESEARCH GAP CARDS ============ */
+        .gap-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 3mm;
+        }
+
+        .gap-card {
+            background: #fef2f2;
+            border: 2px solid #fecaca;
+            border-radius: 6px;
+            padding: 1.5mm 2mm;
+            text-align: center;
+        }
+
+        .gap-number {
+            font-size: 32pt;
+            font-weight: 700;
+            color: #dc2626;
+            line-height: 1.1;
+        }
+
+        .gap-text {
+            font-size: 18pt;
+            color: #7f1d1d;
+            font-weight: 600;
+            margin-top: 0.5mm;
+        }
+
+        .gap-card.highlight {
+            grid-column: span 2;
+            background: #fef9c3;
+            border-color: #facc15;
+        }
+
+        .gap-card.highlight .gap-number { color: #a16207; }
+        .gap-card.highlight .gap-text { color: #713f12; }
+
+        .section.gaps {
+            flex: 0 0 auto;
+        }
+
+        .section.gaps .highlight-box {
+            margin: 3mm 0;
+            padding: 3mm 5mm;
+        }
+
+        .section.gaps .highlight-box strong {
+            font-size: 20pt;
+        }
+
+        /* ============ KEY FINDINGS ============ */
+        .finding-item {
+            display: flex;
+            gap: 5mm;
+            margin-bottom: 4mm;
+            align-items: flex-start;
+        }
+
+        .finding-icon {
+            width: 10mm;
+            height: 10mm;
+            min-width: 10mm;
+            background: #10b981;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 1mm;
+        }
+
+        .finding-icon svg {
+            width: 6mm;
+            height: 6mm;
+            fill: white;
+        }
+
+        .finding-text {
+            font-size: 22pt;
+            line-height: 1.4;
+        }
+
+        /* ============ TIMELINE ============ */
+        .timeline {
+            position: relative;
+            padding-left: 20mm;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 7mm;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, #3b82f6 0%, #8b5cf6 100%);
+            border-radius: 2px;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 1mm;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -15mm;
+            top: 3mm;
+            width: 12mm;
+            height: 12mm;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+        }
+
+        .timeline-year {
+            font-family: 'Open Sans', sans-serif;
+            font-weight: 700;
+            color: #3b82f6;
+            font-size: 24pt;
+        }
+
+        .timeline-text {
+            font-size: 20pt;
+            color: var(--muted);
+            margin-top: 1mm;
+        }
+
+        /* ============ FOOTER ============ */
+        .footer {
+            background: linear-gradient(135deg, #0f2d4a 0%, #1e3a8a 100%);
+            border-radius: 8px;
+            padding: 6mm 10mm;
+            display: grid;
+            grid-template-columns: 1fr 1.5fr 1fr;
+            align-items: center;
+            gap: 10mm;
+            color: white;
+        }
+
+        .footer-section {
+            font-size: 18pt;
+        }
+
+        .footer-title {
+            font-family: 'Open Sans', sans-serif;
+            font-weight: 700;
+            font-size: 22pt;
+            margin-bottom: 3mm;
+            color: #bfdbfe;
+        }
+
+        .footer-center {
+            text-align: center;
+        }
+
+        .footer-right {
+            text-align: right;
+        }
+
+        .keyword-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3mm;
+            justify-content: flex-end;
+        }
+
+        .keyword-tag {
+            background: rgba(255,255,255,0.2);
+            padding: 2mm 5mm;
+            border-radius: 4px;
+            font-size: 18pt;
+        }
+
+        .footer-stats {
+            display: flex;
+            justify-content: center;
+            gap: 8mm;
+            margin-top: 3mm;
+        }
+
+        .footer-stat {
+            background: rgba(255,255,255,0.15);
+            padding: 3mm 6mm;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .footer-stat-value {
+            font-size: 22pt;
+            font-weight: 700;
+        }
+
+        .footer-stat-label {
+            font-size: 16pt;
+            opacity: 0.8;
+        }
+
+        .media-card {
+            display: flex;
+            flex-direction: column;
+            gap: 4mm;
+        }
+
+        .media-figure {
+            display: flex;
+            flex-direction: column;
+            gap: 3mm;
+        }
+
+        .media-figure img {
+            width: 100%;
+            height: auto;
+            border-radius: 6px;
+            border: 2px solid #cbd5f5;
+        }
+
+        .media-figure figcaption {
+            font-size: 18pt;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .diagram-box.chart-box svg {
+            width: 90% !important;
+            height: auto !important;
+            max-height: 90mm;
+            display: block;
+            margin: 0 auto;
+            font-family: 'Open Sans', Arial, sans-serif;
+        }
+
+        .diagram-box.prisma-box svg {
+            width: 92% !important;
+            height: auto !important;
+            max-height: 130mm;
+            display: block;
+            margin: 0 auto;
+            font-family: 'Open Sans', Arial, sans-serif;
+        }
+
+        /* ============ PRINT ============ */
+        @media print {
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            body { background: white; margin: 0; padding: 0; }
+            .poster { box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="poster">
+        <!-- ============ HEADER ============ -->
+        <header class="header">
+            <div class="logo-container">
+                <img src="ikclogo_transparent.png" alt="İKÇÜ Logo">
+                <div class="logo-text">Fen Bilimleri Enstitüsü</div>
+            </div>
+
+            <div class="title-section">
+                <h1 class="main-title">Mikroakışkan Kağıt Tabanlı Cihazlarda<br>Yapay Zeka Tabanlı Kolorimetrik Analiz</h1>
+                <div class="subtitle">Akıllı Telefon ve Derin Öğrenme Entegrasyonu: Sistematik Literatür Taraması</div>
+                <div class="authors">Veysel Yusuf YILMAZ</div>
+                <div class="affiliation">Elektrik Elektronik Mühendisliği YL | Danışman: Prof. Dr. Volkan KILIÇ | Aralık 2025</div>
+            </div>
+
+            <div class="logo-container">
+                <img src="ikclogo_transparent.png" alt="İKÇÜ Logo">
+                <div class="logo-text">Mühendislik ve Mimarlık Fakültesi</div>
+            </div>
+        </header>
+
+        <!-- ============ MAIN CONTENT ============ -->
+        <main class="content">
+            <!-- ============ COLUMN 1 ============ -->
+            <div class="column">
+                <!-- Giriş -->
+                <div class="section giris">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                        </div>
+                        <h2 class="section-title">Giriş ve Amaç</h2>
+                    </div>
+                    <div class="section-content">
+                        <p><strong>Nokta Bakım Testi (POCT)</strong>, sağlık hizmetlerinin hastanın yanına taşınmasını sağlayan önemli bir paradigma değişimidir.</p>
+
+                        <div class="highlight-box">
+                            <strong>µPAD Avantajları:</strong>
+                            <ul>
+                                <li>Düşük maliyet ve kolay üretilebilirlik</li>
+                                <li>Pompa gerektirmeyen kapiler akış</li>
+                                <li>WHO ASSURED kriterlerine uygunluk</li>
+                                <li>Kaynak kısıtlı ortamlar için ideal</li>
+                            </ul>
+                        </div>
+
+                        <p><strong>Araştırma Soruları:</strong></p>
+                        <ul>
+                            <li>Hangi yapay zeka yöntemleri kullanılmaktadır?</li>
+                            <li>Sınıflandırma vs. regresyon performansı nedir?</li>
+                            <li>Aydınlatma bağımsızlığı nasıl sağlanır?</li>
+                            <li>Otomatik ROI tespiti için hangi yöntemler kullanılır?</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Yöntem -->
+                <div class="section yontem">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+                        </div>
+                        <h2 class="section-title">Yöntem</h2>
+                    </div>
+                    <div class="section-content">
+                        <div class="highlight-box success">
+                            <strong>Veri Tabanları:</strong> Web of Science, Scopus, Google Scholar<br>
+                            <strong>Dönem:</strong> 2017-2024 hakemli makaleler
+                        </div>
+
+                        <p><strong>Dahil Etme Kriterleri:</strong></p>
+                        <ul>
+                            <li>µPAD veya kağıt tabanlı kolorimetrik sistemler</li>
+                            <li>Yapay zeka/makine öğrenmesi kullanımı</li>
+                            <li>Akıllı telefon entegrasyonu</li>
+                            <li>İngilizce tam metin erişimi</li>
+                        </ul>
+
+                        <div class="stats-row">
+                            <div class="stat-box">
+                                <span class="stat-number">127</span>
+                                <span class="stat-label">Belirlenen</span>
+                            </div>
+                            <div class="stat-box" style="background: #0f766e;">
+                                <span class="stat-number">11</span>
+                                <span class="stat-label">Analiz Edilen</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PRISMA Diagram -->
+                <div class="diagram-box prisma-box" style="flex: 0 0 auto;">
+                    <div class="diagram-title">PRISMA Akış Diyagramı</div>
+                    <svg viewBox="0 0 320 240" style="width: 100%; height: auto;">
+                        <!-- Box 1: Identified -->
+                        <rect x="80" y="10" width="160" height="40" rx="6" fill="#3b82f6"/>
+                        <text x="160" y="30" text-anchor="middle" font-size="11" fill="white" font-weight="600">Belirlenen Çalışmalar</text>
+                        <text x="160" y="45" text-anchor="middle" font-size="14" fill="white" font-weight="700">n = 127</text>
+
+                        <!-- Arrow 1 -->
+                        <line x1="160" y1="50" x2="160" y2="70" stroke="#6b7280" stroke-width="3"/>
+                        <polygon points="160,75 155,65 165,65" fill="#6b7280"/>
+
+                        <!-- Box 2: Screened -->
+                        <rect x="80" y="75" width="160" height="40" rx="6" fill="#f59e0b"/>
+                        <text x="160" y="95" text-anchor="middle" font-size="11" fill="white" font-weight="600">Başlık/Özet Taraması</text>
+                        <text x="160" y="110" text-anchor="middle" font-size="14" fill="white" font-weight="700">n = 49</text>
+
+                        <!-- Excluded 1 -->
+                        <rect x="245" y="60" width="70" height="35" rx="4" fill="#fee2e2" stroke="#fca5a5" stroke-width="2"/>
+                        <text x="280" y="78" text-anchor="middle" font-size="10" fill="#dc2626" font-weight="600">Hariç: 78</text>
+                        <text x="280" y="90" text-anchor="middle" font-size="8" fill="#991b1b">Konu dışı</text>
+                        <line x1="240" y1="95" x2="250" y2="77" stroke="#fca5a5" stroke-width="2"/>
+
+                        <!-- Arrow 2 -->
+                        <line x1="160" y1="115" x2="160" y2="135" stroke="#6b7280" stroke-width="3"/>
+                        <polygon points="160,140 155,130 165,130" fill="#6b7280"/>
+
+                        <!-- Box 3: Eligibility -->
+                        <rect x="80" y="140" width="160" height="40" rx="6" fill="#8b5cf6"/>
+                        <text x="160" y="160" text-anchor="middle" font-size="11" fill="white" font-weight="600">Tam Metin İnceleme</text>
+                        <text x="160" y="175" text-anchor="middle" font-size="14" fill="white" font-weight="700">n = 11</text>
+
+                        <!-- Excluded 2 -->
+                        <rect x="245" y="130" width="70" height="35" rx="4" fill="#fee2e2" stroke="#fca5a5" stroke-width="2"/>
+                        <text x="280" y="148" text-anchor="middle" font-size="10" fill="#dc2626" font-weight="600">Hariç: 38</text>
+                        <text x="280" y="160" text-anchor="middle" font-size="8" fill="#991b1b">Kriter dışı</text>
+                        <line x1="240" y1="160" x2="250" y2="147" stroke="#fca5a5" stroke-width="2"/>
+
+                        <!-- Arrow 3 -->
+                        <line x1="160" y1="180" x2="160" y2="195" stroke="#6b7280" stroke-width="3"/>
+                        <polygon points="160,200 155,190 165,190" fill="#6b7280"/>
+
+                        <!-- Box 4: Included -->
+                        <rect x="60" y="200" width="200" height="35" rx="6" fill="#10b981"/>
+                        <text x="160" y="218" text-anchor="middle" font-size="11" fill="white" font-weight="600">Analize Dahil Edilen</text>
+                        <text x="160" y="232" text-anchor="middle" font-size="16" fill="white" font-weight="700">11 Temel Çalışma</text>
+                    </svg>
+                </div>
+            </div>
+
+            <!-- ============ COLUMN 2 (Center) ============ -->
+            <div class="column">
+                <!-- Bulgular -->
+                <div class="section bulgular" style="flex: 0 0 auto;">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        </div>
+                        <h2 class="section-title">Bulgular ve Tartışma</h2>
+                    </div>
+                    <div class="section-content">
+                        <div class="finding-item">
+                            <div class="finding-icon">
+                                <svg viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>
+                            </div>
+                            <div class="finding-text"><strong>ML'den DL'ye Geçiş:</strong> 2023-2024'te derin öğrenme modelleri (ResNet50, DNN) %95+ doğruluk ile ön plana çıkmıştır.</div>
+                        </div>
+
+                        <div class="finding-item">
+                            <div class="finding-icon">
+                                <svg viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>
+                            </div>
+                            <div class="finding-text"><strong>Regresyon Üstünlüğü:</strong> Sınıflandırma yerine regresyon modelleri, sürekli konsantrasyon tahmini sağlayarak klinik karar destek sistemleri için daha uygun olmaktadır.</div>
+                        </div>
+
+                        <div class="finding-item">
+                            <div class="finding-icon" style="background: #f59e0b;">
+                                <svg viewBox="0 0 20 20"><path d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"/></svg>
+                            </div>
+                            <div class="finding-text"><strong>Manuel ROI Sorunu:</strong> İncelenen çalışmaların %70'i manuel ROI seçimi kullanmakta, bu durum tekrarlanabilirliği ve kullanıcı bağımsızlığını azaltmaktadır.</div>
+                        </div>
+
+                        <div class="finding-item">
+                            <div class="finding-icon" style="background: #8b5cf6;">
+                                <svg viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                            </div>
+                            <div class="finding-text"><strong>Transfer Öğrenme:</strong> ImageNet üzerinde eğitilmiş modellerin (VGG, ResNet, MobileNet) ince ayar yapılması küçük veri setlerinde bile yüksek performans sağlamaktadır.</div>
+                        </div>
+
+                        <div class="finding-item">
+                            <div class="finding-icon" style="background: #0891b2;">
+                                <svg viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 2a2 2 0 00-2 2v11a3 3 0 106 0V4a2 2 0 00-2-2H4zm1 14a1 1 0 100-2 1 1 0 000 2zm5-1.757l4.9-4.9a2 2 0 000-2.828L13.485 5.1a2 2 0 00-2.828 0L10 5.757v8.486zM16 18H9.071l6-6H16a2 2 0 012 2v2a2 2 0 01-2 2z" clip-rule="evenodd"/></svg>
+                            </div>
+                            <div class="finding-text"><strong>Renk Uzayı:</strong> CIE L*a*b* renk uzayı, parlaklık ve kromatik bilgiyi ayırması sayesinde aydınlatma değişimlerine karşı daha dirençlidir.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Comparison Table -->
+                <div class="diagram-box table-box" style="flex: 0 0 auto;">
+                    <div class="diagram-title">Literatür Karşılaştırma Tablosu</div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Çalışma</th>
+                                <th>Yöntem</th>
+                                <th>Analit</th>
+                                <th>Performans</th>
+                                <th>ROI</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Mutlu ve ark. (2017)</td>
+                                <td>SVM, RF, KNN</td>
+                                <td>pH</td>
+                                <td>%92-98</td>
+                                <td>Manuel</td>
+                            </tr>
+                            <tr>
+                                <td>O'Connor ve ark. (2020)</td>
+                                <td>Renk düzeltme</td>
+                                <td>Genel</td>
+                                <td>Cihaz bağımsız</td>
+                                <td>Manuel</td>
+                            </tr>
+                            <tr>
+                                <td>Tseng ve ark. (2023)</td>
+                                <td>ResNet50</td>
+                                <td>ELISA</td>
+                                <td>>%97</td>
+                                <td>Otomatik</td>
+                            </tr>
+                            <tr>
+                                <td>Abuhassan ve ark. (2024)</td>
+                                <td>EBC, MLR</td>
+                                <td>Glikoz</td>
+                                <td>R² = 0.97</td>
+                                <td>Manuel</td>
+                            </tr>
+                            <tr>
+                                <td>Baştürk ve ark. (2024)</td>
+                                <td>DNN Regresyon</td>
+                                <td>Çoklu</td>
+                                <td>RMSE < 0.4</td>
+                                <td>Otomatik</td>
+                            </tr>
+                            <tr>
+                                <td>Zhang ve ark. (2024)</td>
+                                <td>CNN Regresyon</td>
+                                <td>Glikoz</td>
+                                <td>Yüksek R²</td>
+                                <td>Otomatik</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Evolution Chart -->
+                <div class="diagram-box evolution-box chart-box" style="flex: 0 0 auto;">
+                    <div class="diagram-title">Yapay Zeka Doğruluğunun Evrimi (2017-2024)</div>
+                    <svg viewBox="0 0 580 180" style="width: 100%; height: auto;">
+                        <!-- Gradients -->
+                        <defs>
+                            <linearGradient id="blueGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#3b82f6"/>
+                                <stop offset="100%" style="stop-color:#1d4ed8"/>
+                            </linearGradient>
+                            <linearGradient id="greenGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#10b981"/>
+                                <stop offset="100%" style="stop-color:#059669"/>
+                            </linearGradient>
+                            <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#f59e0b"/>
+                                <stop offset="100%" style="stop-color:#d97706"/>
+                            </linearGradient>
+                        </defs>
+
+                        <!-- Axes -->
+                        <line x1="70" y1="140" x2="560" y2="140" stroke="#cbd5e1" stroke-width="2"/>
+                        <line x1="70" y1="140" x2="70" y2="25" stroke="#cbd5e1" stroke-width="2"/>
+
+                        <!-- Y-axis labels -->
+                        <text x="60" y="143" text-anchor="end" font-size="12" fill="#64748b">0%</text>
+                        <text x="60" y="83" text-anchor="end" font-size="12" fill="#64748b">50%</text>
+                        <text x="60" y="28" text-anchor="end" font-size="12" fill="#64748b">100%</text>
+
+                        <!-- Grid lines -->
+                        <line x1="70" y1="83" x2="560" y2="83" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="5,5"/>
+
+                        <!-- Bars - wider spacing -->
+                        <!-- 2017: 92% -->
+                        <rect x="95" y="49" width="70" height="91" rx="5" fill="url(#blueGrad)"/>
+                        <text x="130" y="42" text-anchor="middle" font-size="14" fill="#1e40af" font-weight="700">92%</text>
+                        <text x="130" y="158" text-anchor="middle" font-size="14" fill="#374151" font-weight="600">2017</text>
+                        <text x="130" y="172" text-anchor="middle" font-size="11" fill="#64748b">SVM/RF</text>
+
+                        <!-- 2020: 94% -->
+                        <rect x="190" y="40" width="70" height="100" rx="5" fill="url(#blueGrad)"/>
+                        <text x="225" y="33" text-anchor="middle" font-size="14" fill="#1e40af" font-weight="700">94%</text>
+                        <text x="225" y="158" text-anchor="middle" font-size="14" fill="#374151" font-weight="600">2020</text>
+                        <text x="225" y="172" text-anchor="middle" font-size="11" fill="#64748b">Renk Düz.</text>
+
+                        <!-- 2023: 97% -->
+                        <rect x="285" y="28" width="70" height="112" rx="5" fill="url(#greenGrad)"/>
+                        <text x="320" y="22" text-anchor="middle" font-size="14" fill="#059669" font-weight="700">97%</text>
+                        <text x="320" y="158" text-anchor="middle" font-size="14" fill="#374151" font-weight="600">2023</text>
+                        <text x="320" y="172" text-anchor="middle" font-size="11" fill="#64748b">ResNet50</text>
+
+                        <!-- 2024: 98% -->
+                        <rect x="380" y="24" width="70" height="116" rx="5" fill="url(#greenGrad)"/>
+                        <text x="415" y="18" text-anchor="middle" font-size="14" fill="#059669" font-weight="700">98%</text>
+                        <text x="415" y="158" text-anchor="middle" font-size="14" fill="#374151" font-weight="600">2024</text>
+                        <text x="415" y="172" text-anchor="middle" font-size="11" fill="#64748b">DNN Reg.</text>
+
+                        <!-- Future: 99%? -->
+                        <rect x="475" y="20" width="70" height="120" rx="5" fill="url(#orangeGrad)" stroke="#d97706" stroke-width="2" stroke-dasharray="6,3"/>
+                        <text x="510" y="14" text-anchor="middle" font-size="14" fill="#d97706" font-weight="700">99%?</text>
+                        <text x="510" y="158" text-anchor="middle" font-size="14" fill="#374151" font-weight="600">Gelecek</text>
+                        <text x="510" y="172" text-anchor="middle" font-size="11" fill="#64748b">YOLO+DL</text>
+
+                        <!-- Legend -->
+                        <rect x="82" y="8" width="16" height="10" rx="2" fill="url(#blueGrad)"/>
+                        <text x="102" y="17" font-size="11" fill="#374151">ML</text>
+                        <rect x="130" y="8" width="16" height="10" rx="2" fill="url(#greenGrad)"/>
+                        <text x="150" y="17" font-size="11" fill="#374151">DL</text>
+                        <rect x="178" y="8" width="16" height="10" rx="2" fill="url(#orangeGrad)"/>
+                        <text x="198" y="17" font-size="11" fill="#374151">Öngörü</text>
+                    </svg>
+                </div>
+
+                <!-- µPAD System Diagram -->
+                <div class="diagram-box system-box chart-box" style="flex: 0 0 auto;">
+                    <div class="diagram-title">µPAD Kolorimetrik Analiz Sistemi</div>
+                    <svg viewBox="0 0 700 160" style="width: 100%; height: auto;">
+                        <defs>
+                            <marker id="arrow1" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+                                <path d="M0,0 L0,8 L12,4 z" fill="#3b82f6"/>
+                            </marker>
+                            <marker id="arrow2" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+                                <path d="M0,0 L0,8 L12,4 z" fill="#10b981"/>
+                            </marker>
+                        </defs>
+
+                        <!-- µPAD Device -->
+                        <rect x="15" y="30" width="120" height="100" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+                        <text x="75" y="22" text-anchor="middle" font-size="12" fill="#374151" font-weight="700">µPAD Şeridi (7 Bölge)</text>
+
+                        <!-- Test zones - 7 konsantrasyon -->
+                        <circle cx="30" cy="80" r="11" fill="#fef3c7" stroke="#fbbf24" stroke-width="2"/>
+                        <text x="30" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C1</text>
+                        <circle cx="45" cy="80" r="11" fill="#fde68a" stroke="#fbbf24" stroke-width="2"/>
+                        <text x="45" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C2</text>
+                        <circle cx="60" cy="80" r="11" fill="#fcd34d" stroke="#f59e0b" stroke-width="2"/>
+                        <text x="60" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C3</text>
+                        <circle cx="75" cy="80" r="11" fill="#fbbf24" stroke="#f59e0b" stroke-width="2"/>
+                        <text x="75" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C4</text>
+                        <circle cx="90" cy="80" r="11" fill="#f59e0b" stroke="#d97706" stroke-width="2"/>
+                        <text x="90" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C5</text>
+                        <circle cx="105" cy="80" r="11" fill="#fb923c" stroke="#f97316" stroke-width="2"/>
+                        <text x="105" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C6</text>
+                        <circle cx="120" cy="80" r="11" fill="#f97316" stroke="#ea580c" stroke-width="2"/>
+                        <text x="120" y="84" text-anchor="middle" font-size="9" fill="#7c2d12" font-weight="700">C7</text>
+
+                        <!-- Arrow 1 -->
+                        <path d="M145 80 L195 80" stroke="#3b82f6" stroke-width="4" fill="none" marker-end="url(#arrow1)"/>
+
+                        <!-- Phone -->
+                        <rect x="210" y="25" width="85" height="115" rx="12" fill="#1f2937"/>
+                        <rect x="218" y="38" width="69" height="80" rx="4" fill="#60a5fa"/>
+                        <circle cx="252" cy="128" r="7" fill="#4b5563"/>
+                        <text x="252" y="16" text-anchor="middle" font-size="13" fill="#374151" font-weight="700">Akıllı Telefon</text>
+
+                        <!-- Camera lens -->
+                        <circle cx="252" cy="78" r="22" fill="#1e40af" stroke="white" stroke-width="3"/>
+                        <circle cx="252" cy="78" r="12" fill="#3b82f6"/>
+                        <circle cx="252" cy="78" r="5" fill="#1e40af"/>
+
+                        <!-- Arrow 2 -->
+                        <path d="M305 80 L355 80" stroke="#3b82f6" stroke-width="4" fill="none" marker-end="url(#arrow1)"/>
+
+                        <!-- AI Processing Box -->
+                        <rect x="370" y="25" width="130" height="75" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+                        <text x="435" y="50" text-anchor="middle" font-size="14" fill="#1e40af" font-weight="700">Yapay Zeka</text>
+                        <text x="435" y="70" text-anchor="middle" font-size="11" fill="#3b82f6">CNN / DNN / ResNet</text>
+                        <text x="435" y="88" text-anchor="middle" font-size="10" fill="#64748b">Görüntü Analizi</text>
+
+                        <!-- Arrow 3 -->
+                        <path d="M435 105 L435 115" stroke="#10b981" stroke-width="4" fill="none" marker-end="url(#arrow2)"/>
+
+                        <!-- Results Box -->
+                        <rect x="365" y="125" width="140" height="30" rx="6" fill="#d1fae5" stroke="#10b981" stroke-width="2"/>
+                        <text x="435" y="145" text-anchor="middle" font-size="13" fill="#059669" font-weight="700">12.5 mM ± 0.3</text>
+
+                        <!-- Performance Badge -->
+                        <rect x="530" y="30" width="155" height="95" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+                        <text x="607" y="55" text-anchor="middle" font-size="13" fill="#92400e" font-weight="700">Performans</text>
+                        <text x="607" y="80" text-anchor="middle" font-size="14" fill="#b45309" font-weight="700">R² > 0.95</text>
+                        <text x="607" y="105" text-anchor="middle" font-size="14" fill="#b45309" font-weight="700">RMSE < 0.4</text>
+                    </svg>
+                </div>
+            </div>
+
+            <!-- ============ COLUMN 3 ============ -->
+            <div class="column">
+                <!-- Research Gaps -->
+                <div class="section gaps">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                        </div>
+                        <h2 class="section-title">Araştırma Boşlukları</h2>
+                    </div>
+                    <div class="section-content">
+                        <div class="highlight-box warning">
+                            <strong>Tespit Edilen 5 Kritik Boşluk:</strong>
+                        </div>
+
+                        <div class="gap-grid">
+                            <div class="gap-card">
+                                <div class="gap-number">1</div>
+                                <div class="gap-text">Sınıflandırma → Regresyon Geçişi</div>
+                            </div>
+                            <div class="gap-card">
+                                <div class="gap-number">2</div>
+                                <div class="gap-text">Deneysel Bağımsızlık Eksikliği</div>
+                            </div>
+                            <div class="gap-card">
+                                <div class="gap-number">3</div>
+                                <div class="gap-text">Beyaz Referans Normalizasyonu</div>
+                            </div>
+                            <div class="gap-card">
+                                <div class="gap-number">4</div>
+                                <div class="gap-text">YOLO Tabanlı Otomatik ROI</div>
+                            </div>
+                            <div class="gap-card highlight">
+                                <div class="gap-number">5</div>
+                                <div class="gap-text">Çoklu Analit Eş Zamanlı Tespiti (Literatürün %80'i tek analite odaklı)</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timeline -->
+                <div class="diagram-box" style="flex: 0 0 auto;">
+                    <div class="diagram-title">Teknolojik Gelişim Zaman Çizelgesi</div>
+                    <div class="timeline">
+                        <div class="timeline-item">
+                            <div class="timeline-year">2017</div>
+                            <div class="timeline-text">SVM, RF, KNN ile pH sınıflandırması başlangıcı</div>
+                        </div>
+                        <div class="timeline-item">
+                            <div class="timeline-year">2020</div>
+                            <div class="timeline-text">Cihaz bağımsız renk düzeltme algoritmaları</div>
+                        </div>
+                        <div class="timeline-item">
+                            <div class="timeline-year">2023</div>
+                            <div class="timeline-text">ResNet50 ile >%97 doğruluk, transfer öğrenme</div>
+                        </div>
+                        <div class="timeline-item">
+                            <div class="timeline-year">2024</div>
+                            <div class="timeline-text">DNN regresyon, ChemiCheck uygulaması</div>
+                        </div>
+                        <div class="timeline-item" style="opacity: 0.7;">
+                            <div class="timeline-year">Gelecek</div>
+                            <div class="timeline-text">YOLO keypoint detection ile tam otomasyon</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sonuç -->
+                <div class="section sonuc">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </div>
+                        <h2 class="section-title">Sonuç</h2>
+                    </div>
+                    <div class="section-content">
+                        <div class="highlight-box success">
+                            <strong>Ana Trendler:</strong>
+                            <ul>
+                                <li>ML'den DL'ye geçiş ve transfer öğrenme</li>
+                                <li>Sınıflandırmadan regresyona evrilme</li>
+                                <li>Aydınlatma bağımsızlığı stratejileri</li>
+                                <li>Otomatik ROI tespiti entegrasyonu</li>
+                            </ul>
+                        </div>
+
+                        <p><strong>İdeal POCT µPAD Sistemi:</strong></p>
+                        <ul>
+                            <li>Düşük maliyetli üretim</li>
+                            <li>Otomatik görüntü işleme (YOLO)</li>
+                            <li>Aydınlatmadan bağımsız ölçüm</li>
+                            <li>Kullanıcı dostu mobil uygulama</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Kaynaklar -->
+                <div class="section kaynaklar" style="flex: 0 0 auto;">
+                    <div class="section-header">
+                        <div class="section-icon">
+                            <svg viewBox="0 0 24 24"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                        </div>
+                        <h2 class="section-title">Kaynaklar</h2>
+                    </div>
+                    <div class="section-content" style="font-size: 18pt; line-height: 1.3;">
+                        <p style="margin-bottom: 2mm;">[1] Baştürk ve ark. (2024). <em>Adv. Intell. Syst.</em>, 6(11), 2400202.</p>
+                        <p style="margin-bottom: 2mm;">[2] Tseng ve ark. (2023). <em>Anal. Chim. Acta</em>, 1243, 340799.</p>
+                        <p style="margin-bottom: 2mm;">[3] Abuhassan ve ark. (2024). <em>Sens. Act. B</em>, 401, 135538.</p>
+                        <p style="margin-bottom: 2mm;">[4] Mutlu ve ark. (2017). <em>The Analyst</em>, 142(13), 2434.</p>
+                        <p style="margin-bottom: 2mm;">[5] Xu ve ark. (2023). <em>Nat. Commun.</em>, 14(1), 1341.</p>
+                        <p style="margin-bottom: 0;">[6] Zhang ve ark. (2024). <em>Sci. Rep.</em>, 14(1), 28451.</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- ============ FOOTER ============ -->
+        <footer class="footer">
+            <div class="footer-section">
+                <div class="footer-title">İletişim</div>
+                <div>veyselyusfyilmaz@gmail.com</div>
+                <div>İzmir Kâtip Çelebi Üniversitesi</div>
+                <div>Mühendislik ve Mimarlık Fakültesi</div>
+            </div>
+
+            <div class="footer-section footer-center">
+                <div class="footer-title">FBE502.2.1 - Araştırma Metotları ve Etik</div>
+                <div class="footer-stats">
+                    <div class="footer-stat">
+                        <div class="footer-stat-value">127 → 11</div>
+                        <div class="footer-stat-label">Çalışma Seçimi</div>
+                    </div>
+                    <div class="footer-stat">
+                        <div class="footer-stat-value">2017-2024</div>
+                        <div class="footer-stat-label">Dönem</div>
+                    </div>
+                    <div class="footer-stat">
+                        <div class="footer-stat-value">>%95</div>
+                        <div class="footer-stat-label">DL Doğruluk</div>
+                    </div>
+                    <div class="footer-stat">
+                        <div class="footer-stat-value">%70</div>
+                        <div class="footer-stat-label">Manuel ROI</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="footer-section footer-right">
+                <div class="footer-title">Anahtar Kelimeler</div>
+                <div class="keyword-tags">
+                    <span class="keyword-tag">µPAD</span>
+                    <span class="keyword-tag">Kolorimetri</span>
+                    <span class="keyword-tag">Derin Öğrenme</span>
+                    <span class="keyword-tag">POCT</span>
+                    <span class="keyword-tag">Akıllı Telefon</span>
+                    <span class="keyword-tag">YOLO</span>
+                    <span class="keyword-tag">Laktat</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>
