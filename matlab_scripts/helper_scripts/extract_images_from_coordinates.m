@@ -193,6 +193,7 @@ function cfg = createConfiguration(inputFolder, quadFolder, patchFolder, concFol
     cfg.allowedImageExtensions = {'*.jpg','*.jpeg','*.png','*.bmp','*.tif','*.tiff'};
     cfg.coordinateFileName = 'coordinates.txt';
     cfg.concFolderPrefix = char(concFolderPrefix);
+    cfg.coordIO = coordinate_io();
 
     % Image size limits
     cfg.limits = struct('maxJpegDimension', 65500);  % MATLAB JPEG writer maximum dimension
@@ -313,7 +314,7 @@ function rows = read_quad_coordinates(coordPath)
                   'rotation', cell(1, numEntries));
 
     for i = 1:numEntries
-        rows(i).imageBase = strip_ext(rawEntries(i).imageName);  % Strip extension
+        rows(i).imageBase = rawEntries(i).imageName;  % Already stripped by coordinate_io
         rows(i).concentration = rawEntries(i).concentration;
         rows(i).quad = round(rawEntries(i).vertices);  % Map vertices -> quad
         rows(i).rotation = rawEntries(i).rotation;
@@ -644,7 +645,7 @@ function srcPath = resolve_quad_source(baseDir, row, cfg, quadConDirs)
     end
 
     srcPath = '';
-    baseName = strip_ext(row.imageName);
+    baseName = cfg.coordIO.strip_image_extension(row.imageName);
 
     % Priority 1: Direct path in base directory
     candidate = fullfile(baseDir, row.imageName);
@@ -699,10 +700,6 @@ function srcPath = resolve_quad_source(baseDir, row, cfg, quadConDirs)
             return;
         end
     end
-end
-
-function s = strip_ext(nameOrPath)
-    [~, s, ~] = fileparts(nameOrPath);
 end
 
 function r = relpath(pathStr, root)

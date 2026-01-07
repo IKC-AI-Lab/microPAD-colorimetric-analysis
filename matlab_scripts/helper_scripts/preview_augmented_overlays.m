@@ -256,16 +256,14 @@ for pIdx = 1:numel(phoneDirs)
         imageChar = char(imageName);
 
         % Extract base scene name (strip _con_X suffix)
-        % Stage-2 crops have _con_X suffix: IMG_0957_aug_001_con_0.jpeg
-        % Stage-1 originals have no suffix: IMG_0957_aug_001.jpg
-        % Note: augment_dataset.m may write different extensions for stage 1 vs 2
-        % (e.g., .jpg -> .jpeg), so we must search for stage-1 file by basename only
-        [~, baseName, ~] = fileparts(imageChar);  % Remove extension first
-        conIdx = strfind(baseName, '_con_');
+        % Stage-2 crops have _con_X suffix: IMG_0957_aug_001_con_0
+        % Stage-1 originals have no suffix: IMG_0957_aug_001
+        % Note: coordinate_io now strips extensions, so imageChar is already a base name
+        conIdx = strfind(imageChar, '_con_');
         if ~isempty(conIdx)
-            baseNameNoConc = baseName(1:conIdx(1)-1);
+            baseNameNoConc = imageChar(1:conIdx(1)-1);
         else
-            baseNameNoConc = baseName;
+            baseNameNoConc = imageChar;
         end
 
         % Create or retrieve plan entry for this base scene

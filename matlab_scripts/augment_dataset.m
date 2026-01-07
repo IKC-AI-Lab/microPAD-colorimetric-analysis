@@ -1698,7 +1698,8 @@ function paperGroups = group_quads_by_image(quadEntries)
 
     for i = 1:numel(quadEntries)
         p = quadEntries(i);
-        [~, imgBase, ~] = fileparts(p.image);
+        % p.image is already a base name; avoid stripping dot-suffixes (e.g., Roboflow hashes)
+        imgBase = char(p.image);
 
         if ~isKey(paperGroups, imgBase)
             paperGroups(imgBase) = p;

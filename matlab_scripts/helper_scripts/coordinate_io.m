@@ -68,6 +68,7 @@ function io = coordinate_io()
     io.readExistingCoordinates = @readExistingCoordinates;
     io.atomicWriteCoordinates = @atomicWriteCoordinates;
     io.filterConflictingEntries = @filterConflictingEntries;
+    io.strip_image_extension = @strip_image_extension;
 
     % Constants
     io.QUAD_HEADER = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
@@ -136,14 +137,14 @@ function [quadParams, found, rotation] = loadQuadCoordinates(coordFile, imageNam
         end
 
         % Parse rows matching this image
-        [~, baseNameNoExt, ~] = fileparts(imageName);
+        baseNameNoExt = strip_image_extension(imageName);
         matchingRows = {};
 
         for i = 1:length(allRows)
             parts = strsplit(strtrim(allRows{i}));
             if length(parts) >= 11
                 rowImageName = parts{1};
-                [~, rowBaseNoExt, ~] = fileparts(rowImageName);
+                rowBaseNoExt = strip_image_extension(rowImageName);
 
                 if strcmpi(rowBaseNoExt, baseNameNoExt)
                     matchingRows{end+1} = allRows{i}; %#ok<AGROW>
@@ -289,7 +290,7 @@ function quads = parseQuadCoordinateFile(coordFile)
             end
 
             validCount = validCount + 1;
-            [~, baseName, ~] = fileparts(names{i});
+            baseName = strip_image_extension(names{i});
             quads(validCount).imageName = baseName;
             quads(validCount).concentration = data{2}(i);
             quads(validCount).vertices = reshape(coords, 2, 4)';
@@ -372,8 +373,11 @@ function T = parseQuadCoordinateFileAsTable(coordFile)
             return;
         end
 
+        % Strip image extensions for consistency with struct parser
+        strippedNames = cellfun(@strip_image_extension, names, 'UniformOutput', false);
+
         % Build table directly from parsed data
-        T = table(string(names), data{2}, data{3}, data{4}, data{5}, data{6}, ...
+        T = table(string(strippedNames), data{2}, data{3}, data{4}, data{5}, data{6}, ...
                   data{7}, data{8}, data{9}, data{10}, data{11}, ...
                   'VariableNames', expectedCols);
 
@@ -507,14 +511,14 @@ function [ellipseData, found] = loadEllipseCoordinates(coordFile, imageName)
         end
 
         % Parse rows matching this image
-        [~, baseNameNoExt, ~] = fileparts(imageName);
+        baseNameNoExt = strip_image_extension(imageName);
         matchingRows = {};
 
         for i = 1:length(allRows)
             parts = strsplit(strtrim(allRows{i}));
             if length(parts) >= 8
                 rowImageName = parts{1};
-                [~, rowBaseNoExt, ~] = fileparts(rowImageName);
+                rowBaseNoExt = strip_image_extension(rowImageName);
 
                 if strcmpi(rowBaseNoExt, baseNameNoExt)
                     matchingRows{end+1} = allRows{i}; %#ok<AGROW>
@@ -652,7 +656,7 @@ function ellipses = parseEllipseCoordinateFile(coordFile)
             end
 
             validCount = validCount + 1;
-            [~, baseName, ~] = fileparts(names{i});
+            baseName = strip_image_extension(names{i});
             ellipses(validCount).imageName = baseName;
             ellipses(validCount).concentration = data{2}(i);
             ellipses(validCount).replicate = data{3}(i);
@@ -743,8 +747,11 @@ function T = parseEllipseCoordinateFileAsTable(coordFile)
             return;
         end
 
+        % Strip image extensions for consistency with struct parser
+        strippedNames = cellfun(@strip_image_extension, names, 'UniformOutput', false);
+
         % Build table directly from parsed data
-        T = table(string(names), data{2}, data{3}, data{4}, data{5}, data{6}, data{7}, data{8}, ...
+        T = table(string(strippedNames), data{2}, data{3}, data{4}, data{5}, data{6}, data{7}, data{8}, ...
                   'VariableNames', expectedCols);
 
         % Validate ellipse parameters (remove rows with invalid values)
@@ -1022,6 +1029,17 @@ function atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordF
         if isfile(tmpPath)
             delete(tmpPath);
         end
+    end
+end
+
+function baseName = strip_image_extension(nameOrPath)
+    % Strip only known image extensions so dot-suffixes in base names survive.
+    validExts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
+    [~, base, ext] = fileparts(nameOrPath);
+    if isempty(ext) || ~any(strcmpi(ext, validExts))
+        baseName = [base ext];
+    else
+        baseName = base;
     end
 end
 
