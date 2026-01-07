@@ -57,6 +57,9 @@ function augSynth = augmentation_synthesis()
     %% Public API - Paper Damage
     augSynth.damage.apply = @apply_paper_damage;
 
+    %% Public API - Shadows
+    augSynth.shadows.generateDropShadow = @generateDropShadow;
+
     %% Public API - Utilities (shared)
     augSynth.clampUint8 = imageIOModule.clampUint8;
     augSynth.resolveRange = @resolveRange;
@@ -68,7 +71,7 @@ end
 %% BACKGROUND SYNTHESIS - MAIN GENERATION
 %% =========================================================================
 
-function bg = generateRealisticLabSurface(width, height, textureCfg)
+function [bg, bgType] = generateRealisticLabSurface(width, height, textureCfg)
     %% Generate realistic lab surface backgrounds with pooled single-precision textures
     %
     % This function generates a background and clamps to uint8, but does NOT
@@ -79,14 +82,15 @@ function bg = generateRealisticLabSurface(width, height, textureCfg)
     %   height - Background height in pixels
     %   textureCfg - Texture configuration struct
     %
-    % Output:
+    % Outputs:
     %   bg - uint8 RGB background image [height x width x 3]
+    %   bgType - Background surface type (1-5)
 
-    bgSingle = generateRealisticLabSurfaceRaw(width, height, textureCfg);
+    [bgSingle, bgType] = generateRealisticLabSurfaceRaw(width, height, textureCfg);
     bg = uint8(min(255, max(0, bgSingle)));
 end
 
-function bg = generateRealisticLabSurfaceRaw(width, height, textureCfg)
+function [bg, bgType] = generateRealisticLabSurfaceRaw(width, height, textureCfg)
     %% Generate realistic lab surface backgrounds (single-precision output)
     %
     % Returns single-precision output for further processing before clamping.
@@ -102,7 +106,7 @@ function bg = generateRealisticLabSurfaceRaw(width, height, textureCfg)
     width = max(1, round(width));
     height = max(1, round(height));
 
-    surfaceType = randi(4);
+    surfaceType = randi(5);
     texture = borrowBackgroundTexture(surfaceType, width, height, textureCfg);
 
     switch surfaceType
@@ -119,6 +123,9 @@ function bg = generateRealisticLabSurfaceRaw(width, height, textureCfg)
             else
                 baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
             end
+        case 5  % White surface with ambient gradients
+            baseGray = 245 + randi(6);  % [245, 250]
+            baseRGB = [baseGray, baseGray, baseGray] + randi([-textureCfg.whiteRGBVariation, textureCfg.whiteRGBVariation], [1, 3]);
         otherwise  % Skin texture
             h = 0.03 + rand() * 0.07;
             s = 0.25 + rand() * 0.35;
@@ -126,7 +133,12 @@ function bg = generateRealisticLabSurfaceRaw(width, height, textureCfg)
             baseRGB = round(255 * hsv2rgb([h, s, v]));
     end
 
-    baseRGB = max(100, min(230, baseRGB));
+    % Conditional clamping: preserve white tones for type 5
+    if surfaceType ~= 5
+        baseRGB = max(100, min(230, baseRGB));
+    else
+        baseRGB = max(200, min(255, baseRGB));  % Preserve white tones
+    end
 
     numChannels = 3;  % RGB backgrounds only
     bg = repmat(reshape(single(baseRGB), [1, 1, numChannels]), [height, width, 1]);
@@ -137,6 +149,46 @@ function bg = generateRealisticLabSurfaceRaw(width, height, textureCfg)
     if rand() < 0.60
         bg = addLightingGradient(bg, width, height);
     end
+
+    % Apply ambient radial gradients for white background (type 5)
+    if surfaceType == 5
+        numGradients = randi(textureCfg.ambientGradientCount);
+        diagonal = sqrt(width^2 + height^2);
+
+        [X, Y] = meshgrid(1:width, 1:height);
+        X = single(X);
+        Y = single(Y);
+
+        for i = 1:numGradients
+            % Random center
+            cx = rand() * width;
+            cy = rand() * height;
+
+            % Random radius (30-60% of diagonal)
+            radiusFraction = textureCfg.ambientGradientRadiusPercent(1) + ...
+                             rand() * diff(textureCfg.ambientGradientRadiusPercent);
+            radius = radiusFraction * diagonal;
+
+            % Distance from center
+            dist = sqrt((X - cx).^2 + (Y - cy).^2);
+
+            % Gaussian falloff
+            sigma = max(1, radius / 3);  % Minimum 1 pixel sigma
+            gradient = exp(-dist.^2 / (2 * sigma^2));
+
+            % Random strength (2-8% darkening for white backgrounds to preserve tone)
+            strength = textureCfg.ambientGradientStrength(1) + ...
+                       rand() * diff(textureCfg.ambientGradientStrength);
+            darkening = 1 - strength * gradient;
+
+            % Apply to all channels
+            for c = 1:3
+                bg(:,:,c) = bg(:,:,c) .* darkening;
+            end
+        end
+    end
+
+    bgType = surfaceType;
 end
 
 %% =========================================================================
@@ -192,7 +244,7 @@ function poolState = initializeBackgroundTexturePool(width, height, textureCfg)
     %% Initialize texture pool state
     requestedPoolSize = max(1, round(textureCfg.poolSize));
     bytesPerTexture = max(1, double(width) * double(height) * 4);
-    surfaces = 4;
+    surfaces = 5;
     maxPoolBytes = textureCfg.poolMaxMemoryMB * 1024 * 1024;
     maxPerSurface = max(1, floor((maxPoolBytes / surfaces) / bytesPerTexture));
     poolSize = min(requestedPoolSize, maxPerSurface);
@@ -217,8 +269,8 @@ function poolState = initializeBackgroundTexturePool(width, height, textureCfg)
         poolState.scaleRange = [1, 1];
     end
     poolState.flipProb = max(0, min(1, textureCfg.poolFlipProbability));
-    poolState.surface = repmat(surfaceTemplate, 1, 4);
-    for st = 1:4
+    poolState.surface = repmat(surfaceTemplate, 1, 5);
+    for st = 1:5
         entry = poolState.surface(st);
         entry.order = randperm(entry.poolSize);
         entry.cursor = 1;
@@ -265,6 +317,8 @@ function texture = generateSurfaceTextureBase(surfaceType, width, height, textur
             texture = generateLaminateTexture(width, height, textureCfg);
         case 4  % Skin-like microtexture
             texture = generateSkinTexture(width, height, textureCfg);
+        case 5  % White surface - minimal noise texture
+            texture = single(randn(height, width)) .* single(textureCfg.whiteNoiseStrength);
         otherwise
             randBuffer1(:) = single(randn(height, width));
             texture = randBuffer1;
@@ -1981,5 +2035,69 @@ function img = apply_thickness_shadows(img, damagedMask, originalMask)
         channel = channel .* darkening;
         img(:,:,c) = uint8(channel);
     end
+end
+
+%% =========================================================================
+%% SHADOW GENERATION - DROP SHADOWS FOR WHITE BACKGROUND
+%% =========================================================================
+
+function shadowMask = generateDropShadow(quadVertices, lightAngle, imgSize, params)
+    % Generate soft drop shadow for a quadrilateral
+    %
+    % Inputs:
+    %   quadVertices - 4x2 array of quad corners [x, y]
+    %   lightAngle - light direction angle in degrees (0-360)
+    %   imgSize - [height, width] of background
+    %   params - struct with:
+    %            .dropShadowOffsetRange - [min, max] offset in pixels
+    %            .dropShadowBlurRange - [min, max] blur sigma in pixels
+    %            .dropShadowDarknessRange - [min, max] multiplier (0.8-0.9)
+    % Output:
+    %   shadowMask - [H x W] single in [0,1], where 1=no shadow, ~0.8-0.9=shadow
+
+    imgHeight = imgSize(1);
+    imgWidth = imgSize(2);
+
+    % Sample shadow parameters
+    offset = params.dropShadowOffsetRange(1) + ...
+             rand() * diff(params.dropShadowOffsetRange);
+    blurSigma = params.dropShadowBlurRange(1) + ...
+                rand() * diff(params.dropShadowBlurRange);
+    darkness = params.dropShadowDarknessRange(1) + ...
+               rand() * diff(params.dropShadowDarknessRange);
+
+    % Convert light angle to offset direction (angle 0 = right, 90 = down)
+    angleRad = deg2rad(lightAngle);
+    offsetX = offset * cos(angleRad);
+    offsetY = offset * sin(angleRad);
+
+    % Offset quad vertices away from light (shadows fall opposite to light direction)
+    shadowVertices = quadVertices - [offsetX, offsetY];
+
+    % Clamp to image bounds (allow slight overflow for blur)
+    shadowVertices(:,1) = max(-blurSigma*3, min(imgWidth + blurSigma*3, shadowVertices(:,1)));
+    shadowVertices(:,2) = max(-blurSigma*3, min(imgHeight + blurSigma*3, shadowVertices(:,2)));
+
+    % Create polygon mask for shadow
+    try
+        shadowBinaryMask = poly2mask(shadowVertices(:,1), shadowVertices(:,2), ...
+                                     imgHeight, imgWidth);
+    catch
+        % Degenerate polygon (vertices outside bounds or invalid)
+        shadowMask = ones(imgHeight, imgWidth, 'single');
+        return;
+    end
+
+    if ~any(shadowBinaryMask(:))
+        shadowMask = ones(imgHeight, imgWidth, 'single');
+        return;
+    end
+
+    % Apply Gaussian blur for soft edges
+    shadowSoft = single(shadowBinaryMask);
+    shadowSoft = imgaussfilt(shadowSoft, blurSigma);
+
+    % Convert to multiplicative mask (1 = no shadow, darkness = shadow)
+    shadowMask = single(1 - (1 - darkness) * shadowSoft);
 end
 

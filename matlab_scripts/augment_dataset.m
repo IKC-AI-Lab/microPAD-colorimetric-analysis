@@ -129,7 +129,15 @@ function augment_dataset(varargin)
         'skinLowFreqStrength', 6, ...
         'skinMidFreqStrength', 2, ...
         'skinHighFreqStrength', 1, ...
-        'poolMaxMemoryMB', 512);
+        'poolMaxMemoryMB', 512, ...
+        'whiteRGBVariation', 2, ...
+        'whiteNoiseStrength', 3, ...
+        'ambientGradientCount', [2, 4], ...
+        'ambientGradientRadiusPercent', [0.30, 0.60], ...
+        'ambientGradientStrength', [0.02, 0.08], ...
+        'dropShadowOffsetRange', [2, 8], ...
+        'dropShadowBlurRange', [8, 15], ...
+        'dropShadowDarknessRange', [0.80, 0.90]);
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
@@ -410,7 +418,7 @@ function augment_dataset(varargin)
     else
         fprintf('Scene prefix: (none)\n');
     end
-    fprintf('Backgrounds: 4 types (uniform, speckled, laminate, skin)\n');
+    fprintf('Backgrounds: 5 types (uniform, speckled, laminate, skin, white+shadows)\n');
     fprintf('Photometric augmentation: %s\n', char(string(cfg.photometricAugmentation)));
     fprintf('Blur probability: %.1f%%\n', cfg.blurProbability * 100);
     fprintf('==================================\n');
@@ -838,7 +846,13 @@ function augment_single_paper(paperBase, imgExt, stage1Img, quads, ellipseMap, .
                                                      cfg.placement.maxOverlapRetries);
 
     % Generate realistic background with final size
-    background = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
+    [background, bgType] = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
+
+    % Sample shared light direction once per scene (if white background)
+    lightAngle = 0;
+    if bgType == 5
+        lightAngle = rand() * 360;
+    end
 
     % Composite each region onto background and save outputs
     if cfg.useScenePrefix
@@ -869,6 +883,32 @@ function augment_single_paper(paperBase, imgExt, stage1Img, quads, ellipseMap, .
 
         % Translate vertices to background coordinates
         sceneVertices = augVertices + [offsetX, offsetY];
+
+        % Apply drop shadow if white background
+        if bgType == 5
+            % Generate and apply drop shadow
+            imgSize = [size(background, 1), size(background, 2)];
+            shadowMask = cfg.augSynth.shadows.generateDropShadow( ...
+                sceneVertices, lightAngle, imgSize, cfg.texture);
+
+            % Compute shadow region bounding box (account for shadow offset and blur)
+            % Use max offset + 3-sigma Gaussian tail for proper coverage
+            shadowExpand = cfg.texture.dropShadowOffsetRange(2) + 3 * cfg.texture.dropShadowBlurRange(2);
+            minX = max(1, floor(min(sceneVertices(:,1))) - shadowExpand);
+            maxX = min(size(background, 2), ceil(max(sceneVertices(:,1))) + shadowExpand);
+            minY = max(1, floor(min(sceneVertices(:,2))) - shadowExpand);
+            maxY = min(size(background, 1), ceil(max(sceneVertices(:,2))) + shadowExpand);
+
+            % Apply shadow mask to background region (per-channel multiply)
+            if maxX >= minX && maxY >= minY
+                bgRegion = background(minY:maxY, minX:maxX, :);
+                shadowRegion = shadowMask(minY:maxY, minX:maxX);
+                for c = 1:3
+                    bgRegion(:,:,c) = uint8(double(bgRegion(:,:,c)) .* shadowRegion);
+                end
+                background(minY:maxY, minX:maxX, :) = bgRegion;
+            end
+        end
 
         % Composite onto background
         background = composite_to_background(background, augQuadImg, sceneVertices);
@@ -1214,11 +1254,11 @@ end
 %% BACKGROUND GENERATION (delegates to augmentation_synthesis helper)
 %% =========================================================================
 
-function bg = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
+function [bg, bgType] = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
     %% Generate realistic lab surface backgrounds (delegates to helper)
     % Generates background using augmentation_synthesis, then adds sparse artifacts.
     augSynth = augmentation_synthesis();
-    bg = augSynth.bg.generate(width, height, textureCfg);
+    [bg, bgType] = augSynth.bg.generate(width, height, textureCfg);
     bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
