@@ -496,8 +496,9 @@ augment_dataset('numAugmentations', 5)
 # 2. Prepare YOLO dataset with Python (reads MATLAB coordinates, creates labels)
 python python_scripts/prepare_yolo_dataset.py
 
-# 3. Train model
-python python_scripts/train_yolo.py
+# 3. Train model (desktop: yolo11s @ 1280px, mobile: yolo11n @ 640px)
+python python_scripts/train_yolo.py           # Desktop model
+python python_scripts/train_yolo.py --mobile  # Mobile model
 ```
 
 **For Concentration Prediction (Regression Models)**

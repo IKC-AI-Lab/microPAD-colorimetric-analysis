@@ -104,6 +104,30 @@ Modular utility functions organized by functionality. Each returns a struct of f
 **Python:** AI model training/inference, YOLO label generation
 **Interface:** Subprocess communication via `detect_quads.py`
 
+### Model Training (`python_scripts/train_yolo.py`)
+
+Two model configurations available:
+
+| Mode | Model | Resolution | Command |
+|------|-------|------------|---------|
+| Desktop | yolo11s-pose | 1280x1280 | `python train_yolo.py` |
+| Mobile | yolo11n-pose | 640x640 | `python train_yolo.py --mobile` |
+
+**Key flags:**
+- `--mobile`: Use mobile-optimized settings (nano model, 640px, reduced augmentation)
+- `--name`: Custom experiment name (auto-generated if omitted)
+- `--validate`: Validate trained model
+- `--export`: Export to TFLite for deployment
+
+**MATLAB inference:**
+```matlab
+% Desktop model (default)
+cut_micropads('useAIDetection', true)
+
+% Mobile model
+cut_micropads('useAIDetection', true, 'useMobileModel', true)
+```
+
 ## Critical Patterns
 
 ### Atomic Coordinate Writes

@@ -17,11 +17,24 @@ PERFORMANCE TARGETS:
 - Inference < 100ms per image
 """
 
-import argparse
+# GPU Configuration (configured by /configure_training_gpus)
+# Selected: 2x RTX A6000 with NVLink (96GB combined VRAM)
+# PyTorch device mapping (differs from nvidia-smi due to PCI bus ordering):
+#   PyTorch cuda:0 -> NVIDIA RTX A6000 (48GB) [nvidia-smi GPU 0]
+#   PyTorch cuda:1 -> NVIDIA RTX A6000 (48GB) [nvidia-smi GPU 2] - NVLinked
+#   PyTorch cuda:2 -> NVIDIA RTX 3090 (24GB)  [nvidia-smi GPU 1]
+# MUST be set before importing torch/ultralytics
 import os
+# Only set if not already configured (allows external override)
+# Note: Uses PyTorch indices (0,1 = both A6000s), not nvidia-smi indices
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+import argparse
 import sys
+import traceback
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 import yaml
 
 try:
@@ -37,12 +50,12 @@ except ImportError:
 # ============================================================================
 #
 # ZERO-CONFIGURATION TRAINING:
-# These defaults are optimized for dual RTX A6000 workstation (96 GB VRAM total)
+# These defaults are optimized for dual RTX A6000 workstation with NVLink (96 GB VRAM total)
 # with large input images (~13MP: 4032x3024 → resized to 1280x1280).
 # Simply run: python train_yolo.py
 # No command-line arguments required for optimal performance!
 #
-# Batch size is conservative (24) to handle large input images safely.
+# Batch size is set to 16 (8 per GPU) to handle large input images safely.
 # To customize: Override any parameter via CLI flags (see --help)
 # ============================================================================
 
@@ -50,9 +63,14 @@ except ImportError:
 DEFAULT_MODEL = 'yolo11s-pose.pt'
 DEFAULT_IMAGE_SIZE = 1280
 
-# Training hyperparameters (optimized for dual A6000 workstation)
+# Mobile configuration (for 640x640 deployment on mobile devices)
+DEFAULT_MODEL_MOBILE = 'yolo11n-pose.pt'
+DEFAULT_IMAGE_SIZE_MOBILE = 640
+DEFAULT_BATCH_SIZE_MOBILE = 64  # 32 per GPU - optimal for 640 resolution on dual A6000
+
+# Training hyperparameters (optimized for dual A6000 with NVLink)
 # NOTE: Batch size conservative due to large input images (~13MP: 4032x3024)
-DEFAULT_BATCH_SIZE = 32              # 16 per GPU - safe for large images at 1280 resolution
+DEFAULT_BATCH_SIZE = 24              # 12 per GPU - safe for large images at 1280 resolution
 DEFAULT_EPOCHS_STAGE1 = 200          # Extended training for better convergence
 DEFAULT_EPOCHS_STAGE2 = 150          # Extended fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
@@ -61,17 +79,17 @@ DEFAULT_LEARNING_RATE_STAGE1 = 0.001 # Learning rate for AdamW optimizer (stage 
 DEFAULT_LEARNING_RATE_STAGE2 = 0.0005 # Lower LR for fine-tuning
 DEFAULT_OPTIMIZER = 'AdamW'          # AdamW optimizer for pose estimation
 
-# Hardware configuration (optimized for 64-core CPU + dual RTX A6000)
-# GPU device selection: Use CUDA_VISIBLE_DEVICES environment variable or default
-# Default '0,2' selects dual RTX A6000 GPUs (skips RTX 3090 for homogeneous pairing)
-DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,2')
-DEFAULT_NUM_WORKERS = 32             # Half of 64 CPU cores for data loading
+# Hardware configuration (optimized for dual RTX A6000 with NVLink)
+# GPU device selection: CUDA_VISIBLE_DEVICES is set at script top to "0,1"
+# Both GPUs are RTX A6000 (48GB each, 96GB total with NVLink interconnect)
+DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,1')
+DEFAULT_NUM_WORKERS = 16             # Optimal for data loading
 DEFAULT_CACHE_ENABLED = 'disk'       # Disk cache for deterministic training
 
 # Checkpoint configuration
 CHECKPOINT_SAVE_PERIOD = 10          # Save checkpoint every N epochs
 
-# Augmentation configuration
+# Augmentation configuration (server/desktop)
 AUG_HSV_HUE = 0.015
 AUG_HSV_SATURATION = 0.7
 AUG_HSV_VALUE = 0.4
@@ -81,6 +99,11 @@ AUG_FLIP_LR = 0.5
 AUG_MOSAIC = 1.0
 AUG_ROTATION = 0.0  # Disabled (already in synthetic data)
 
+# Mobile augmentation (reduced for lower resolution - features are smaller)
+AUG_SCALE_MOBILE = 0.3
+AUG_TRANSLATE_MOBILE = 0.05
+AUG_MOSAIC_MOBILE = 0.8
+
 # Dataset configuration
 DEFAULT_STAGE1_DATA = 'micropad_synth.yaml'
 DEFAULT_STAGE2_DATA = 'micropad_mixed.yaml'
@@ -88,7 +111,7 @@ DEFAULT_STAGE2_DATA = 'micropad_mixed.yaml'
 # ============================================================================
 
 # Verify Ultralytics version supports pose training
-def check_ultralytics_version():
+def check_ultralytics_version() -> None:
     """Check that Ultralytics version supports YOLOv11-pose."""
     required_version = (8, 1, 0)
     try:
@@ -461,7 +484,7 @@ class YOLOTrainer:
     def export(
         self,
         weights: str,
-        formats: list = ['tflite'],
+        formats: Optional[List[str]] = None,
         imgsz: int = DEFAULT_IMAGE_SIZE,
         half: bool = True,
         int8: bool = False,
@@ -480,6 +503,9 @@ class YOLOTrainer:
         Returns:
             Dictionary mapping format to exported file path
         """
+        if formats is None:
+            formats = ['tflite']
+
         print("\n" + "="*80)
         print("MODEL EXPORT")
         print("="*80)
@@ -535,7 +561,7 @@ class YOLOTrainer:
         return exported_files
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description='YOLOv11 Training Pipeline for microPAD Auto-Detection',
@@ -544,10 +570,17 @@ def main():
 Examples:
   # ZERO-CONFIG TRAINING (recommended - uses optimized defaults)
   python train_yolo.py
-  # Default: yolo11s-pose, 1280 resolution, batch=48, AdamW optimizer, dual A6000 GPUs
+  # Default: yolo11s-pose, 1280 resolution, batch=24, AdamW optimizer, dual A6000 GPUs
 
   # Train Stage 1 (synthetic data pretraining) - explicit
   python train_yolo.py --stage 1
+
+  # MOBILE MODEL TRAINING (for mobile deployment)
+  python train_yolo.py --mobile --name yolo11n_pose_640
+  # Uses: yolo11n-pose, 640 resolution, batch=48, reduced augmentation
+
+  # Train with custom model
+  python train_yolo.py --model yolo11n-pose.pt --imgsz 640 --batch 48
 
   # Train Stage 2 (fine-tuning with manual labels)
   python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
@@ -556,7 +589,7 @@ Examples:
   python train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
   # Export to TFLite for mobile deployment
-  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
+  python train_yolo.py --export --weights training_runs/yolo11n_pose_640/weights/best.pt --imgsz 640
 
   # Export with FP32 precision (instead of default FP16)
   python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --no-half
@@ -565,25 +598,33 @@ Examples:
   python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --int8
 
   # Override defaults (if needed)
-  python train_yolo.py --stage 1 --batch 64 --epochs 300 --lr0 0.0005
+  python train_yolo.py --stage 1 --batch 48 --epochs 300 --lr0 0.0005
 
   # Use different optimizer
   python train_yolo.py --stage 1 --optimizer SGD --lr0 0.01
 
-Optimized Defaults (for dual RTX A6000 + large images):
+Desktop Defaults (for dual RTX A6000 with NVLink):
   Model: yolo11s-pose.pt
   Resolution: 1280x1280
-  Batch size: 32 (16 per GPU) - safe for ~13MP input images
+  Batch size: 24 (12 per GPU) - safe for ~13MP input images
+
+Mobile Defaults (--mobile flag):
+  Model: yolo11n-pose.pt (nano - smaller, faster)
+  Resolution: 640x640
+  Batch size: 48 (24 per GPU)
+  Augmentation: reduced scale/translate/mosaic
+
+Common Settings:
   Optimizer: AdamW
   Learning rate: 0.001 (stage 1), 0.0005 (stage 2)
   Cosine LR scheduler: Enabled
   Mixed precision (AMP): Enabled
   Pose loss weights: pose=12.0, kobj=2.0
-  GPUs: 0,2 (dual A6000, homogeneous pairing)
+  GPUs: 0,1 (dual A6000, NVLink interconnect)
 
-  To increase batch size (monitor GPU memory):
-    python train_yolo.py --batch 40  # moderate (20 per GPU)
-    python train_yolo.py --batch 48  # aggressive (24 per GPU)
+  Override batch size (explicit --batch is never overridden by --mobile):
+    python train_yolo.py --batch 32           # desktop with batch 32
+    python train_yolo.py --mobile --batch 128 # mobile with batch 128
         """
     )
 
@@ -599,16 +640,22 @@ Optimized Defaults (for dual RTX A6000 + large images):
     # Common arguments
     parser.add_argument('--weights', type=str,
                        help='Path to model weights (required for stage 2, validate, export)')
+    parser.add_argument('--model', type=str, default=DEFAULT_MODEL,
+                       help=f'Base model to train (default: {DEFAULT_MODEL}, use yolo11n-pose.pt for mobile)')
     parser.add_argument('--device', type=str, default=DEFAULT_GPU_DEVICES,
                        help=f'GPU device(s) (default: {DEFAULT_GPU_DEVICES})')
     parser.add_argument('--imgsz', type=int, default=DEFAULT_IMAGE_SIZE,
                        help=f'Input image size (default: {DEFAULT_IMAGE_SIZE})')
+    parser.add_argument('--mobile', action='store_true',
+                       help='Use mobile-optimized settings (yolo11n-pose, 640x640, reduced augmentation)')
+    parser.add_argument('--name', type=str,
+                       help='Experiment name for results directory (default: auto-generated based on model/resolution)')
 
     # Training arguments
     parser.add_argument('--epochs', type=int,
                        help=f'Training epochs (default: {DEFAULT_EPOCHS_STAGE1} for stage 1, {DEFAULT_EPOCHS_STAGE2} for stage 2)')
     parser.add_argument('--batch', type=int,
-                       help=f'Batch size (default: {DEFAULT_BATCH_SIZE}, distributed across GPUs)')
+                       help='Batch size (default: 24 for desktop, 48 for --mobile)')
     parser.add_argument('--patience', type=int,
                        help=f'Early stopping patience (default: {DEFAULT_PATIENCE_STAGE1} for stage 1, {DEFAULT_PATIENCE_STAGE2} for stage 2)')
     parser.add_argument('--lr0', type=float,
@@ -650,11 +697,40 @@ Optimized Defaults (for dual RTX A6000 + large images):
         print(f"ERROR: {e}")
         sys.exit(1)
 
+    # Apply mobile preset if requested
+    # Note: For --model and --imgsz, we check against defaults because argparse doesn't
+    # track whether an argument was explicitly provided. If a user wants desktop settings
+    # with --mobile, they should not use --mobile flag.
+    if args.mobile:
+        # Determine actual batch size (user override takes precedence)
+        actual_batch = args.batch if args.batch is not None else DEFAULT_BATCH_SIZE_MOBILE
+        batch_note = " (user override)" if args.batch is not None else ""
+        print("\n[Mobile Mode] Using mobile-optimized settings:")
+        print(f"  Model: {DEFAULT_MODEL_MOBILE}")
+        print(f"  Image size: {DEFAULT_IMAGE_SIZE_MOBILE}")
+        print(f"  Batch size: {actual_batch}{batch_note}")
+        print(f"  Augmentation: scale={AUG_SCALE_MOBILE}, translate={AUG_TRANSLATE_MOBILE}, mosaic={AUG_MOSAIC_MOBILE}")
+
+        # Override with mobile settings when using default values
+        if args.model == DEFAULT_MODEL:
+            args.model = DEFAULT_MODEL_MOBILE
+        if args.imgsz == DEFAULT_IMAGE_SIZE:
+            args.imgsz = DEFAULT_IMAGE_SIZE_MOBILE
+        if args.batch is None:
+            args.batch = DEFAULT_BATCH_SIZE_MOBILE
+        if args.name is None:
+            args.name = 'yolo11n_pose_640'
+
+    # Set default name for non-mobile mode if not specified
+    if args.name is None:
+        args.name = 'yolo11s_pose_1280'
+
     # Execute requested mode
     try:
         if args.stage == 1:
             # Stage 1: Synthetic pretraining
             train_kwargs = {}
+            train_kwargs['model'] = args.model  # Pass model to trainer
             if args.epochs:
                 train_kwargs['epochs'] = args.epochs
             if args.batch:
@@ -665,6 +741,12 @@ Optimized Defaults (for dual RTX A6000 + large images):
                 train_kwargs['lr0'] = args.lr0
             if args.data:
                 train_kwargs['data'] = args.data
+
+            # Mobile augmentation overrides
+            if args.mobile:
+                train_kwargs['scale'] = AUG_SCALE_MOBILE
+                train_kwargs['translate'] = AUG_TRANSLATE_MOBILE
+                train_kwargs['mosaic'] = AUG_MOSAIC_MOBILE
 
             # Advanced options
             train_kwargs['workers'] = args.workers
@@ -684,6 +766,7 @@ Optimized Defaults (for dual RTX A6000 + large images):
             trainer.train_stage1(
                 device=args.device,
                 imgsz=args.imgsz,
+                name=args.name,
                 **train_kwargs
             )
 
@@ -706,6 +789,12 @@ Optimized Defaults (for dual RTX A6000 + large images):
             if args.data:
                 train_kwargs['data'] = args.data
 
+            # Mobile augmentation overrides
+            if args.mobile:
+                train_kwargs['scale'] = AUG_SCALE_MOBILE
+                train_kwargs['translate'] = AUG_TRANSLATE_MOBILE
+                train_kwargs['mosaic'] = AUG_MOSAIC_MOBILE
+
             # Advanced options
             train_kwargs['workers'] = args.workers
             train_kwargs['optimizer'] = args.optimizer
@@ -721,10 +810,13 @@ Optimized Defaults (for dual RTX A6000 + large images):
             if not args.cos_lr:
                 train_kwargs['cos_lr'] = False
 
+            # Append _stage2 to name for fine-tuning runs
+            stage2_name = f"{args.name}_stage2" if not args.name.endswith('_stage2') else args.name
             trainer.train_stage2(
                 weights=args.weights,
                 device=args.device,
                 imgsz=args.imgsz,
+                name=stage2_name,
                 **train_kwargs
             )
 
@@ -762,7 +854,6 @@ Optimized Defaults (for dual RTX A6000 + large images):
         sys.exit(1)
     except Exception as e:
         print(f"\nERROR: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
 

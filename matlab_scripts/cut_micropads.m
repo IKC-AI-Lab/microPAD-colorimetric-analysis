@@ -10,7 +10,7 @@ function cut_micropads(varargin)
     %
     % Features:
     %   - Interactive rotation adjustment with memory
-    %   - AI-powered quad detection (YOLOv11s-pose)
+    %   - AI-powered quad detection (YOLOv11-pose; mobile default)
     %   - Manual quad editing and refinement
     %   - Saves quad coordinates with rotation angle
     %
@@ -22,9 +22,10 @@ function cut_micropads(varargin)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial quad placement (default: true)
-    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11s-micropad-pose-1280.pt')
+    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11s-micropad-pose-1280.pt'; overridden when useMobileModel=true)
     % - 'minConfidence': minimum detection confidence (default: 0.6)
-    % - 'inferenceSize': YOLO inference image size in pixels (default: 1280)
+    % - 'inferenceSize': YOLO inference image size in pixels (default: 640 with mobile model, 1280 with desktop)
+    % - 'useMobileModel': use mobile-optimized model (yolo11n at 640px) (default: true)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
@@ -74,14 +75,14 @@ function cut_micropads(varargin)
     SAVE_COORDINATES = true;
 
     % === DEFAULT GEOMETRY / SELECTION ===
-    DEFAULT_NUM_SQUARES = 7;
+    DEFAULT_NUM_SQUARES = 5;
     DEFAULT_ASPECT_RATIO = 1.0;  % width/height ratio: 1.0 = perfect squares
     DEFAULT_COVERAGE = 0.80;     % regions span 80% of image width
     DEFAULT_GAP_PERCENT = 0.19;  % 19% gap between regions
 
     % === ELLIPSE EDITING CONFIGURATION ===
-    DEFAULT_ENABLE_ELLIPSE_EDITING = true;
-    DEFAULT_ENABLE_QUAD_EDITING = false;
+    DEFAULT_ENABLE_ELLIPSE_EDITING = false;
+    DEFAULT_ENABLE_QUAD_EDITING = true;
     REPLICATES_PER_CONCENTRATION = 3;
 
     % Ellipse definitions in normalized micropad coordinates [0,1]×[0,1]
@@ -111,17 +112,29 @@ function cut_micropads(varargin)
     MIN_AXIS_PERCENT = 0.005;
 
     % === AI DETECTION DEFAULTS ===
-    DEFAULT_USE_AI_DETECTION = false;
+    DEFAULT_USE_AI_DETECTION = true;
     DEFAULT_DETECTION_MODEL = 'models/yolo11s-micropad-pose-1280.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
-    % IMPORTANT: Edit this path to match your Python installation!
-    % Common locations:
-    %   Windows: 'C:\Users\YourName\miniconda3\envs\YourPythonEnv\python.exe'
-    %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
-    %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
+    % Python path for YOLO inference (auto-detected if empty)
+    % Priority order:
+    %   1. MICROPAD_PYTHON environment variable
+    %   2. Project-local .conda_env (recommended - created by /create-conda-env)
+    %   3. Named conda environment (microPAD-python-env)
+    %   4. System Python
+    % Leave empty to auto-detect, or specify explicit path:
+    %   Windows: 'C:\Users\YourName\miniconda3\envs\YourEnv\python.exe'
+    %   Linux:   '/home/YourName/miniconda3/envs/YourEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
     DEFAULT_INFERENCE_SIZE = 1280;
+
+    % Mobile model (fast, for testing mobile-optimized weights)
+    % NOTE: Mobile model must be trained separately using:
+    %   python train_yolo.py --mobile
+    %   Then copy best.pt to models/yolo11n-micropad-pose-640.pt
+    DEFAULT_USE_MOBILE_MODEL = false;
+    DEFAULT_DETECTION_MODEL_MOBILE = 'models/yolo11n-micropad-pose-640.pt';
+    DEFAULT_INFERENCE_SIZE_MOBILE = 640;
 
     % === ROTATION CONSTANTS ===
     ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations
@@ -157,6 +170,7 @@ function cut_micropads(varargin)
                               MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, MIN_AXIS_PERCENT, ...
                               SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ELLIPSE_DEFAULT_RECORDS, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
+                              DEFAULT_USE_MOBILE_MODEL, DEFAULT_DETECTION_MODEL_MOBILE, DEFAULT_INFERENCE_SIZE_MOBILE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
                               COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, uiConfig, ...
                               geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin{:});
@@ -179,6 +193,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
                                    marginToSpacingRatio, verticalPositionRatio, minAxisPercent, ...
                                    semiMajorDefaultRatio, semiMinorDefaultRatio, ellipseDefaultRecords, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
+                                   defaultUseMobileModel, defaultDetectionModelMobile, defaultInferenceSizeMobile, ...
                                    rotationAngleTolerance, ...
                                    coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, uiConfig, ...
                                    geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin)
@@ -202,6 +217,7 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     parser.addParameter('minConfidence', defaultMinConfidence, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     parser.addParameter('pythonPath', defaultPythonPath, @(x) ischar(x) || isstring(x));
     parser.addParameter('inferenceSize', defaultInferenceSize, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>', 0}));
+    parser.addParameter('useMobileModel', defaultUseMobileModel, @islogical);
 
     parser.parse(varargin{:});
 
@@ -217,6 +233,44 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.minConfidence = parser.Results.minConfidence;
     cfg.pythonPath = parser.Results.pythonPath;
     cfg.inferenceSize = parser.Results.inferenceSize;
+
+    % Mobile model override - when enabled, use smaller/faster model
+    cfg.useMobileModel = parser.Results.useMobileModel;
+    if cfg.useMobileModel
+        if ~cfg.useAIDetection
+            warning('cut_micropads:mobile_no_ai', ...
+                'useMobileModel=true has no effect because useAIDetection=false. Set useAIDetection=true to use mobile model.');
+        end
+        if ~strcmp(parser.Results.detectionModel, defaultDetectionModel)
+            warning('cut_micropads:mobile_override', ...
+                'useMobileModel=true overrides detectionModel. Using: %s', defaultDetectionModelMobile);
+        end
+        cfg.detectionModelRelative = defaultDetectionModelMobile;
+        cfg.inferenceSize = defaultInferenceSizeMobile;
+    end
+
+    % Auto-adjust inference size based on model filename when not explicitly set
+    hasInferenceSize = any(strcmpi(varargin(1:2:end), 'inferenceSize'));
+    if ~cfg.useMobileModel && ~hasInferenceSize
+        modelLower = lower(char(cfg.detectionModelRelative));
+
+        % Detect target inference size from model filename
+        if contains(modelLower, '640')
+            targetInferenceSize = defaultInferenceSizeMobile;
+        elseif contains(modelLower, '1280')
+            targetInferenceSize = defaultInferenceSize;
+        else
+            targetInferenceSize = cfg.inferenceSize;  % Keep current
+        end
+
+        % Update and warn only if there's a mismatch
+        if targetInferenceSize ~= cfg.inferenceSize
+            warning('cut_micropads:inference_size_autoset', ...
+                'Model name suggests %dpx inference. Auto-setting inferenceSize to %d. Override with ''inferenceSize'' if needed.', ...
+                targetInferenceSize, targetInferenceSize);
+            cfg.inferenceSize = targetInferenceSize;
+        end
+    end
 
     cfg = addPathConfiguration(cfg, parser.Results.inputFolder, parser.Results.outputFolder, outputFolderEllipses, pathUtils);
 
@@ -839,12 +893,30 @@ function clearAllUIElements(fig, guiData)
         delete(toDelete(validMask));
     end
 
-    % Cleanup remaining ROIs
+    % Cleanup remaining Polygon ROIs (quads)
     rois = findobj(fig, '-isa', 'images.roi.Polygon');
     if ~isempty(rois)
         validRois = rois(arrayfun(@isvalid, rois));
         if ~isempty(validRois)
             delete(validRois);
+        end
+    end
+
+    % Cleanup remaining Ellipse ROIs
+    ellipseRois = findobj(fig, '-isa', 'images.roi.Ellipse');
+    if ~isempty(ellipseRois)
+        validEllipseRois = ellipseRois(arrayfun(@isvalid, ellipseRois));
+        if ~isempty(validEllipseRois)
+            delete(validEllipseRois);
+        end
+    end
+
+    % Cleanup annotation textboxes (used for overlay text elements)
+    annotations = findall(fig, '-isa', 'matlab.graphics.shape.TextBox');
+    if ~isempty(annotations)
+        validAnnotations = annotations(arrayfun(@isvalid, annotations));
+        if ~isempty(validAnnotations)
+            delete(validAnnotations);
         end
     end
 
@@ -993,11 +1065,20 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialQuads, initi
     guiData.zoomLevel = 0;  % 0 = full image, 1 = single micropad size
     guiData.autoZoomBounds = [];
 
-    % Title and path
-    guiData.titleHandle = cfg.micropadUI.createTitle(fig, phoneName, imageName, cfg);
-    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
+    % === BOTTOM PANELS FIRST (ensure visibility on small screens) ===
+    % Rotation panel (preset buttons only)
+    guiData.rotationPanel = cfg.micropadUI.createRotationButtonPanel(fig, cfg, @applyRotation_UI);
 
-    % Image display (show image with initial rotation if any)
+    % Zoom panel
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
+
+    % Action buttons panel
+    guiData.cutButtonPanel = cfg.micropadUI.createEditButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'skip'));
+
+    % === IMAGE DISPLAY (fills remaining space above bottom panels) ===
     if initialRotation ~= 0
         displayImg = applyRotation(img, initialRotation, cfg);
         guiData.currentImg = displayImg;
@@ -1008,6 +1089,22 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialQuads, initi
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
+    % === TOP OVERLAY ELEMENTS (on top of image) ===
+    % Single top text container (provides semi-transparent background)
+    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
+
+    % Path display (single info row showing folder and image name)
+    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
+
+    % Stop button and Run AI button (inside text container)
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
+    guiData.runAIButton = cfg.micropadUI.createRunAIButton(fig, cfg, @(~,~) rerunAIDetection(fig, cfg));
+
+    % Instructions overlay and AI status
+    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, []);
+    guiData.aiStatusLabel = cfg.micropadUI.createAIStatusLabel(fig, cfg);
+
+    % === QUADS (interactive elements on image) ===
     % Create editable quads
     guiData.quads = cfg.micropadUI.createQuads(initialQuads, cfg, @(src, evt) updateQuadLabelsCallback(src, evt));
     [guiData.quads, ~, guiData.orientation] = assignQuadLabels(guiData.quads);
@@ -1041,24 +1138,6 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialQuads, initi
 
     % Add concentration labels
     guiData.quadLabels = cfg.micropadUI.addQuadLabels(guiData.quads, guiData.imgAxes);
-
-    % Rotation panel (preset buttons only)
-    guiData.rotationPanel = cfg.micropadUI.createRotationButtonPanel(fig, cfg, @applyRotation_UI);
-
-    % Run AI button sits above rotation controls for manual detection refresh
-    guiData.runAIButton = cfg.micropadUI.createRunAIButton(fig, cfg, @(~,~) rerunAIDetection(fig, cfg));
-
-    % Zoom panel
-    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
-        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
-        @(~, ~) resetZoom(fig, cfg), ...
-        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
-
-    % Buttons
-    guiData.cutButtonPanel = cfg.micropadUI.createEditButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'skip'));
-    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
-    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, []);
-    guiData.aiStatusLabel = cfg.micropadUI.createAIStatusLabel(fig, cfg);
 
     guiData.action = '';
 
@@ -1100,33 +1179,34 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, ellipse
     guiData.savedQuadParams = quadParams;
     guiData.savedEllipseData = ellipseData;
 
-    % Preview titles occupying the top band
-    numRegions = size(quadParams, 1);
-    titleText = sprintf('Preview - %s', phoneName);
-    guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                                   'Units', 'normalized', 'Position', cfg.ui.positions.previewTitle, ...
-                                   'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                                   'ForegroundColor', cfg.ui.colors.foreground, ...
-                                   'BackgroundColor', cfg.ui.colors.background, ...
-                                   'HorizontalAlignment', 'center');
-
-    metaText = sprintf('Image: %s | Regions: %d', imageName, numRegions);
-    guiData.metaHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', metaText, ...
-                                  'Units', 'normalized', 'Position', cfg.ui.positions.previewMeta, ...
-                                  'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                                  'ForegroundColor', cfg.ui.colors.path, ...
-                                  'BackgroundColor', cfg.ui.colors.background, ...
-                                  'HorizontalAlignment', 'center');
-
-    % Preview axes fill the middle band between titles and bottom controls
-    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, quadParams, ellipseData, cfg);
-
-    % Bottom controls
-    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
+    % === BOTTOM PANELS FIRST (ensure visibility on small screens) ===
     guiData.buttonPanel = cfg.micropadUI.createPreviewButtons(fig, cfg, struct( ...
         'accept', @(~,~) setAction(fig, 'accept'), ...
         'retry', @(~,~) setAction(fig, 'retry'), ...
         'skip', @(~,~) setAction(fig, 'skip')));
+
+    % === IMAGE DISPLAY (fills remaining space above bottom panels) ===
+    [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, quadParams, ellipseData, cfg);
+
+    % === TOP OVERLAY ELEMENTS (on top of image) ===
+    % Single top text container
+    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
+
+    % Single info row (folder, image, regions count)
+    numRegions = size(quadParams, 1);
+    metaText = sprintf('Preview: %s | %s | %d regions', phoneName, imageName, numRegions);
+    guiData.metaHandle = annotation(fig, 'textbox', cfg.ui.positions.previewMeta, ...
+        'String', metaText, ...
+        'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
+        'Color', cfg.ui.colors.foreground, ...
+        'BackgroundColor', 'none', ...
+        'EdgeColor', 'none', ...
+        'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'middle', ...
+        'Margin', 1);
+
+    % Stop button (inside text container)
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
@@ -1161,25 +1241,35 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
     guiData.displayQuads = convertBaseQuadsToDisplay(quadParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
 
-    % Title
-    titleText = sprintf('Ellipse Editing - %s - %s', phoneName, imageName);
-    guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                                   'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
-                                   'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                                   'ForegroundColor', cfg.ui.colors.foreground, ...
-                                   'BackgroundColor', cfg.ui.colors.background, ...
-                                   'HorizontalAlignment', 'center');
+    % === BOTTOM PANELS FIRST (ensure visibility on small screens) ===
+    % Zoom panel (quad-specific navigation)
+    guiData.zoomLevel = 0;
+    guiData.autoZoomBounds = [];
+    guiData.focusedQuadIndex = 0;  % 0 = none/all, 1-N = specific quad
+    [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = cfg.micropadUI.createEllipseZoomPanel(fig, cfg, ...
+        @(~,~) navigateToPrevQuad(fig, cfg), ...
+        @(~,~) navigateToNextQuad(fig, cfg), ...
+        @(~,~) resetZoomEllipse(fig, cfg));
 
-    pathText = sprintf('Path: %s | Image: %s', phoneName, imageName);
-    guiData.pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
-                          'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                          'ForegroundColor', cfg.ui.colors.path, ...
-                          'BackgroundColor', cfg.ui.colors.background, ...
-                          'HorizontalAlignment', 'center');
+    % Action buttons panel
+    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
 
-    % Image display with quads
+    % === IMAGE DISPLAY (fills remaining space above bottom panels) ===
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
+
+    % === TOP OVERLAY ELEMENTS (on top of image) ===
+    % Single top text container
+    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
+
+    % Path display (single info row)
+    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
+
+    % Stop button (inside text container)
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
+
+    % Instructions overlay
+    instructionStr = 'Draw 21 ellipses (3 per micropad). Colors match quads. Click DONE when finished.';
+    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, instructionStr);
 
     % Add double-click background reset callback
     set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
@@ -1278,27 +1368,6 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
         end
     end
 
-    % Zoom panel (quad-specific navigation)
-    guiData.zoomLevel = 0;
-    guiData.autoZoomBounds = [];
-    guiData.focusedQuadIndex = 0;  % 0 = none/all, 1-N = specific quad
-            [guiData.prevButton, guiData.zoomIndicator, guiData.nextButton, guiData.resetButton] = cfg.micropadUI.createEllipseZoomPanel(fig, cfg, ...
-                @(~,~) navigateToPrevQuad(fig, cfg), ...
-                @(~,~) navigateToNextQuad(fig, cfg), ...
-                @(~,~) resetZoomEllipse(fig, cfg));
-    % Action buttons panel
-    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
-    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
-
-    % Instructions
-    instructionText = 'Draw 21 ellipses (3 per micropad). Colors match quads. Click DONE when finished.';
-    guiData.instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionText, ...
-                                       'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
-                                       'FontSize', cfg.ui.fontSize.instruction, ...
-                                       'ForegroundColor', cfg.ui.colors.foreground, ...
-                                       'BackgroundColor', cfg.ui.colors.background, ...
-                                       'HorizontalAlignment', 'center');
-
     guiData.action = '';
     set(fig, 'UserData', guiData);
 
@@ -1332,25 +1401,31 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     guiData.currentImg = displayImg;
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
 
-    % Title
-    titleText = sprintf('Ellipse Editing (Grid Mode) - %s - %s', phoneName, imageName);
-    guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                                   'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
-                                   'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                                   'ForegroundColor', cfg.ui.colors.foreground, ...
-                                   'BackgroundColor', cfg.ui.colors.background, ...
-                                   'HorizontalAlignment', 'center');
+    % === BOTTOM PANELS FIRST (ensure visibility on small screens) ===
+    % Zoom panel (grid mode doesn't have quads, so no quad-specific zoom)
+    guiData.zoomLevel = 0;
+    guiData.autoZoomBounds = [];
+    guiData.focusedQuadIndex = 0;  % Always 0 in grid mode (no quads)
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
 
-    pathText = sprintf('Path: %s | Image: %s', phoneName, imageName);
-    guiData.pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
-                          'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                          'ForegroundColor', cfg.ui.colors.path, ...
-                          'BackgroundColor', cfg.ui.colors.background, ...
-                          'HorizontalAlignment', 'center');
+    % Action buttons panel
+    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
 
-    % Image display (NO quad overlays in grid mode)
+    % === IMAGE DISPLAY (fills remaining space above bottom panels) ===
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
+
+    % === TOP OVERLAY ELEMENTS (on top of image) ===
+    % Single top text container
+    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
+
+    % Path display (single info row)
+    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
+
+    % Stop button (inside text container)
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Add double-click background reset callback
     set(guiData.imgAxes, 'ButtonDownFcn', @(src, evt) axesClickCallback(src, evt, fig, cfg));
@@ -1387,28 +1462,13 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
         end
     end
 
-    % Zoom panel (grid mode doesn't have quads, so no quad-specific zoom)
-    guiData.zoomLevel = 0;
-    guiData.autoZoomBounds = [];
-    guiData.focusedQuadIndex = 0;  % Always 0 in grid mode (no quads)
-    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
-        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
-        @(~, ~) resetZoom(fig, cfg), ...
-        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
-
-    % Action buttons panel
-    guiData.ellipseButtonPanel = cfg.micropadUI.createEllipseEditingButtonPanel(fig, cfg, @(~,~) setAction(fig, 'accept'), @(~,~) setAction(fig, 'back'));
-    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
-
-    % Instructions
-    instructionText = sprintf('Grid Mode: Draw %d ellipses (%d groups × %d replicates). Colors indicate groups. Click DONE when finished.', ...
+    % Instructions overlay
+    numReplicates = cfg.ellipse.replicatesPerMicropad;
+    numGroups = cfg.numSquares;
+    totalEllipses = numGroups * numReplicates;
+    instructionStr = sprintf('Grid Mode: Draw %d ellipses (%d groups × %d replicates). Colors indicate groups. Click DONE when finished.', ...
         totalEllipses, numGroups, numReplicates);
-    guiData.instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionText, ...
-                                       'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
-                                       'FontSize', cfg.ui.fontSize.instruction, ...
-                                       'ForegroundColor', cfg.ui.colors.foreground, ...
-                                       'BackgroundColor', cfg.ui.colors.background, ...
-                                       'HorizontalAlignment', 'center');
+    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, instructionStr);
 
     guiData.action = '';
     set(fig, 'UserData', guiData);
@@ -1447,25 +1507,33 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
     guiData.currentImg = displayImg;
     guiData.imageSize = [size(displayImg, 1), size(displayImg, 2)];
 
-    % Title
-    titleText = sprintf('Preview Mode (Read-Only) - %s - %s', phoneName, imageName);
-    guiData.titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                                   'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
-                                   'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                                   'ForegroundColor', cfg.ui.colors.foreground, ...
-                                   'BackgroundColor', cfg.ui.colors.background, ...
-                                   'HorizontalAlignment', 'center');
+    % === BOTTOM PANELS FIRST (ensure visibility on small screens) ===
+    % Zoom panel
+    guiData.zoomLevel = 0;
+    guiData.autoZoomBounds = [];
+    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
+        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
+        @(~, ~) resetZoom(fig, cfg), ...
+        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
 
-    pathText = sprintf('Path: %s | Image: %s', phoneName, imageName);
-    guiData.pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
-                          'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                          'ForegroundColor', cfg.ui.colors.path, ...
-                          'BackgroundColor', cfg.ui.colors.background, ...
-                          'HorizontalAlignment', 'center');
+    % NEXT button (replaces ACCEPT in read-only mode)
+    uicontrol('Parent', fig, 'Style', 'pushbutton', 'String', 'NEXT', ...
+              'Units', 'normalized', 'Position', [0.80 0.02 0.15 0.06], ...
+              'FontSize', cfg.ui.fontSize.button, ...
+              'Callback', @(~,~) setAction(fig, 'accept'));
 
-    % Image display
+    % === IMAGE DISPLAY (fills remaining space above bottom panels) ===
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
+
+    % === TOP OVERLAY ELEMENTS (on top of image) ===
+    % Single top text container
+    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
+
+    % Path display (single info row)
+    guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
+
+    % Stop button (inside text container)
+    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     displayQuadsPreview = convertBaseQuadsToDisplay(quadParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
     displayEllipsesPreview = convertBaseEllipsesToDisplay(ellipseData, guiData.baseImageSize, guiData.imageSize, rotation, cfg);
@@ -1514,24 +1582,7 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
         end
     end
 
-    % Zoom panel
-    guiData.zoomLevel = 0;
-    guiData.autoZoomBounds = [];
-    [guiData.zoomSlider, guiData.zoomValue] = cfg.micropadUI.createZoomPanel(fig, cfg, ...
-        @(src, ~) zoomSliderCallback(src, fig, cfg), ...
-        @(~, ~) resetZoom(fig, cfg), ...
-        @(~, ~) applyAutoZoom(fig, get(fig, 'UserData'), cfg));
-
-    % NEXT button (replaces ACCEPT in read-only mode)
-    uicontrol('Parent', fig, 'Style', 'pushbutton', 'String', 'NEXT', ...
-              'Units', 'normalized', 'Position', [0.80 0.02 0.15 0.06], ...
-              'FontSize', cfg.ui.fontSize.button, ...
-              'Callback', @(~,~) setAction(fig, 'accept'));
-
-    % STOP button
-    guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
-
-    % Instructions
+    % Instructions overlay
     overlayInfo = '';
     if hasQuads && hasEllipses
         overlayInfo = sprintf('%d quads and %d ellipses', size(quadParams, 1), size(ellipseData, 1));
@@ -1541,13 +1592,8 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
         overlayInfo = sprintf('%d ellipses', size(ellipseData, 1));
     end
 
-    instructionText = sprintf('Preview mode (read-only) - Displaying %s from coordinate files. Press NEXT to continue.', overlayInfo);
-    guiData.instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', instructionText, ...
-                                       'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
-                                       'FontSize', cfg.ui.fontSize.instruction, ...
-                                       'ForegroundColor', cfg.ui.colors.foreground, ...
-                                       'BackgroundColor', cfg.ui.colors.background, ...
-                                       'HorizontalAlignment', 'center');
+    instructionStr = sprintf('Preview mode (read-only) - Displaying %s from coordinate files. Press NEXT to continue.', overlayInfo);
+    guiData.instructionText = cfg.micropadUI.createInstructions(fig, cfg, instructionStr);
 
     guiData.action = '';
     set(fig, 'UserData', guiData);

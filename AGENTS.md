@@ -3,7 +3,9 @@
 ## MATLAB-Python Architecture
 - **MATLAB scripts** (`matlab_scripts/`): Data processing pipeline (stages 1→2→3, augmentation, feature extraction). Should NOT contain AI training logic (no YOLO label export, no model-specific code).
 - **Python scripts** (`python_scripts/`): AI model training/inference (`prepare_yolo_dataset.py`, `train_yolo.py`, `detect_quads.py`). Reads MATLAB coordinates, generates training labels, provides inference helpers.
-- **Current AI model**: YOLOv11s-pose for keypoint detection (4 corners per concentration zone), trained at 1280×1280 resolution for high-res smartphone photos. Model path: `models/yolo11s-micropad-pose-1280.pt`.
+- **AI models**: YOLOv11-pose for keypoint detection (4 corners per concentration zone). Two configurations:
+  - Desktop: yolo11s-pose @ 1280×1280 (`models/yolo11s-micropad-pose-1280.pt`)
+  - Mobile: yolo11n-pose @ 640×640 (`models/yolo11n-micropad-pose-640.pt`)
 - **Communication**: MATLAB calls Python via subprocess (`detect_quads.py` for inference). Python reads MATLAB `coordinates.txt` for label generation. No direct API coupling.
 - **Principle**: Separation of concerns - MATLAB for data, Python for AI. Changes to AI training format should not require MATLAB modifications.
 
@@ -58,7 +60,8 @@ Modular utility functions organized by functionality. Each returns a struct of f
 - Typical flow: `cut_micropads('numSquares',7)`, `cut_elliptical_regions`, `extract_features('preset','robust','chemical','lactate')`.
 - Augmentation: `matlab -batch "addpath('matlab_scripts'); augment_dataset('numAugmentations',5);"`
 - Prepare YOLO dataset: `python python_scripts/prepare_yolo_dataset.py`
-- Train YOLO: `python python_scripts/train_yolo.py --stage 1` (defaults: YOLOv11s-pose @ 1280px, 200 epochs, batch 32)
+- Train YOLO (desktop): `python python_scripts/train_yolo.py` (yolo11s-pose @ 1280px)
+- Train YOLO (mobile): `python python_scripts/train_yolo.py --mobile` (yolo11n-pose @ 640px)
 - Validate YOLO: `python python_scripts/train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt`
 - Tests (if added): `matlab -batch "runtests('matlab_scripts')"`
 - Code analysis: `matlab -batch "checkcode('matlab_scripts/script_name.m')"` (checks for unused variables, best practice violations, performance warnings)

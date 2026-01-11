@@ -92,29 +92,37 @@ function pythonPath = searchForPython()
 
     pythonPath = '';
 
+    % First, try to find project root and check for local .conda_env
+    projectCondaPath = findProjectCondaEnv();
+
     if ispc()
-        % Windows: check common conda/miniconda locations
+        % Windows: check local .conda_env first, then common conda/miniconda locations
         commonPaths = {
-            fullfile(getenv('USERPROFILE'), 'miniconda3\envs\microPAD-python-env\python.exe')
-            fullfile(getenv('USERPROFILE'), 'anaconda3\envs\microPAD-python-env\python.exe')
-            fullfile(getenv('LOCALAPPDATA'), 'Programs\Python\Python*\python.exe')
+            projectCondaPath
+            fullfile(getenv('USERPROFILE'), 'miniconda3', 'envs', 'microPAD-python-env', 'python.exe')
+            fullfile(getenv('USERPROFILE'), 'anaconda3', 'envs', 'microPAD-python-env', 'python.exe')
         };
     elseif ismac()
-        % macOS: check common conda/homebrew locations
+        % macOS: check local .conda_env first, then common conda/homebrew locations
         commonPaths = {
-            fullfile(getenv('HOME'), 'miniconda3/envs/microPAD-python-env/bin/python')
-            fullfile(getenv('HOME'), 'anaconda3/envs/microPAD-python-env/bin/python')
+            projectCondaPath
+            fullfile(getenv('HOME'), 'miniconda3', 'envs', 'microPAD-python-env', 'bin', 'python')
+            fullfile(getenv('HOME'), 'anaconda3', 'envs', 'microPAD-python-env', 'bin', 'python')
             '/usr/local/bin/python3'
             '/opt/homebrew/bin/python3'
         };
     else
-        % Linux: check common conda/system locations
+        % Linux: check local .conda_env first, then common conda/system locations
         commonPaths = {
-            fullfile(getenv('HOME'), 'miniconda3/envs/microPAD-python-env/bin/python')
-            fullfile(getenv('HOME'), 'anaconda3/envs/microPAD-python-env/bin/python')
+            projectCondaPath
+            fullfile(getenv('HOME'), 'miniconda3', 'envs', 'microPAD-python-env', 'bin', 'python')
+            fullfile(getenv('HOME'), 'anaconda3', 'envs', 'microPAD-python-env', 'bin', 'python')
             '/usr/bin/python3'
         };
     end
+
+    % Filter out empty paths (e.g., when findProjectCondaEnv returns empty)
+    commonPaths = commonPaths(~cellfun(@isempty, commonPaths));
 
     % Check each path
     for i = 1:numel(commonPaths)
@@ -417,5 +425,46 @@ function cleanupTempFile(tmpPath)
         catch
             % Silently ignore cleanup errors
         end
+    end
+end
+
+function pythonPath = findProjectCondaEnv()
+    % Find Python executable in project-local .conda_env directory
+    %
+    % Searches up from this script's location to find the project root
+    % (identified by CLAUDE.md), then checks for .conda_env/bin/python.
+    %
+    % Output:
+    %   pythonPath - Path to Python executable, empty if not found
+
+    pythonPath = '';
+
+    % Start from this script's directory and search upwards
+    currentDir = fileparts(mfilename('fullpath'));
+
+    % Search up to 5 levels (script is at helper_scripts/, 2 levels below project root)
+    for i = 1:5
+        % Check for project root marker (CLAUDE.md)
+        if isfile(fullfile(currentDir, 'CLAUDE.md'))
+            % Found project root, check for .conda_env
+            if ispc()
+                condaPython = fullfile(currentDir, '.conda_env', 'python.exe');
+            else
+                condaPython = fullfile(currentDir, '.conda_env', 'bin', 'python');
+            end
+
+            if isfile(condaPython)
+                pythonPath = condaPython;
+                return;
+            end
+        end
+
+        % Move up one directory
+        parentDir = fileparts(currentDir);
+        if strcmp(parentDir, currentDir)
+            % Reached filesystem root
+            break;
+        end
+        currentDir = parentDir;
     end
 end

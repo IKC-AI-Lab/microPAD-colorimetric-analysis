@@ -30,7 +30,7 @@ function ui = micropad_ui()
 
     % Figure and display
     ui.createFigure = @createFigure;
-    ui.createTitle = @createTitle;
+    ui.createTopTextContainer = @createTopTextContainer;
     ui.createPathDisplay = @createPathDisplay;
     ui.createImageAxes = @createImageAxes;
     ui.createInstructions = @createInstructions;
@@ -94,7 +94,7 @@ function cfg = getDefaultUIConfig()
     %   cfg - Struct with UI configuration settings
     %
     % The configuration includes:
-    %   - fontSize: Font sizes for title, path, button, info, etc.
+    %   - fontSize: Font sizes for path, button, info, etc.
     %   - colors: Color definitions for background, foreground, panels, buttons
     %   - positions: Normalized positions for all UI elements
     %   - layout: Internal layout positions within panels
@@ -106,7 +106,6 @@ function cfg = getDefaultUIConfig()
 
     % Font sizes
     cfg.fontSize = struct(...
-        'title', 16, ...
         'path', 12, ...
         'button', 13, ...
         'info', 10, ...
@@ -132,23 +131,23 @@ function cfg = getDefaultUIConfig()
 
     % UI positions (normalized coordinates [x, y, width, height])
     % Origin: (0, 0) = bottom-left, (1, 1) = top-right
+    % Image fills full width, single row top text container, compact bottom panels
     cfg.positions = struct(...
         'figure', [0 0 1 1], ...
-        'stopButton', [0.01 0.945 0.06 0.045], ...
-        'title', [0.08 0.945 0.84 0.045], ...
-        'pathDisplay', [0.08 0.90 0.84 0.035], ...
-        'aiStatus', [0.25 0.905 0.50 0.035], ...
-        'instructions', [0.01 0.855 0.98 0.035], ...
-        'image', [0.01 0.215 0.98 0.64], ...
-        'runAIButton', [0.01 0.16 0.08 0.045], ...
-        'rotationPanel', [0.01 0.01 0.24 0.14], ...
-        'zoomPanel', [0.26 0.01 0.26 0.14], ...
-        'cutButtonPanel', [0.53 0.01 0.46 0.14], ...
-        'previewPanel', [0.25 0.01 0.50 0.14], ...
-        'previewTitle', [0.01 0.92 0.98 0.04], ...
-        'previewMeta', [0.01 0.875 0.98 0.035], ...
-        'previewLeft', [0.01 0.22 0.48 0.64], ...
-        'previewRight', [0.50 0.22 0.49 0.64]);
+        'topTextContainer', [0 0.97 1 0.03], ...           % Single row container
+        'stopButton', [0.01 0.973 0.05 0.024], ...         % Inside container, left
+        'pathDisplay', [0.07 0.973 0.86 0.024], ...        % Single info row
+        'aiStatus', [0.30 0.94 0.40 0.025], ...            % Below container when visible
+        'instructions', [0 0.11 1 0.03], ...               % Overlay on image, bottom area
+        'image', [0 0.11 1 0.89], ...                      % Full width, no margins
+        'runAIButton', [0.94 0.973 0.05 0.024], ...        % Inside container, right
+        'rotationPanel', [0.01 0.005 0.24 0.10], ...       % Compact: 10% height
+        'zoomPanel', [0.26 0.005 0.26 0.10], ...           % Compact: 10% height
+        'cutButtonPanel', [0.53 0.005 0.46 0.10], ...      % Compact: 10% height
+        'previewPanel', [0.25 0.005 0.50 0.10], ...        % Compact: 10% height
+        'previewMeta', [0 0.973 1 0.024], ...              % Single info row for preview
+        'previewLeft', [0 0.11 0.50 0.89], ...             % Full width left half
+        'previewRight', [0.50 0.11 0.50 0.89]);
 
     % Panel-internal layouts
     cfg.layout = struct();
@@ -182,6 +181,11 @@ function cfg = getDefaultUIConfig()
 
     % Dim factor for non-selected regions
     cfg.dimFactor = 0.2;
+
+    % Overlay transparency settings for maximized image layout
+    cfg.overlay = struct(...
+        'textAlpha', 0.3, ...         % Background alpha for text container (30%)
+        'backgroundColor', [0 0 0]);  % Black background for overlays
 end
 
 function merged = mergeUIConfig(base, overrides)
@@ -211,6 +215,23 @@ function merged = mergeUIConfig(base, overrides)
             merged.(field) = overrides.(field);
         end
     end
+end
+
+function container = createTopTextContainer(fig, cfg)
+    % Create single semi-transparent container for all top text elements
+    %
+    % INPUTS:
+    %   fig - Parent figure
+    %   cfg - UI configuration
+    %
+    % OUTPUTS:
+    %   container - Annotation handle for the container
+
+    container = annotation(fig, 'textbox', cfg.ui.positions.topTextContainer, ...
+        'String', '', ...
+        'BackgroundColor', cfg.ui.overlay.backgroundColor, ...
+        'FaceAlpha', cfg.ui.overlay.textAlpha, ...
+        'EdgeColor', 'none');
 end
 
 %% =========================================================================
@@ -263,29 +284,8 @@ function defaultCloseCallback(fig)
     delete(fig);
 end
 
-function titleHandle = createTitle(fig, phoneName, imageName, cfg)
-    % Create title text control
-    %
-    % INPUTS:
-    %   fig       - Parent figure
-    %   phoneName - Phone folder name
-    %   imageName - Image file name
-    %   cfg       - UI configuration
-    %
-    % OUTPUTS:
-    %   titleHandle - Handle to title text control
-
-    titleText = sprintf('%s - %s', phoneName, imageName);
-    titleHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', titleText, ...
-                           'Units', 'normalized', 'Position', cfg.ui.positions.title, ...
-                           'FontSize', cfg.ui.fontSize.title, 'FontWeight', 'bold', ...
-                           'ForegroundColor', cfg.ui.colors.foreground, ...
-                           'BackgroundColor', cfg.ui.colors.background, ...
-                           'HorizontalAlignment', 'center');
-end
-
 function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
-    % Create path display text control
+    % Create path display text (no background - container provides it)
     %
     % INPUTS:
     %   fig       - Parent figure
@@ -294,15 +294,21 @@ function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
     %   cfg       - UI configuration
     %
     % OUTPUTS:
-    %   pathHandle - Handle to path text control
+    %   pathHandle - Handle to path annotation
 
     pathText = sprintf('Path: %s | Image: %s', phoneName, imageName);
-    pathHandle = uicontrol('Parent', fig, 'Style', 'text', 'String', pathText, ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.pathDisplay, ...
-                          'FontSize', cfg.ui.fontSize.path, 'FontWeight', 'normal', ...
-                          'ForegroundColor', cfg.ui.colors.path, ...
-                          'BackgroundColor', cfg.ui.colors.background, ...
-                          'HorizontalAlignment', 'center');
+    pathHandle = annotation(fig, 'textbox', cfg.ui.positions.pathDisplay, ...
+        'String', pathText, ...
+        'FontSize', cfg.ui.fontSize.path, ...
+        'FontWeight', 'normal', ...
+        'Color', cfg.ui.colors.path, ...
+        'BackgroundColor', 'none', ...
+        'EdgeColor', 'none', ...
+        'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'middle', ...
+        'Interpreter', 'none', ...
+        'FitBoxToText', 'off', ...
+        'Margin', 1);
 end
 
 function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
@@ -325,7 +331,7 @@ function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
 end
 
 function instructionText = createInstructions(fig, cfg, customString)
-    % Create instruction text
+    % Create instruction text (no background - container provides it)
     %
     % INPUTS:
     %   fig          - Parent figure
@@ -333,16 +339,24 @@ function instructionText = createInstructions(fig, cfg, customString)
     %   customString - (Optional) Custom instruction string
     %
     % OUTPUTS:
-    %   instructionText - Handle to instruction text control
+    %   instructionText - Handle to instruction annotation
 
     if nargin < 3 || isempty(customString)
-        customString = 'Mouse = Drag Vertices | Buttons = Rotate | RUN AI = Detect Quads | Slider = Zoom | APPLY = Save & Continue | SKIP = Skip | STOP = Exit | Space = APPLY | Esc = SKIP';
+        customString = 'Drag Vertices | RUN AI | APPLY | SKIP | STOP | Space/Esc';
     end
 
-    instructionText = uicontrol('Parent', fig, 'Style', 'text', 'String', customString, ...
-             'Units', 'normalized', 'Position', cfg.ui.positions.instructions, ...
-             'FontSize', cfg.ui.fontSize.instruction, 'ForegroundColor', cfg.ui.colors.foreground, ...
-             'BackgroundColor', cfg.ui.colors.background, 'HorizontalAlignment', 'center');
+    instructionText = annotation(fig, 'textbox', cfg.ui.positions.instructions, ...
+        'String', customString, ...
+        'FontSize', cfg.ui.fontSize.instruction, ...
+        'FontWeight', 'normal', ...
+        'Color', cfg.ui.colors.foreground, ...
+        'BackgroundColor', 'none', ...
+        'EdgeColor', 'none', ...
+        'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'bottom', ...
+        'Interpreter', 'none', ...
+        'FitBoxToText', 'off', ...
+        'Margin', 1);
 end
 
 %% =========================================================================
@@ -350,7 +364,7 @@ end
 %% =========================================================================
 
 function stopButton = createStopButton(fig, cfg, callback)
-    % Create STOP button
+    % Create STOP button (inside text container, no separate background)
     %
     % INPUTS:
     %   fig      - Parent figure
@@ -364,15 +378,18 @@ function stopButton = createStopButton(fig, cfg, callback)
         callback = @(~,~) stopExecution(fig);
     end
 
+    pos = cfg.ui.positions.stopButton;
+
     stopButton = uicontrol('Parent', fig, 'Style', 'pushbutton', ...
-                          'String', 'STOP', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-                          'Units', 'normalized', 'Position', cfg.ui.positions.stopButton, ...
-                          'BackgroundColor', cfg.ui.colors.stop, 'ForegroundColor', cfg.ui.colors.foreground, ...
-                          'Callback', callback);
+        'String', 'STOP', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+        'Units', 'normalized', 'Position', pos, ...
+        'BackgroundColor', cfg.ui.colors.stop, ...
+        'ForegroundColor', cfg.ui.colors.foreground, ...
+        'Callback', callback);
 end
 
 function runAIButton = createRunAIButton(fig, cfg, callback)
-    % Create RUN AI button
+    % Create RUN AI button (inside text container, no separate background)
     %
     % INPUTS:
     %   fig      - Parent figure
@@ -386,12 +403,15 @@ function runAIButton = createRunAIButton(fig, cfg, callback)
         callback = [];
     end
 
+    pos = cfg.ui.positions.runAIButton;
+    buttonColor = [0.30 0.50 0.70];
+
     runAIButton = uicontrol('Parent', fig, 'Style', 'pushbutton', ...
-                           'String', 'RUN AI', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
-                           'Units', 'normalized', 'Position', cfg.ui.positions.runAIButton, ...
-                           'BackgroundColor', [0.30 0.50 0.70], ...
-                           'ForegroundColor', cfg.ui.colors.foreground, ...
-                           'TooltipString', 'Run YOLO detection on the current view');
+        'String', 'RUN AI', 'FontSize', cfg.ui.fontSize.button, 'FontWeight', 'bold', ...
+        'Units', 'normalized', 'Position', pos, ...
+        'BackgroundColor', buttonColor, ...
+        'ForegroundColor', cfg.ui.colors.foreground, ...
+        'TooltipString', 'Run YOLO detection on the current view');
 
     if ~isempty(callback)
         set(runAIButton, 'Callback', callback);
@@ -718,37 +738,39 @@ function [prevButton, zoomIndicator, nextButton, resetButton] = createEllipseZoo
 end
 
 function statusLabel = createAIStatusLabel(fig, cfg)
-    % Create AI detection status label (hidden by default)
+    % Create AI detection status label with semi-transparent background (hidden by default)
     %
     % INPUTS:
     %   fig - Parent figure
     %   cfg - UI configuration
     %
     % OUTPUTS:
-    %   statusLabel - Label handle
+    %   statusLabel - Annotation handle
 
     if nargin < 2 || isempty(cfg) || ~isfield(cfg, 'ui')
-        position = [0.25 0.905 0.50 0.035];
+        position = [0.25 0.91 0.50 0.020];
         fontSize = 13;
         infoColor = [1 1 0.3];
-        backgroundColor = 'black';
+        bgAlpha = 0.5;
     else
         position = cfg.ui.positions.aiStatus;
         fontSize = cfg.ui.fontSize.status;
         infoColor = cfg.ui.colors.info;
-        backgroundColor = cfg.ui.colors.background;
+        bgAlpha = cfg.ui.overlay.textAlpha;
     end
 
-    statusLabel = uicontrol('Parent', fig, 'Style', 'text', ...
-                           'String', 'AI DETECTION RUNNING', ...
-                           'Units', 'normalized', ...
-                           'Position', position, ...
-                           'FontSize', fontSize, ...
-                           'FontWeight', 'bold', ...
-                           'ForegroundColor', infoColor, ...
-                           'BackgroundColor', backgroundColor, ...
-                           'HorizontalAlignment', 'center', ...
-                           'Visible', 'off');
+    statusLabel = annotation(fig, 'textbox', position, ...
+        'String', 'AI DETECTION RUNNING', ...
+        'FontSize', fontSize, ...
+        'FontWeight', 'bold', ...
+        'Color', infoColor, ...
+        'BackgroundColor', [0 0 0], ...
+        'FaceAlpha', bgAlpha, ...
+        'EdgeColor', 'none', ...
+        'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'middle', ...
+        'Margin', 1, ...
+        'Visible', 'off');
 end
 
 %% =========================================================================
@@ -1390,12 +1412,30 @@ function clearAllUIElements(fig, guiData)
         delete(toDelete(validMask));
     end
 
-    % Cleanup remaining ROIs
+    % Cleanup remaining Polygon ROIs (quads)
     rois = findobj(fig, '-isa', 'images.roi.Polygon');
     if ~isempty(rois)
         validRois = rois(arrayfun(@isvalid, rois));
         if ~isempty(validRois)
             delete(validRois);
+        end
+    end
+
+    % Cleanup remaining Ellipse ROIs
+    ellipseRois = findobj(fig, '-isa', 'images.roi.Ellipse');
+    if ~isempty(ellipseRois)
+        validEllipseRois = ellipseRois(arrayfun(@isvalid, ellipseRois));
+        if ~isempty(validEllipseRois)
+            delete(validEllipseRois);
+        end
+    end
+
+    % Cleanup annotation textboxes (used for overlay text elements)
+    annotations = findall(fig, '-isa', 'matlab.graphics.shape.TextBox');
+    if ~isempty(annotations)
+        validAnnotations = annotations(arrayfun(@isvalid, annotations));
+        if ~isempty(validAnnotations)
+            delete(validAnnotations);
         end
     end
 
