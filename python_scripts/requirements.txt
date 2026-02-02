@@ -1,4 +1,4 @@
-# YOLOv11 Training Environment for microPAD Auto-Detection
+# YOLOv8 Training Environment for microPAD Auto-Detection
 # Python 3.10+
 
 # Core Deep Learning Framework
@@ -7,7 +7,7 @@
 torch>=2.0.0
 torchvision>=0.15.0
 
-# YOLOv11 (Ultralytics)
+# YOLOv8 (Ultralytics)
 # Latest stable version as of 2025-11-04
 ultralytics>=8.3.225
 

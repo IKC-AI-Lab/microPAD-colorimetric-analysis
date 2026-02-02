@@ -59,6 +59,22 @@ function augSynth = augmentation_synthesis()
 
     %% Public API - Shadows
     augSynth.shadows.generateDropShadow = @generateDropShadow;
+    augSynth.shadows.sampleTieredShadow = @sampleTieredShadow;
+
+    %% Public API - Paper Stains
+    augSynth.stains.apply = @apply_paper_stains;
+    augSynth.stains.generateIrregular = @generateIrregularStain;
+    augSynth.stains.sampleColor = @sampleRealisticStainColor;
+    augSynth.stains.blend = @blendStain;
+    augSynth.stains.shrinkMaskToCoverage = @shrinkMaskToCoverage;
+
+    %% Public API - Specular Highlights
+    augSynth.specular.apply = @apply_specular_highlight;
+
+    %% Public API - Scene-space conversions
+    augSynth.sceneSpace.getSceneSpaceWidth = @getSceneSpaceWidth;
+    augSynth.sceneSpace.getLocalScale = @getLocalScale;
+    augSynth.sceneSpace.computeCoreDiagonal = @computeCoreDiagonal;
 
     %% Public API - Utilities (shared)
     augSynth.clampUint8 = imageIOModule.clampUint8;
@@ -106,7 +122,32 @@ function [bg, bgType] = generateRealisticLabSurfaceRaw(width, height, textureCfg
     width = max(1, round(width));
     height = max(1, round(height));
 
-    surfaceType = randi(5);
+    % Background type weights: [uniform, speckled, laminate, skin-tone, white+shadows]
+    BACKGROUND_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08];
+
+    % Validate weights
+    if numel(BACKGROUND_WEIGHTS) ~= 5
+        error('augmentation_synthesis:invalidWeights', ...
+            'BACKGROUND_WEIGHTS must have exactly 5 elements');
+    end
+    if any(BACKGROUND_WEIGHTS < 0)
+        error('augmentation_synthesis:invalidWeights', ...
+            'BACKGROUND_WEIGHTS cannot contain negative values');
+    end
+    weightSum = sum(BACKGROUND_WEIGHTS);
+    if abs(weightSum - 1.0) > 0.01
+        warning('augmentation_synthesis:weightSum', ...
+            'BACKGROUND_WEIGHTS sum to %.3f (expected 1.0), normalizing', weightSum);
+        BACKGROUND_WEIGHTS = BACKGROUND_WEIGHTS / weightSum;
+    end
+
+    % Weighted sampling
+    cumWeights = cumsum(BACKGROUND_WEIGHTS);
+    r = rand() * cumWeights(end);
+    surfaceType = find(r <= cumWeights, 1, 'first');
+    if isempty(surfaceType)
+        surfaceType = 1;
+    end
     texture = borrowBackgroundTexture(surfaceType, width, height, textureCfg);
 
     switch surfaceType
@@ -198,17 +239,22 @@ end
 function texture = borrowBackgroundTexture(surfaceType, width, height, textureCfg)
     %% Borrow a texture from the pool with lazy initialization and jitter
     persistent poolState
+    persistent dimensionChangeWarned
+
+    if isempty(dimensionChangeWarned)
+        dimensionChangeWarned = false;
+    end
 
     if isempty(poolState) || texturePoolConfigChanged(poolState, width, height, textureCfg)
-        if ~isempty(poolState)
+        if ~isempty(poolState) && ~dimensionChangeWarned
             oldWidth = poolState.width;
             oldHeight = poolState.height;
             widthDiff = abs(width - oldWidth) / max(oldWidth, 1);
             heightDiff = abs(height - oldHeight) / max(oldHeight, 1);
             if widthDiff > 0.01 || heightDiff > 0.01
                 warning('augmentation_synthesis:poolDimensionChange', ...
-                    'Background dimensions changed from %dx%d to %dx%d. Texture pool reset.', ...
-                    oldWidth, oldHeight, width, height);
+                    'Variable image dimensions detected. Texture pool will regenerate per image (expected with variable sizing).');
+                dimensionChangeWarned = true;
             end
         end
         poolState = initializeBackgroundTexturePool(width, height, textureCfg);
@@ -426,7 +472,6 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     %   width - Image width in pixels
     %   height - Image height in pixels
     %   artifactCfg - Artifact configuration struct with fields:
-    %       .countRange - [min, max] number of artifacts
     %       .sizeRangePercent - [min, max] size as fraction of diagonal
     %       .minSizePixels - Minimum artifact size
     %       .unitMaskSize - Resolution for ellipse/line unit masks
@@ -435,19 +480,17 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     %       .lineRotationPadding - Extra padding for line rotation
     %       .ellipseRadiusARange - [min, max] ellipse semi-major axis fraction
     %       .ellipseRadiusBRange - [min, max] ellipse semi-minor axis fraction
-    %       .rectangleSizeRange - [min, max] rectangle size fraction
-    %       .quadSizeRange - [min, max] quadrilateral size fraction
-    %       .quadPerturbation - Vertex perturbation for quadrilaterals
-    %       .triangleSizeRange - [min, max] triangle size fraction
     %       .lineIntensityRange - [min, max] line intensity offset
     %       .blobDarkIntensityRange - [min, max] dark blob intensity
     %       .blobLightIntensityRange - [min, max] light blob intensity
+    %       .countRange - [min, max] number of artifacts per image
+    %     Note: rectangleSizeRange, quadSizeRange, triangleSizeRange are no longer used
     %
     % Output:
     %   bg - Background image with artifacts added
     %
-    % Artifacts: rectangles, quadrilaterals, triangles, ellipses, lines
-    % Count: configurable via artifactCfg.countRange (default 5-30)
+    % Artifacts: ellipses (dust/spots) and lines (scratches) only
+    % Count: configurable via artifactCfg.countRange (default: [5, 40])
     % Size: 1-100% of image diagonal (allows artifacts larger than frame)
     % Placement: unconstrained (artifacts can extend beyond boundaries for uniform spatial distribution)
 
@@ -458,8 +501,13 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
         return;
     end
 
-    % Number of artifacts: variable (1-100 by default)
-    numArtifacts = randi([artifactCfg.countRange(1), artifactCfg.countRange(2)]);
+    % Number of artifacts: use configurable countRange from config
+    if isfield(artifactCfg, 'countRange') && ~isempty(artifactCfg.countRange)
+        countRange = artifactCfg.countRange;
+    else
+        countRange = [5, 40];  % Default fallback
+    end
+    numArtifacts = randi([countRange(1), countRange(2)]);
 
     % Image diagonal for relative sizing (allows artifacts larger than image dimensions)
     diagSize = sqrt(width^2 + height^2);
@@ -475,18 +523,11 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
     unitCenteredY = unitGridY - 0.5;
 
     for i = 1:numArtifacts
-        % Select artifact type (equal probability)
-        artifactTypeRand = rand();
-        if artifactTypeRand < 0.20
-            artifactType = 'rectangle';
-        elseif artifactTypeRand < 0.40
-            artifactType = 'quadrilateral';
-        elseif artifactTypeRand < 0.60
-            artifactType = 'triangle';
-        elseif artifactTypeRand < 0.80
-            artifactType = 'ellipse';
+        % Simplified: only ellipses and lines (70% ellipses, 30% lines)
+        if rand() < 0.70
+            artifactType = 'ellipse';  % 70% ellipses (dust, spots)
         else
-            artifactType = 'line';
+            artifactType = 'line';     % 30% lines (scratches)
         end
 
         % Uniform size: 1-100% of image diagonal (allows artifacts larger than frame)
@@ -526,56 +567,6 @@ function bg = addSparseArtifacts(bg, width, height, artifactCfg)
                 xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
                 yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
                 unitMask = single((xRot / radiusAFraction).^2 + (yRot / radiusBFraction).^2 <= 1);
-
-            case 'rectangle'
-                rectWidthFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHeightFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHalfWidth = max(rectWidthFraction * artifactSize / 2, 0.5);
-                rectHalfHeight = max(rectHeightFraction * artifactSize / 2, 0.5);
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                baseVerts = [
-                    -rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth,  rectHalfHeight;
-                    -rectHalfWidth,  rectHalfHeight];
-                rotMatrix = [cosTheta, -sinTheta; sinTheta, cosTheta];
-                rotatedVerts = baseVerts * rotMatrix';
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = rotatedVerts + centerPix;
-                mask = generateQuadMask(verticesPix, artifactSize);
-
-            case 'quadrilateral'
-                baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                baseHeightFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                perturbFraction = artifactCfg.quadPerturbation;
-                halfWidth = max(baseWidthFraction / 2, 1e-3);
-                halfHeight = max(baseHeightFraction / 2, 1e-3);
-                verticesNorm = [
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction
-                ];
-                centeredVerts = (verticesNorm - 0.5) * (artifactSize - 1);
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generateQuadMask(verticesPix, artifactSize);
-
-            case 'triangle'
-                baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
-                radius = max(baseSizeFraction * (artifactSize - 1) / 2, 0.5);
-                angle = rand() * 2 * pi;
-                verticesNorm = [
-                    cos(angle),           sin(angle);
-                    cos(angle + 2*pi/3),  sin(angle + 2*pi/3);
-                    cos(angle + 4*pi/3),  sin(angle + 4*pi/3)
-                ];
-                centeredVerts = radius * verticesNorm;
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generateQuadMask(verticesPix, artifactSize);
 
             otherwise  % 'line'
                 angle = rand() * pi;
@@ -698,7 +689,14 @@ function [bg, placedCount] = addQuadDistractors(bg, regions, quadBboxes, occupie
         return;
     end
 
-    targetCount = randi([distractorCfg.minCount, distractorCfg.maxCount]);
+    % Apply multiplier to scale distractor count (default multiplier=1.0 preserves original range)
+    multiplier = 1.0;
+    if isfield(distractorCfg, 'multiplier') && isfinite(distractorCfg.multiplier) && distractorCfg.multiplier > 0
+        multiplier = distractorCfg.multiplier;
+    end
+    scaledMin = max(1, round(distractorCfg.minCount * multiplier));
+    scaledMax = max(scaledMin, round(distractorCfg.maxCount * multiplier));
+    targetCount = randi([scaledMin, scaledMax]);
     if targetCount <= 0
         placedCount = 0;
         return;
@@ -960,31 +958,64 @@ end
 %% QUADRILATERAL DISTRACTORS - COLOR AND TEXTURE
 %% =========================================================================
 
-function baseColor = sampleDistractorColor(textureCfg, numChannels)
-    % Sample a base color for distractor from texture configuration.
+function baseColor = sampleDistractorColor(~, numChannels)
+    % Generate distractor colors: 70% paper-like, 30% colored objects
+    %
+    % Paper-like (70%): off-white, cream, light gray, warm white, ivory
+    % Colored objects (30%): pens, tape, markers, misc items
+    %
+    % Note: First argument (textureCfg) unused but kept for API compatibility
 
     if nargin < 2 || isempty(numChannels)
         numChannels = 3;
     end
 
-    switch randi(4)
-        case 1  % Uniform surface
-            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-        case 2  % Speckled surface
-            baseGray = 160 + randi([-25, 25]);
-            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        case 3  % Laminate surface
-            if rand() < 0.5
-                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-            else
-                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-            end
-        otherwise  % Skin-like hues
-            hsvVal = [0.03 + rand() * 0.07, 0.25 + rand() * 0.35, 0.55 + rand() * 0.35];
-            baseRGB = round(255 * hsv2rgb(hsvVal));
-    end
+    % Probability of colored distractor (non-paper)
+    COLORED_DISTRACTOR_PROB = 0.30;
 
-    baseRGB = max(80, min(220, baseRGB));
+    if rand() < COLORED_DISTRACTOR_PROB
+        % Colored objects: pens, tape, markers, misc items
+        coloredObjectColors = [
+            % Pens
+            40, 80, 180;    % Blue pen
+            200, 40, 40;    % Red pen
+            40, 150, 60;    % Green pen
+            30, 30, 35;     % Black pen
+            % Tape/stickers
+            255, 230, 80;   % Yellow tape
+            255, 140, 50;   % Orange tape
+            255, 150, 180;  % Pink sticker
+            130, 200, 255;  % Light blue tape
+            150, 230, 150;  % Light green tape
+            % Misc items
+            140, 90, 50;    % Brown (wood)
+            130, 130, 140;  % Gray (metal)
+            180, 80, 160    % Purple marker
+        ];
+
+        idx = randi(size(coloredObjectColors, 1));
+        base = coloredObjectColors(idx, :);
+
+        % Add variation (±15 for colored objects)
+        variation = randi([-15, 15], 1, 3);
+        baseRGB = max(0, min(255, base + variation));
+    else
+        % Realistic paper-like base colors (70%)
+        baseColors = [
+            245, 245, 240;  % Off-white
+            240, 235, 220;  % Cream
+            235, 235, 235;  % Light gray
+            250, 248, 245;  % Warm white
+            238, 238, 230   % Ivory
+        ];
+
+        idx = randi(size(baseColors, 1));
+        base = baseColors(idx, :);
+
+        % Add small variation (±10)
+        variation = randi([-10, 10], 1, 3);
+        baseRGB = max(0, min(255, base + variation));
+    end
 
     if numChannels ~= numel(baseRGB)
         if numChannels < numel(baseRGB)
@@ -1171,15 +1202,7 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         return;
     end
 
-    % Sample damage profile using precomputed cumulative weights
-    rVal = rand();
-    profileIdx = find(rVal <= damageCfg.profileCumWeights, 1, 'first');
-    if isempty(profileIdx)
-        profileIdx = numel(damageCfg.profileNames);
-    end
-    selectedProfile = damageCfg.profileNames{profileIdx};
-
-    % Phase 0: Prepare masks for damage operations
+    % Prepare masks for damage operations
     [H, W, ~] = size(quadRGB);
     maskQuad = damagedAlpha;
     maskProtected = false(H, W);
@@ -1294,244 +1317,33 @@ function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] 
         return;
     end
 
-    % Phase 1: Base Warp & Shear
+    % Structural Cuts (corner clips only, applied to outer zone)
+    % Note: maskEditable is already the outer zone (maskQuad & ~maskProtected)
 
-    % 1.1 Projective jitter (all profiles)
-    imgCorners = [1, 1; W, 1; W, H; 1, H];  % TL, TR, BR, BL
-    jitterScale = 0.03;
-    rotJitter = 2.0 * pi / 180;
+    % Apply corner clip to outer zone only
+    maskBeforeOp = maskEditable;
+    maskEditable = apply_corner_clip(maskEditable, damageCorners, damageCfg);
 
-    jitteredCorners = imgCorners;
-    for i = 1:4
-        % Translation jitter: +/- 3% of image dimensions
-        jitteredCorners(i, 1) = imgCorners(i, 1) + (rand() * 2 - 1) * jitterScale * W;
-        jitteredCorners(i, 2) = imgCorners(i, 2) + (rand() * 2 - 1) * jitterScale * H;
-
-        % Rotation jitter: +/- 2° around corner
-        angle = (rand() * 2 - 1) * rotJitter;
-        cx = imgCorners(i, 1);
-        cy = imgCorners(i, 2);
-        dx = jitteredCorners(i, 1) - cx;
-        dy = jitteredCorners(i, 2) - cy;
-        jitteredCorners(i, 1) = cx + dx * cos(angle) - dy * sin(angle);
-        jitteredCorners(i, 2) = cy + dx * sin(angle) + dy * cos(angle);
+    % Validate area removal
+    currentArea = sum(maskEditable(:)) + sum(maskProtected(:));
+    if ~isempty(minAllowedAreaPixels) && currentArea < minAllowedAreaPixels
+        maskEditable = maskBeforeOp;
     end
 
-    % Clamp to image bounds
-    jitteredCorners(:, 1) = max(1, min(W, jitteredCorners(:, 1)));
-    jitteredCorners(:, 2) = max(1, min(H, jitteredCorners(:, 2)));
-
-    try
-        tform = fitgeotrans(imgCorners, jitteredCorners, 'projective');
-        outputView = imref2d([H, W]);
-
-        damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
-                           'InterpolationMethod', 'linear', 'FillValues', 0);
-
-        alphaDouble = double(damagedAlpha);
-        warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
-                            'InterpolationMethod', 'linear', 'FillValues', 0);
-        damagedAlphaCand = warpedAlpha > 0.5;
-
-        if hasProtectedRegions
-            maskProtectedDouble = double(maskProtected);
-            warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
-                                    'InterpolationMethod', 'nearest', 'FillValues', 0);
-            maskProtected = warpedProtected > 0.5;
-            hasProtectedRegions = any(maskProtected(:));
-        end
-
-        if hasProtectedRegions
-            damagedAlpha = damagedAlphaCand | maskProtected;
-            maskEditable = damagedAlpha & ~maskProtected;
-        else
-            damagedAlpha = damagedAlphaCand;
-            maskEditable = damagedAlphaCand;
-        end
-        [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
-        maskPreCuts = damagedAlpha;
-    catch
-        % fitgeotrans can fail with near-singular matrices from extreme jitter
-        % Continue with undamaged quad - no action needed
+    damagedAlpha = maskEditable;
+    if hasProtectedRegions
+        damagedAlpha = damagedAlpha | maskProtected;
     end
 
-    % 1.2 Nonlinear edge bending (minimalWarp and sideCollapse only)
-    % Skip for small quads where warp overhead exceeds benefit
-    minDim = min(H, W);
-    applyNonlinearWarp = minDim > 200;
-    
-    if applyNonlinearWarp && (strcmp(selectedProfile, 'minimalWarp') || strcmp(selectedProfile, 'sideCollapse'))
-        % Control points at edge midpoints
-        controlPoints = [
-            W/2, 1;      % Top edge midpoint
-            W, H/2;      % Right edge midpoint
-            W/2, H;      % Bottom edge midpoint
-            1, H/2       % Left edge midpoint
-        ];
-
-        % Add corners as fixed anchor points
-        movingPts = [controlPoints; [1, 1; W, 1; W, H; 1, H]];
-        fixedPts = movingPts;
-
-        % Offset edge midpoints perpendicular to edge
-        ampRange = damageCfg.edgeWaveAmplitudeRange * minDim;
-        for i = 1:4
-            offset = ampRange(1) + rand() * (ampRange(2) - ampRange(1));
-            offset = offset * (2 * (rand() > 0.5) - 1);  % Random sign
-
-            if i == 1  % Top edge
-                fixedPts(i, 2) = fixedPts(i, 2) + offset;
-            elseif i == 2  % Right edge
-                fixedPts(i, 1) = fixedPts(i, 1) + offset;
-            elseif i == 3  % Bottom edge
-                fixedPts(i, 2) = fixedPts(i, 2) + offset;
-            else  % Left edge
-                fixedPts(i, 1) = fixedPts(i, 1) + offset;
-            end
-        end
-
-        % Clamp to valid region
-        fixedPts(:, 1) = max(1, min(W, fixedPts(:, 1)));
-        fixedPts(:, 2) = max(1, min(H, fixedPts(:, 2)));
-
-        try
-            tform = fitgeotrans(movingPts, fixedPts, 'lwm', 8);
-            outputView = imref2d([H, W]);
-
-            damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
-                               'InterpolationMethod', 'linear', 'FillValues', 0);
-
-            alphaDouble = double(damagedAlpha);
-            warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
-                                'InterpolationMethod', 'linear', 'FillValues', 0);
-            damagedAlphaCand = warpedAlpha > 0.5;
-
-            if hasProtectedRegions
-                maskProtectedDouble = double(maskProtected);
-                warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
-                                        'InterpolationMethod', 'nearest', 'FillValues', 0);
-                maskProtected = warpedProtected > 0.5;
-                hasProtectedRegions = any(maskProtected(:));
-            end
-
-            damagedAlpha = damagedAlphaCand;
-            if hasProtectedRegions
-                damagedAlpha = damagedAlpha | maskProtected;
-                maskEditable = damagedAlpha & ~maskProtected;
-            else
-                maskEditable = damagedAlpha;
-            end
-            [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
-            maskPreCuts = damagedAlpha;
-        catch
-            % fitgeotrans (lwm) can fail with degenerate control points
-            % Continue with undamaged quad - no action needed
-        end
+    for c = 1:3
+        channel = damagedRGB(:,:,c);
+        channel(~damagedAlpha) = 0;
+        damagedRGB(:,:,c) = channel;
     end
 
-    % Phase 2: Structural Cuts (Material Removal)
-    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
-        if strcmp(selectedProfile, 'cornerChew')
-            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
-            operationWeights = [0.35, 0.25, 0.25, 0.15];
-        else
-            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
-            operationWeights = [0.10, 0.10, 0.50, 0.30];
-        end
-
-        numOps = randi([1, damageCfg.maxOperations]);
-
-        prevOp = '';
-        for opIdx = 1:numOps
-            weights = operationWeights;
-            if ~isempty(prevOp)
-                weights(strcmp(operationPool, prevOp)) = 0;
-            end
-            if sum(weights) == 0
-                weights = operationWeights;
-            end
-            weights = weights / sum(weights);
-            cumWeights = cumsum(weights);
-            opType = operationPool{find(rand() <= cumWeights, 1, 'first')};
-
-            maskBeforeOp = maskEditable;
-            switch opType
-                case 'cornerClip'
-                    maskEditable = apply_corner_clip(maskEditable, damageCorners, damageCfg);
-                case 'cornerTear'
-                    maskEditable = apply_corner_tear(maskEditable, damageCorners, damageCfg);
-                case 'sideBite'
-                    maskEditable = apply_side_bite(maskEditable, damageCorners, damageCfg, maskProtected, hasProtectedRegions);
-                case 'taperedSide'
-                    maskEditable = apply_tapered_side(maskEditable, damageCorners, damageCfg);
-            end
-
-            currentArea = sum(maskEditable(:)) + sum(maskProtected(:));
-            if ~isempty(minAllowedAreaPixels) && currentArea < minAllowedAreaPixels
-                maskEditable = maskBeforeOp;
-                break;
-            end
-
-            prevOp = opType;
-        end
-
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    end
-
-    maskEditablePreWear = maskEditable;
-    damagedAlphaPreWear = damagedAlpha;
-    damagedRGBPreWear = damagedRGB;
-
-    % Phase 3: Edge Wear & Thickness Cues
-    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
-        maskEditable = apply_edge_wave_noise(maskEditable, damageCfg);
-
-        if rand() < 0.5
-            maskEditable = apply_edge_fray(maskEditable, maskProtected);
-        end
-
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        damagedRGB = apply_thickness_shadows(damagedRGB, damagedAlpha, maskPreCuts);
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    elseif strcmp(selectedProfile, 'minimalWarp')
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    end
-
-    if ~isempty(minAllowedAreaPixels)
-        finalArea = sum(maskEditable(:)) + sum(maskProtected(:));
-        if finalArea < minAllowedAreaPixels
-            maskEditable = maskEditablePreWear;
-            damagedAlpha = damagedAlphaPreWear;
-            damagedRGB = damagedRGBPreWear;
-        end
-    end
+    % Phase 3: Edge Wear & Thickness Cues (DISABLED in Phase 3 simplification)
+    % Removed: edge wave noise, fraying, thickness shadows
+    % These are unrealistic or add excessive complexity
 
     if ~isempty(savedRngState)
         rng(savedRngState);
@@ -1757,286 +1569,6 @@ function mask = apply_corner_clip(mask, quadCorners, damageCfg)
     end
 end
 
-function mask = apply_corner_tear(mask, quadCorners, damageCfg)
-    [H, W] = size(mask);
-    edgeInfo = get_quad_edges(quadCorners);
-    refDim = mean(edgeInfo.lengths);
-
-    cornerIdx = randi([1, 4]);
-    cornerPt = edgeInfo.corners(cornerIdx, :);
-
-    depthFrac = damageCfg.cornerClipRange(1) + ...
-                rand() * (damageCfg.cornerClipRange(2) - damageCfg.cornerClipRange(1));
-    depth = depthFrac * refDim;
-
-    numVerts = randi([4, 6]);
-    tearVerts = zeros(numVerts, 2);
-
-    prevCornerIdx = mod(cornerIdx - 2, 4) + 1;
-    prevDir = edgeInfo.directions(prevCornerIdx, :);
-    nextDir = edgeInfo.directions(cornerIdx, :);
-
-    for i = 1:numVerts
-        t = (i - 1) / (numVerts - 1);
-        if t < 0.5
-            dir = -prevDir;
-            offset = t * 2 * depth;
-        else
-            dir = nextDir;
-            offset = (t - 0.5) * 2 * depth;
-        end
-
-        perpDir = [-dir(2), dir(1)];
-        jitter = (rand() - 0.5) * depth * 0.3;
-
-        tearVerts(i, :) = cornerPt + dir * offset + perpDir * jitter;
-    end
-
-    tearMask = poly2mask(tearVerts(:, 1), tearVerts(:, 2), H, W);
-
-    if rand() < 0.5
-        se = strel('disk', 2);
-        tearMask = imdilate(tearMask, se);
-    end
-
-    mask = mask & ~tearMask;
-end
-
-function mask = apply_side_bite(mask, quadCorners, damageCfg, maskProtected, hasProtectedRegions)
-    [H, W] = size(mask);
-    edgeInfo = get_quad_edges(quadCorners);
-
-    edgeIdx = randi([1, 4]);
-    edgePos = 0.3 + rand() * 0.4;
-    depthFrac = damageCfg.sideBiteRange(1) + ...
-                rand() * (damageCfg.sideBiteRange(2) - damageCfg.sideBiteRange(1));
-
-    edgeLength = edgeInfo.lengths(edgeIdx);
-    edgeMidpoint = edgeInfo.midpoints(edgeIdx, :);
-    edgeDirection = edgeInfo.directions(edgeIdx, :);
-    edgeNormal = edgeInfo.normals(edgeIdx, :);
-
-    tParam = (edgePos - 0.5) * 2;
-    biteCenterOnEdge = edgeMidpoint + tParam * edgeDirection * (edgeLength / 2);
-    radius = depthFrac * edgeLength;
-    circleCenter = biteCenterOnEdge + edgeNormal * radius;
-
-    [xx, yy] = meshgrid(1:W, 1:H);
-    biteMask = ((xx - circleCenter(1)).^2 + (yy - circleCenter(2)).^2) <= radius^2;
-
-    mask = mask & ~biteMask;
-
-    if rand() < 0.4
-        offsetSign = (rand() < 0.5) * 2 - 1;
-        edgePos2 = edgePos + offsetSign * (0.2 + rand() * 0.2);
-        edgePos2 = max(0.1, min(0.9, edgePos2));
-
-        tParam2 = (edgePos2 - 0.5) * 2;
-        biteCenterOnEdge2 = edgeMidpoint + tParam2 * edgeDirection * (edgeLength / 2);
-        
-        depthFrac2 = depthFrac * (0.5 + rand() * 0.2);
-        radius2 = depthFrac2 * edgeLength;
-        circleCenter2 = biteCenterOnEdge2 + edgeNormal * radius2;
-
-        centerDist = norm(circleCenter2 - circleCenter);
-        minSpacing = (radius + radius2) * 0.7;
-        
-        if centerDist >= minSpacing
-            biteMask2 = ((xx - circleCenter2(1)).^2 + (yy - circleCenter2(2)).^2) <= radius2^2;
-            
-            if hasProtectedRegions && any(biteMask2(:) & maskProtected(:))
-                return;
-            end
-            
-            mask = mask & ~biteMask2;
-        end
-    end
-end
-
-function mask = apply_tapered_side(mask, quadCorners, damageCfg)
-    [H, W] = size(mask);
-    edgeInfo = get_quad_edges(quadCorners);
-
-    edgeIdx = randi([1, 4]);
-
-    taperStrength = damageCfg.taperStrengthRange(1) + ...
-                    rand() * (damageCfg.taperStrengthRange(2) - damageCfg.taperStrengthRange(1));
-
-    edgeStart = squeeze(edgeInfo.edges(edgeIdx, 1, :))';
-    edgeEnd = squeeze(edgeInfo.edges(edgeIdx, 2, :))';
-    edgeNormal = edgeInfo.normals(edgeIdx, :);
-    edgeLength = edgeInfo.lengths(edgeIdx);
-
-    [xx, yy] = meshgrid(1:W, 1:H);
-
-    edgeVec = edgeEnd - edgeStart;
-
-    px = xx(:) - edgeStart(1);
-    py = yy(:) - edgeStart(2);
-    t = (px * edgeVec(1) + py * edgeVec(2)) / (edgeVec(1)^2 + edgeVec(2)^2);
-    t = reshape(t, H, W);
-    t = max(0, min(1, t));
-
-    taperDepth = taperStrength * edgeLength * t;
-
-    pointOnEdgeX = edgeStart(1) + t * edgeVec(1);
-    pointOnEdgeY = edgeStart(2) + t * edgeVec(2);
-    signedDist = (xx - pointOnEdgeX) * edgeNormal(1) + (yy - pointOnEdgeY) * edgeNormal(2);
-
-    gradientMask = signedDist > -taperDepth;
-
-    mask = mask & gradientMask;
-end
-
-function mask = apply_edge_wave_noise(mask, damageCfg)
-    [H, W] = size(mask);
-    minDim = min(H, W);
-    originalMask = mask;
-    
-    if minDim < 150
-        return;
-    end
-
-    perim = bwperim(mask);
-    if ~any(perim(:))
-        return;
-    end
-
-    maxWaveDist = damageCfg.edgeWaveAmplitudeRange(2) * minDim * 2;
-    signedDist = fast_signed_distance(mask, ceil(maxWaveDist));
-
-    freq = damageCfg.edgeWaveFrequencyRange(1) + ...
-           rand() * (damageCfg.edgeWaveFrequencyRange(2) - damageCfg.edgeWaveFrequencyRange(1));
-
-    amp = damageCfg.edgeWaveAmplitudeRange(1) + ...
-          rand() * (damageCfg.edgeWaveAmplitudeRange(2) - damageCfg.edgeWaveAmplitudeRange(1));
-    amp = amp * minDim;
-
-    [xx, yy] = meshgrid(1:W, 1:H);
-
-    cx = W / 2;
-    cy = H / 2;
-    theta = atan2(yy - cy, xx - cx);
-
-    wavePattern = amp * sin(freq * theta);
-
-    noiseAmp = amp * 0.3;
-    noise = randn(H, W) * noiseAmp;
-    noise = imgaussfilt(noise, 3);
-
-    modulation = wavePattern + noise;
-
-    modulatedDist = signedDist + modulation;
-
-    mask = (modulatedDist >= 0) & originalMask;
-end
-
-function signedDist = fast_signed_distance(mask, maxDist)
-    if maxDist > 20
-        D_out = bwdist(~mask);
-        D_in = bwdist(mask);
-        signedDist = D_out - D_in;
-        return;
-    end
-    
-    [H, W] = size(mask);
-    signedDist = zeros(H, W);
-    
-    se = strel('disk', 1, 0);
-    tempMask = mask;
-    for d = 1:maxDist
-        tempMask = imerode(tempMask, se);
-        if ~any(tempMask(:))
-            break;
-        end
-        signedDist = signedDist + double(tempMask);
-    end
-    
-    tempMask = ~mask;
-    for d = 1:maxDist
-        tempMask = imerode(tempMask, se);
-        if ~any(tempMask(:))
-            break;
-        end
-        signedDist = signedDist - double(tempMask);
-    end
-end
-
-function mask = apply_edge_fray(mask, maskProtected)
-    [H, W] = size(mask);
-
-    perim = bwperim(mask);
-    [py, px] = find(perim);
-
-    if isempty(px)
-        return;
-    end
-
-    numPerimPixels = numel(px);
-    numFrayPoints = max(3, round(numPerimPixels / 100 * rand() * 3));
-
-    minSpacing = 10;
-    selectedPoints = zeros(numFrayPoints, 2);
-    pointCount = 0;
-    attempts = 0;
-    maxAttempts = numFrayPoints * 10;
-
-    while pointCount < numFrayPoints && attempts < maxAttempts
-        idx = randi(numPerimPixels);
-        candidate = [px(idx), py(idx)];
-
-        if pointCount == 0
-            pointCount = 1;
-            selectedPoints(pointCount, :) = candidate;
-        else
-            dists = sqrt(sum((selectedPoints(1:pointCount, :) - candidate).^2, 2));
-            if all(dists >= minSpacing)
-                pointCount = pointCount + 1;
-                selectedPoints(pointCount, :) = candidate;
-            end
-        end
-        attempts = attempts + 1;
-    end
-    selectedPoints = selectedPoints(1:pointCount, :);
-
-    frayMask = false(H, W);
-    [xx, yy] = meshgrid(1:W, 1:H);
-    for i = 1:size(selectedPoints, 1)
-        radius = randi([1, 3]);
-
-        distFromPoint = sqrt((xx - selectedPoints(i, 1)).^2 + (yy - selectedPoints(i, 2)).^2);
-        blob = distFromPoint <= radius;
-
-        blob = blob & ~maskProtected;
-        frayMask = frayMask | blob;
-    end
-
-    mask = mask & ~frayMask;
-end
-
-function img = apply_thickness_shadows(img, damagedMask, originalMask)
-    removedRegion = originalMask & ~damagedMask;
-
-    if ~any(removedRegion(:))
-        return;
-    end
-
-    distFromRemoved = bwdist(removedRegion);
-
-    shadowWidth = 8;
-    shadowRamp = max(0, 1 - distFromRemoved / shadowWidth);
-    shadowRamp = shadowRamp .* double(damagedMask);
-
-    shadowStrength = 0.15;
-    darkening = 1 - shadowStrength * shadowRamp;
-
-    for c = 1:3
-        channel = double(img(:,:,c));
-        channel = channel .* darkening;
-        img(:,:,c) = uint8(channel);
-    end
-end
-
 %% =========================================================================
 %% SHADOW GENERATION - DROP SHADOWS FOR WHITE BACKGROUND
 %% =========================================================================
@@ -2099,5 +1631,379 @@ function shadowMask = generateDropShadow(quadVertices, lightAngle, imgSize, para
 
     % Convert to multiplicative mask (1 = no shadow, darkness = shadow)
     shadowMask = single(1 - (1 - darkness) * shadowSoft);
+end
+
+function [applyShadow, darkness] = sampleTieredShadow()
+    % Sample shadow tier using probability distribution
+    %
+    % Tiers:
+    %   None (15%): No shadow
+    %   Subtle (35%): [0.94, 0.97] darkness
+    %   Light (25%): [0.90, 0.94] darkness
+    %   Medium (15%): [0.85, 0.90] darkness
+    %   Strong (10%): [0.80, 0.88] darkness
+    %
+    % Outputs:
+    %   applyShadow - boolean, true if shadow should be applied
+    %   darkness - sampled darkness value (multiplier)
+
+    % Shadow tier configuration
+    SHADOW_TIERS = struct();
+    SHADOW_TIERS.probs = [0.15, 0.35, 0.25, 0.15, 0.10];
+    SHADOW_TIERS.darkness = {[], [0.94, 0.97], [0.90, 0.94], [0.85, 0.90], [0.80, 0.88]};
+
+    % Sample tier
+    r = rand();
+    cumProbs = cumsum(SHADOW_TIERS.probs);
+    tier = find(r <= cumProbs, 1, 'first');
+
+    if isempty(tier)
+        tier = 1;
+    end
+
+    % Tier 1 = no shadow
+    if tier == 1
+        applyShadow = false;
+        darkness = 1.0;
+        return;
+    end
+
+    % Sample darkness from tier range
+    applyShadow = true;
+    darknessRange = SHADOW_TIERS.darkness{tier};
+    darkness = darknessRange(1) + rand() * diff(darknessRange);
+end
+
+%% =========================================================================
+%% SCENE-SPACE CONVERSIONS
+%% =========================================================================
+
+function sceneSpaceWidth = getSceneSpaceWidth(compositeWidth, quadTransform, occlusionMidpoint)
+    % Compute scene-space width from composite-space width using local Jacobian
+    % quadTransform: homography mapping SCENE -> COMPOSITE
+    % occlusionMidpoint: [x, y] midpoint in composite space
+
+    SAFETY_MARGIN = 1.10;
+    localScale = getLocalScale(quadTransform, occlusionMidpoint, []);
+    sceneSpaceWidth = compositeWidth * localScale * SAFETY_MARGIN;
+end
+
+function localScale = getLocalScale(quadTransform, point, ~)
+    % Compute local scale factor at a point (composite->scene conversion)
+    % Returns max singular value of Jacobian of inverse transform
+    % Third parameter ignored (config) for compatibility
+
+    if size(quadTransform, 1) == 3
+        H = quadTransform;
+        x = point(1);
+        y = point(2);
+        Hinv = inv(H);
+        w = Hinv(3,1)*x + Hinv(3,2)*y + Hinv(3,3);
+
+        % Guard against degenerate transforms
+        if abs(w) < 1e-10
+            localScale = 1;
+            return;
+        end
+
+        J = zeros(2,2);
+        J(1,1) = (Hinv(1,1)*w - Hinv(3,1)*(Hinv(1,1)*x + Hinv(1,2)*y + Hinv(1,3))) / w^2;
+        J(1,2) = (Hinv(1,2)*w - Hinv(3,2)*(Hinv(1,1)*x + Hinv(1,2)*y + Hinv(1,3))) / w^2;
+        J(2,1) = (Hinv(2,1)*w - Hinv(3,1)*(Hinv(2,1)*x + Hinv(2,2)*y + Hinv(2,3))) / w^2;
+        J(2,2) = (Hinv(2,2)*w - Hinv(3,2)*(Hinv(2,1)*x + Hinv(2,2)*y + Hinv(2,3))) / w^2;
+
+        [~, S, ~] = svd(J);
+        localScale = max(diag(S));
+    else
+        A_inv = inv(quadTransform(1:2, 1:2));
+        [~, S, ~] = svd(A_inv);
+        localScale = max(diag(S));
+    end
+
+    % Ensure valid scale
+    if ~isfinite(localScale) || localScale <= 0
+        localScale = 1;
+    end
+end
+
+function sceneDiagonal = computeCoreDiagonal(coreQuadVertices, quadTransform, ~)
+    % Compute core diagonal in scene space using polygon vertices
+    % coreQuadVertices: Nx2 vertices in composite space
+    % Third parameter ignored (config) for compatibility
+
+    if isempty(coreQuadVertices) || size(coreQuadVertices, 1) < 2
+        sceneDiagonal = 100;  % Fallback default
+        return;
+    end
+
+    % Find max distance between any two vertices
+    numVerts = size(coreQuadVertices, 1);
+    maxDist = 0;
+    for i = 1:numVerts
+        for j = (i+1):numVerts
+            dist = sqrt(sum((coreQuadVertices(i,:) - coreQuadVertices(j,:)).^2));
+            maxDist = max(maxDist, dist);
+        end
+    end
+    compositeDiagonal = maxDist;
+
+    % Convert to scene space
+    centroid = mean(coreQuadVertices, 1);
+    localScale = getLocalScale(quadTransform, centroid, []);
+    sceneDiagonal = compositeDiagonal * localScale;
+
+    % Ensure valid result
+    if ~isfinite(sceneDiagonal) || sceneDiagonal <= 0
+        sceneDiagonal = 100;  % Fallback default
+    end
+end
+
+%% =========================================================================
+%% PAPER STAINS - TWO-TIER STAIN SYSTEM
+%% =========================================================================
+
+function compositeImg = apply_paper_stains(compositeImg, quadMask, coreMask, config)
+    % Apply paper stains as post-composite augmentation (per-quad)
+    % Two-tier: outer zone full opacity, core low opacity
+    %
+    % Inputs:
+    %   compositeImg - RGB image (uint8)
+    %   quadMask - Binary mask of full quad region
+    %   coreMask - Binary mask of protected core region
+    %   config - Configuration struct with stain parameters:
+    %            .outerStainProbability - Probability of outer zone stain
+    %            .maxOuterStainCoverage - Max coverage fraction for outer stains
+    %            .outerStainOpacityRange - [min, max] opacity for outer stains
+    %            .coreStainProbability - Probability of core zone stain
+    %            .coreStainMaxOpacity - Max opacity for core stains
+    %            .coreStainMaxCoverage - Max coverage for core stains
+    %            .stainSemiMajorRange - [min, max] semi-major axis in pixels
+    %            .stainSemiMinorRange - [min, max] semi-minor axis in pixels
+    %
+    % Output:
+    %   compositeImg - Image with stains applied
+
+    outerMask = quadMask & ~coreMask;
+    [imgH, imgW, ~] = size(compositeImg);
+
+    % Guard against degenerate quads with empty masks
+    outerPixelCount = sum(outerMask(:));
+    corePixelCount = sum(coreMask(:));
+
+    % OUTER ZONE STAINS
+    if outerPixelCount > 0 && rand() < config.outerStainProbability
+        stainMask = generateIrregularStain(imgH, imgW, outerMask, config);
+
+        % Enforce coverage limit
+        outerCoverage = sum(stainMask(:) & outerMask(:)) / sum(outerMask(:));
+        if outerCoverage > config.maxOuterStainCoverage
+            stainMask = shrinkMaskToCoverage(stainMask, outerMask, config.maxOuterStainCoverage);
+        end
+
+        stainColor = sampleRealisticStainColor();
+        opacityRange = config.outerStainOpacityRange;
+        stainOpacity = opacityRange(1) + rand() * diff(opacityRange);
+        compositeImg = blendStain(compositeImg, stainMask, stainColor, stainOpacity);
+    end
+
+    % CORE STAINS (lower opacity)
+    if corePixelCount > 0 && rand() < config.coreStainProbability
+        coreStainMask = generateIrregularStain(imgH, imgW, coreMask, config);
+
+        % Enforce core coverage limit
+        coreCoverage = sum(coreStainMask(:) & coreMask(:)) / sum(coreMask(:));
+        if coreCoverage > config.coreStainMaxCoverage
+            coreStainMask = shrinkMaskToCoverage(coreStainMask, coreMask, config.coreStainMaxCoverage);
+        end
+
+        stainColor = sampleRealisticStainColor();
+        stainOpacity = rand() * config.coreStainMaxOpacity;
+        compositeImg = blendStain(compositeImg, coreStainMask, stainColor, stainOpacity);
+    end
+end
+
+function stainMask = generateIrregularStain(imgH, imgW, zoneMask, config)
+    % Generate irregular stain mask within zone
+    %
+    % Inputs:
+    %   imgH, imgW - Image dimensions
+    %   zoneMask - Binary mask of valid zone for stain placement
+    %   config - Configuration struct with stain size parameters
+    %
+    % Output:
+    %   stainMask - Binary mask of stain region
+
+    stainMask = false(imgH, imgW);
+
+    % Find valid region bounds
+    [rows, cols] = find(zoneMask);
+    if isempty(rows)
+        return;
+    end
+
+    % Random stain center within zone
+    idx = randi(numel(rows));
+    cx = cols(idx);
+    cy = rows(idx);
+
+    % Random elliptical shape from config ranges
+    majorRange = config.stainSemiMajorRange;
+    minorRange = config.stainSemiMinorRange;
+    a = majorRange(1) + rand() * diff(majorRange);  % semi-major axis
+    b = minorRange(1) + rand() * diff(minorRange);  % semi-minor axis
+    theta = rand() * pi;
+
+    [xx, yy] = meshgrid(1:imgW, 1:imgH);
+    xxRot = (xx - cx) * cos(theta) + (yy - cy) * sin(theta);
+    yyRot = -(xx - cx) * sin(theta) + (yy - cy) * cos(theta);
+
+    ellipseMask = (xxRot.^2 / a^2 + yyRot.^2 / b^2) <= 1;
+
+    % Add irregular edges using noise
+    noise = imgaussfilt(randn(imgH, imgW), 5);
+    irregularMask = ellipseMask & (noise > -0.3);
+
+    stainMask = irregularMask & zoneMask;
+end
+
+function stainMask = shrinkMaskToCoverage(stainMask, zoneMask, targetCoverage)
+    % Shrink stain mask to meet coverage target by erosion
+    %
+    % Inputs:
+    %   stainMask - Binary mask to shrink
+    %   zoneMask - Binary mask of valid zone
+    %   targetCoverage - Target coverage fraction (0-1)
+    %
+    % Output:
+    %   stainMask - Shrunk mask meeting coverage target
+
+    currentCoverage = sum(stainMask(:) & zoneMask(:)) / sum(zoneMask(:));
+
+    se = strel('disk', 2);
+    maxIterations = 50;
+    iter = 0;
+    while currentCoverage > targetCoverage && any(stainMask(:)) && iter < maxIterations
+        stainMask = imerode(stainMask, se);
+        stainMask = stainMask & zoneMask;
+        currentCoverage = sum(stainMask(:) & zoneMask(:)) / sum(zoneMask(:));
+        iter = iter + 1;
+    end
+end
+
+function stainColor = sampleRealisticStainColor()
+    % Sample realistic stain colors (brown, gray, yellowish)
+    %
+    % Output:
+    %   stainColor - uint8 RGB color [R, G, B]
+
+    colorType = randi(3);
+    switch colorType
+        case 1  % Brown/coffee stain
+            stainColor = uint8([90 + randi(40), 50 + randi(30), 30 + randi(20)]);
+        case 2  % Gray/dust
+            gray = 80 + randi(60);
+            stainColor = uint8([gray, gray, gray] + randi([-10, 10], [1, 3]));
+        case 3  % Yellowish/water stain
+            stainColor = uint8([200 + randi(40), 180 + randi(40), 100 + randi(40)]);
+    end
+end
+
+function img = blendStain(img, stainMask, stainColor, opacity)
+    % Blend stain color into image with given opacity
+    %
+    % Inputs:
+    %   img - RGB image (uint8)
+    %   stainMask - Binary mask of stain region
+    %   stainColor - uint8 RGB color [R, G, B]
+    %   opacity - Blend opacity (0-1)
+    %
+    % Output:
+    %   img - Image with stain blended
+
+    if ~any(stainMask(:))
+        return;
+    end
+
+    for c = 1:3
+        channel = double(img(:,:,c));
+        channel(stainMask) = channel(stainMask) * (1 - opacity) + double(stainColor(c)) * opacity;
+        img(:,:,c) = uint8(channel);
+    end
+end
+
+%% =========================================================================
+%% SPECULAR HIGHLIGHT AUGMENTATION
+%% =========================================================================
+
+function img = apply_specular_highlight(img, quadVertices, textureCfg)
+    % Apply localized specular highlight to simulate phone camera reflections
+    %
+    % Simulates bright spots from overhead lighting reflecting off glossy or
+    % laminated paper surfaces. Common in real phone captures.
+    %
+    % Inputs:
+    %   img - RGB image (uint8)
+    %   quadVertices - 4x2 matrix of quad corner positions
+    %   textureCfg - Texture configuration with specular params:
+    %                .specularHighlightIntensityRange - [min, max] multiplier
+    %                .specularHighlightRadiusRange - [min, max] fraction of quad diagonal
+    %                .specularHighlightBlurRange - [min, max] fraction of radius
+    %
+    % Output:
+    %   img - Image with specular highlight applied
+
+    [imgH, imgW, ~] = size(img);
+
+    % Compute quad center and diagonal (use max of both diagonals for robustness)
+    centroid = mean(quadVertices, 1);
+    diag13 = sqrt(sum((quadVertices(1,:) - quadVertices(3,:)).^2));
+    diag24 = sqrt(sum((quadVertices(2,:) - quadVertices(4,:)).^2));
+    quadDiag = max(diag13, diag24);
+
+    % Sample highlight parameters
+    intensityRange = textureCfg.specularHighlightIntensityRange;
+    radiusRange = textureCfg.specularHighlightRadiusRange;
+    blurRange = textureCfg.specularHighlightBlurRange;
+
+    intensity = intensityRange(1) + rand() * diff(intensityRange);
+    radiusFrac = radiusRange(1) + rand() * diff(radiusRange);
+    blurFrac = blurRange(1) + rand() * diff(blurRange);
+
+    radius = radiusFrac * quadDiag;
+    blurSigma = blurFrac * radius;
+
+    % Random offset from centroid (within 30% of quad size)
+    offsetRange = 0.30 * quadDiag;
+    cx = centroid(1) + (rand() - 0.5) * 2 * offsetRange;
+    cy = centroid(2) + (rand() - 0.5) * 2 * offsetRange;
+
+    % Clamp center to image bounds
+    cx = max(1, min(imgW, cx));
+    cy = max(1, min(imgH, cy));
+
+    % Create highlight mask (radial gradient)
+    [X, Y] = meshgrid(1:imgW, 1:imgH);
+    distFromCenter = sqrt((X - cx).^2 + (Y - cy).^2);
+
+    % Smooth falloff using Gaussian-like profile
+    highlightMask = exp(-0.5 * (distFromCenter / radius).^2);
+
+    % Apply Gaussian blur for soft edges
+    if blurSigma > 0.5
+        highlightMask = imgaussfilt(highlightMask, blurSigma);
+    end
+
+    % Apply highlight (multiplicative brightening)
+    imgDouble = double(img);
+    for c = 1:3
+        channel = imgDouble(:,:,c);
+        % Blend: original + (brightened - original) * mask
+        brightened = channel * intensity;
+        channel = channel + (brightened - channel) .* highlightMask;
+        imgDouble(:,:,c) = channel;
+    end
+
+    % Clamp and convert
+    img = uint8(max(0, min(255, imgDouble)));
 end
 

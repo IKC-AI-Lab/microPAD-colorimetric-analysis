@@ -30,7 +30,6 @@ function ui = micropad_ui()
 
     % Figure and display
     ui.createFigure = @createFigure;
-    ui.createTopTextContainer = @createTopTextContainer;
     ui.createPathDisplay = @createPathDisplay;
     ui.createImageAxes = @createImageAxes;
     ui.createInstructions = @createInstructions;
@@ -131,16 +130,15 @@ function cfg = getDefaultUIConfig()
 
     % UI positions (normalized coordinates [x, y, width, height])
     % Origin: (0, 0) = bottom-left, (1, 1) = top-right
-    % Image fills full width, single row top text container, compact bottom panels
+    % Image fills full width, compact top overlays, compact bottom panels
     cfg.positions = struct(...
         'figure', [0 0 1 1], ...
-        'topTextContainer', [0 0.97 1 0.03], ...           % Single row container
-        'stopButton', [0.01 0.973 0.05 0.024], ...         % Inside container, left
-        'pathDisplay', [0.07 0.973 0.86 0.024], ...        % Single info row
-        'aiStatus', [0.30 0.94 0.40 0.025], ...            % Below container when visible
+        'stopButton', [0.01 0.973 0.05 0.024], ...         % Top-left
+        'pathDisplay', [0.07 0.973 0.86 0.024], ...        % Top-center info row
+        'aiStatus', [0.30 0.94 0.40 0.025], ...            % Below path when visible
         'instructions', [0 0.11 1 0.03], ...               % Overlay on image, bottom area
         'image', [0 0.11 1 0.89], ...                      % Full width, no margins
-        'runAIButton', [0.94 0.973 0.05 0.024], ...        % Inside container, right
+        'runAIButton', [0.94 0.973 0.05 0.024], ...        % Top-right
         'rotationPanel', [0.01 0.005 0.24 0.10], ...       % Compact: 10% height
         'zoomPanel', [0.26 0.005 0.26 0.10], ...           % Compact: 10% height
         'cutButtonPanel', [0.53 0.005 0.46 0.10], ...      % Compact: 10% height
@@ -217,21 +215,31 @@ function merged = mergeUIConfig(base, overrides)
     end
 end
 
-function container = createTopTextContainer(fig, cfg)
-    % Create single semi-transparent container for all top text elements
+%% =========================================================================
+%% INTERNAL HELPERS
+%% =========================================================================
+
+function makeNonInteractive(handle)
+    % Disable mouse interaction for an annotation handle
+    set(handle, 'HitTest', 'off');
+    if isprop(handle, 'PickableParts')
+        set(handle, 'PickableParts', 'none');
+    end
+end
+
+function centerAnnotationInBounds(handle, bounds)
+    % Center an annotation horizontally within its reference bounds
     %
     % INPUTS:
-    %   fig - Parent figure
-    %   cfg - UI configuration
+    %   handle - Annotation handle (must have FitBoxToText = 'on')
+    %   bounds - [x, y, width, height] reference position
     %
-    % OUTPUTS:
-    %   container - Annotation handle for the container
-
-    container = annotation(fig, 'textbox', cfg.ui.positions.topTextContainer, ...
-        'String', '', ...
-        'BackgroundColor', cfg.ui.overlay.backgroundColor, ...
-        'FaceAlpha', cfg.ui.overlay.textAlpha, ...
-        'EdgeColor', 'none');
+    % NOTE: drawnow ensures FitBoxToText has computed dimensions before reading
+    drawnow limitrate;
+    pos = get(handle, 'Position');
+    pos(1) = bounds(1) + (bounds(3) - pos(3)) / 2;
+    pos(2) = bounds(2);
+    set(handle, 'Position', pos);
 end
 
 %% =========================================================================
@@ -285,7 +293,7 @@ function defaultCloseCallback(fig)
 end
 
 function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
-    % Create path display text (no background - container provides it)
+    % Create path display text with compact background
     %
     % INPUTS:
     %   fig       - Parent figure
@@ -302,13 +310,17 @@ function pathHandle = createPathDisplay(fig, phoneName, imageName, cfg)
         'FontSize', cfg.ui.fontSize.path, ...
         'FontWeight', 'normal', ...
         'Color', cfg.ui.colors.path, ...
-        'BackgroundColor', 'none', ...
+        'BackgroundColor', cfg.ui.overlay.backgroundColor, ...
+        'FaceAlpha', cfg.ui.overlay.textAlpha, ...
         'EdgeColor', 'none', ...
         'HorizontalAlignment', 'center', ...
         'VerticalAlignment', 'middle', ...
         'Interpreter', 'none', ...
-        'FitBoxToText', 'off', ...
-        'Margin', 1);
+        'FitBoxToText', 'on', ...
+        'Margin', 2);
+
+    makeNonInteractive(pathHandle);
+    centerAnnotationInBounds(pathHandle, cfg.ui.positions.pathDisplay);
 end
 
 function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
@@ -331,7 +343,7 @@ function [imgAxes, imgHandle] = createImageAxes(fig, img, cfg)
 end
 
 function instructionText = createInstructions(fig, cfg, customString)
-    % Create instruction text (no background - container provides it)
+    % Create instruction text with compact background
     %
     % INPUTS:
     %   fig          - Parent figure
@@ -350,13 +362,17 @@ function instructionText = createInstructions(fig, cfg, customString)
         'FontSize', cfg.ui.fontSize.instruction, ...
         'FontWeight', 'normal', ...
         'Color', cfg.ui.colors.foreground, ...
-        'BackgroundColor', 'none', ...
+        'BackgroundColor', cfg.ui.overlay.backgroundColor, ...
+        'FaceAlpha', cfg.ui.overlay.textAlpha, ...
         'EdgeColor', 'none', ...
         'HorizontalAlignment', 'center', ...
         'VerticalAlignment', 'bottom', ...
         'Interpreter', 'none', ...
-        'FitBoxToText', 'off', ...
-        'Margin', 1);
+        'FitBoxToText', 'on', ...
+        'Margin', 2);
+
+    makeNonInteractive(instructionText);
+    centerAnnotationInBounds(instructionText, cfg.ui.positions.instructions);
 end
 
 %% =========================================================================
@@ -364,7 +380,7 @@ end
 %% =========================================================================
 
 function stopButton = createStopButton(fig, cfg, callback)
-    % Create STOP button (inside text container, no separate background)
+    % Create STOP button
     %
     % INPUTS:
     %   fig      - Parent figure
@@ -389,7 +405,7 @@ function stopButton = createStopButton(fig, cfg, callback)
 end
 
 function runAIButton = createRunAIButton(fig, cfg, callback)
-    % Create RUN AI button (inside text container, no separate background)
+    % Create RUN AI button
     %
     % INPUTS:
     %   fig      - Parent figure
@@ -769,8 +785,10 @@ function statusLabel = createAIStatusLabel(fig, cfg)
         'EdgeColor', 'none', ...
         'HorizontalAlignment', 'center', ...
         'VerticalAlignment', 'middle', ...
-        'Margin', 1, ...
+        'Margin', 2, ...
         'Visible', 'off');
+
+    makeNonInteractive(statusLabel);
 end
 
 %% =========================================================================

@@ -89,7 +89,7 @@ Modular utility functions organized by functionality. Each returns a struct of f
 - **Stage Independence:** Read from `N_*`, write to `(N+1)_*`
 - **Phone-based Organization:** Subdirectories per phone model
 - **Consolidated Coordinates:** Phone-level `coordinates.txt` files
-- **AI Detection:** YOLOv11 pose keypoint detection for test zones
+- **AI Detection:** YOLOv8 pose keypoint detection for test zones
 
 ## File Formats
 
@@ -110,11 +110,11 @@ Two model configurations available:
 
 | Mode | Model | Resolution | Command |
 |------|-------|------------|---------|
-| Desktop | yolo11s-pose | 1280x1280 | `python train_yolo.py` |
-| Mobile | yolo11n-pose | 640x640 | `python train_yolo.py --mobile` |
+| Desktop | yolov8m-pose | 1280x1280 | `python train_yolo.py` |
+| Mobile | yolov8n-pose | 640x640 | `python train_yolo.py --small` |
 
 **Key flags:**
-- `--mobile`: Use mobile-optimized settings (nano model, 640px, reduced augmentation)
+- `--small`: Use mobile-optimized settings (nano model, 640px, reduced augmentation)
 - `--name`: Custom experiment name (auto-generated if omitted)
 - `--validate`: Validate trained model
 - `--export`: Export to TFLite for deployment
@@ -125,7 +125,7 @@ Two model configurations available:
 cut_micropads('useAIDetection', true)
 
 % Mobile model
-cut_micropads('useAIDetection', true, 'useMobileModel', true)
+cut_micropads('useAIDetection', true, 'detectionModel', true)
 ```
 
 ## Critical Patterns

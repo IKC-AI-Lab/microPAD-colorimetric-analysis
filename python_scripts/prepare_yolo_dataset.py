@@ -12,7 +12,7 @@ This script restructures the augmented dataset for YOLO training:
 MATLAB scripts (augment_dataset.m) generate images and quad coordinates.
 This Python script converts coordinates to YOLO pose keypoint format and restructures directories.
 
-Label Format (YOLOv11-pose - DEFAULT):
+Label Format (YOLOv8-pose - DEFAULT):
     class_id x_center y_center width height x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4
     - Bounding box: axis-aligned bbox around keypoints (normalized [0,1])
     - Keypoints: 4 corners ordered clockwise from top-left (TL, TR, BR, BL)
@@ -270,7 +270,7 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
     """Generate YOLO labels from MATLAB coordinates.
 
     Reads polygon coordinates from augmented_2_micropads/[phone]/coordinates.txt
-    and creates YOLOv11 labels in augmented_1_dataset/[phone]/labels/.
+    and creates YOLOv8 labels in augmented_1_dataset/[phone]/labels/.
 
     Label formats:
         - 'pose': class_id x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2 (keypoint format, default)
@@ -569,6 +569,49 @@ def print_summary(
     print("="*60)
 
 
+def verify_label_directories(phone_dirs: List[str]) -> bool:
+    """Verify that label directories exist for all phone directories.
+
+    YOLO expects labels in a directory named 'labels/' directly (no symlinks).
+    This function verifies the directories exist before training.
+
+    Args:
+        phone_dirs: List of phone directory names
+
+    Returns:
+        True if all label directories exist, False otherwise
+    """
+    missing_dirs = []
+
+    for phone in phone_dirs:
+        phone_path = AUGMENTED_DATASET / phone
+        labels_dir = phone_path / "labels"
+
+        if not labels_dir.exists():
+            missing_dirs.append(str(labels_dir))
+
+    if missing_dirs:
+        print(f"WARNING: Missing label directories:")
+        for d in missing_dirs[:5]:  # Show first 5
+            print(f"  - {d}")
+        if len(missing_dirs) > 5:
+            print(f"  ... and {len(missing_dirs) - 5} more")
+        return False
+
+    print(f"[OK] Label directories verified for {len(phone_dirs)} phone(s)")
+    return True
+
+
+# Keep old name as alias for backward compatibility
+def setup_label_symlinks(phone_dirs: List[str], format_type: str = 'pose') -> None:
+    """Deprecated: Use verify_label_directories instead.
+
+    This function is kept for backward compatibility but just calls
+    verify_label_directories. The format_type parameter is ignored.
+    """
+    verify_label_directories(phone_dirs)
+
+
 def verify_labels(phone_dirs: List[str]) -> bool:
     """Verify that label files exist for all images.
 
@@ -617,7 +660,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=['pose', 'seg'],
         default='pose',
-        help="Label format: 'pose' for YOLOv11-pose (default), 'seg' for segmentation (deprecated)"
+        help="Label format: 'pose' for YOLOv8-pose (default), 'seg' for segmentation (deprecated)"
     )
     parser.add_argument(
         "--seed",

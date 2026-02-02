@@ -191,6 +191,10 @@ function [quadParams, found, rotation] = loadQuadCoordinates(coordFile, imageNam
                 quadParams(validCount, :, :) = reshape(coords, 2, 4)';
 
                 % Extract rotation from column 11 (first valid row only)
+                % NOTE: When multiple quads have different rotation hints, only the first
+                % row's rotation is returned. This is intentional as rotation is a per-image
+                % UI alignment hint (see cut_micropads.m), not per-quad metadata. All quads
+                % from the same source image share the same orientation.
                 if validCount == 1
                     rowRotation = str2double(parts{11});
                     if isfinite(rowRotation)

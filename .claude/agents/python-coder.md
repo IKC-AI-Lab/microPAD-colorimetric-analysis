@@ -80,7 +80,7 @@ Apply judgment based on project needs, industry standards, and existing patterns
 ```
 1. MATLAB: Generate augmented data → augmented_1_dataset/, augmented_2_micropads/coordinates.txt
 2. Python: Read coordinates → Generate YOLO labels → augmented_1_dataset/[phone]/labels/
-3. Python: Train model → models/yolo11n_micropad_seg.pt
+3. Python: Train model → models/yolov8m-micropad-pose-640.pt
 4. MATLAB: Call Python inference helper → detect_quads.py → polygon predictions
 ```
 
