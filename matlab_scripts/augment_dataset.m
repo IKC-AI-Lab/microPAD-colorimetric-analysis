@@ -1,7 +1,14 @@
 function augment_dataset(varargin)
     %% microPAD Colorimetric Analysis — Dataset Augmentation Tool
-    %% Generates synthetic training datasets from microPAD paper images for polygon detection
+    %% Generates synthetic training datasets from microPAD paper images for quadrilateral detection
     %% Author: Veysel Y. Yilmaz
+    %
+    % PURPOSE: YOLO KEYPOINT DETECTION TRAINING ONLY
+    %   This augmentation pipeline generates synthetic data for training YOLO keypoint
+    %   detection models to locate test zone quadrilaterals. It is NOT intended for:
+    %   - Colorimetric feature extraction (use extract_features.m with real data)
+    %   - Training concentration prediction models
+    %   The augmentations prioritize detector robustness over color fidelity.
     %
     % FEATURES:
     % - Procedural textured backgrounds (uniform, speckled, laminate, skin)
@@ -10,16 +17,17 @@ function augment_dataset(varargin)
     % - Independent rotation per concentration region
     % - Collision detection to prevent overlap
     % - Optional photometric augmentation, white-balance jitter, and blur
-    % - Optional thin occlusions over polygons (hair/strap-like) for robustness
+    % - Optional ROI noise augmentation (camera sensor, screen capture, old photo, JPEG)
+    % - Optional thin occlusions over quads (hair/strap-like) for robustness
     % - Variable-density distractor artifacts (1-20 per image, unconstrained placement)
-    % - Polygon-shaped distractor generation for detection robustness
+    % - Quadrilateral-shaped distractor generation for detection robustness
     %
     % Generates synthetic training data by applying geometric and photometric
     % transformations to microPAD paper images and their labeled concentration regions.
     %
     % PIPELINE:
     % 1. Copy real captures from 1_dataset/ into augmented_1_dataset/ (passthrough)
-    % 2. Load polygon coordinates from 2_micropads/
+    % 2. Load quadrilateral coordinates from 2_micropads/
     % 3. Load ellipse coordinates from 3_elliptical_regions/ (optional)
     % 4. Generate N synthetic augmentations per paper (augIdx = 1..N)
     % 5. Write outputs to augmented_* directories
@@ -28,64 +36,106 @@ function augment_dataset(varargin)
     %   a) Shared perspective transformation (same for all regions from one paper)
     %   b) Shared rotation (same for all regions from one paper)
     %   c) Independent rotation (unique per region)
-    %   d) Random spatial translation (Gaussian-distributed, center-biased)
+    %   d) Random spatial translation (uniformly distributed within margins)
     %   e) Composite onto procedural background
     %
     % OUTPUT STRUCTURE:
     %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
-    %   augmented_2_micropads/[phone]/con_*/   - Polygon crops + coordinates.txt
+    %   augmented_2_micropads/[phone]/con_*/   - Quadrilateral crops + coordinates.txt
     %   augmented_3_elliptical_regions/[phone]/con_*/ - Elliptical patches + coordinates.txt
     %
     % IMPORTANT: If you change backgroundWidth/backgroundHeight parameters mid-session,
     % run 'clear functions' to reset the internal texture cache.
     %
     % Parameters (Name-Value):
-    % - 'numAugmentations' (positive integer, default 10): synthetic versions per paper
+    % - 'numAugmentations' (positive integer): synthetic versions per paper
     %   Note: Real captures are always copied; synthetic scenes are labelled *_aug_XXX
     % - 'rngSeed' (numeric, optional): for reproducibility
     % - 'phones' (cellstr/string array): subset of phones to process
-    % - 'backgroundWidth' (positive integer, default 4000): synthetic background width override
-    % - 'backgroundHeight' (positive integer, default 3000): synthetic background height override
-    % - 'scenePrefix' (char/string, default 'synthetic'): synthetic filename prefix
-    % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
-    % - 'blurProbability' (0-1, default 0.25): fraction of samples with Gaussian blur
-    % - 'motionBlurProbability' (0-1, default 0.15): fraction of samples with motion blur
-    % - 'occlusionProbability' (0-1, default 0.0): fraction of samples with thin occlusions
-    % - 'independentRotation' (logical, default true): enable per-polygon rotation
-    % - 'extremeCasesProbability' (0-1, default 0.10): fraction using extreme viewpoints
-    % - 'enableDistractorPolygons' (logical, default true): add synthetic look-alike distractors
-    % - 'distractorMultiplier' (numeric, default 0.6): scale factor for distractor count
-    % - 'distractorMaxCount' (integer, default 6): maximum distractors per scene
-    % - 'paperDamageProbability' (0-1, default 0.5): fraction of polygons with physical defects
+    % - 'backgroundWidth' (positive integer): synthetic background width override
+    % - 'backgroundHeight' (positive integer): synthetic background height override
+    % - 'scenePrefix' (char/string): Optional prefix for synthetic filenames.
+    %     Only applied when explicitly provided. Default: no prefix.
+    % - 'photometricAugmentation' (logical): enable color/lighting variation
+    % - 'blurProbability' (0-1): fraction of samples with Gaussian blur
+    % - 'motionBlurProbability' (0-1): fraction of samples with motion blur
+    % - 'occlusionProbability' (0-1): per-quad probability of thin occlusions
+    %     Note: Applied independently to each quad. With 7 quads at 0.12 each,
+    %     ~57% of images will have at least one occluded quad.
+    % - 'independentRotation' (logical): enable per-quad rotation
+    % - 'extremeCasesProbability' (0-1): fraction using extreme viewpoints
+    % - 'enableDistractorQuads' (logical): add synthetic look-alike distractors
+    % - 'distractorMultiplier' (numeric): scale factor for distractor count
+    % - 'distractorMaxCount' (integer): maximum distractors per scene
+    % - 'paperDamageProbability' (0-1): fraction of quads with physical defects
     % - 'damageSeed' (numeric, optional): RNG seed for reproducible damage patterns
-    % - 'damageProfileWeights' (struct, optional): custom damage profile probabilities
-    %     Default: struct('minimalWarp',0.30, 'cornerChew',0.45, 'sideCollapse',0.25)
-    % - 'maxAreaRemovalFraction' (0-1, default 0.40): max removable fraction (per ellipse or micropad fallback)
+    % - 'damageProfileWeights' (DEPRECATED, ignored): damage profiles no longer used
+    % - 'maxAreaRemovalFraction' (0-1): max removable fraction (per ellipse or micropad fallback)
+    % - 'applyROINoiseAugmentation' (logical): enable realistic sensor noise on ROIs
+    % - 'roiNoiseProfileWeights' (struct, optional): custom noise profile weights
+    %     Fields: camera, screen, old_photo, jpeg (weights must sum to 1)
+    %
+    % EDGE FEATHERING:
+    % - 'edgeFeatherWidth' (0-20, default 4): erosion amount in pixels for edge softening
+    %     Set to 0 to disable feathering (sharp edges). Higher values create wider
+    %     soft transitions at ROI boundaries for more natural blending.
+    % - 'edgeFeatherSigma' (positive, default auto): Gaussian blur sigma
+    %     Auto-computed as featherWidth/2 if not specified. Controls softness of falloff.
+    %
+    % IMAGE SIZE VARIATION:
+    % - 'imageSizeMinWidth' (integer): minimum synthetic image width
+    % - 'imageSizeMaxWidth' (integer): maximum synthetic image width
+    % - 'imageSizeMinHeight' (integer): minimum synthetic image height
+    % - 'imageSizeMaxHeight' (integer): maximum synthetic image height
+    %     Note: Each augmentation samples a random size within these bounds.
+    %     Use backgroundWidth/backgroundHeight to override with fixed dimensions.
+    %
+    % ROI SIZE CONTROL (dimension-based):
+    % - 'roiSizeMin' (0-1): ROI's largest side >= this fraction of image's smallest side
+    % - 'roiSizeMax' (0-1): ROI's largest side <= this fraction of image's smallest side
+    % - 'roiFitMargin' (>=0): margin in pixels between ROI and image edge
+    % - 'roiCountSensitivity' (0-1): how much object count reduces max size
+    %     Note: Uses log-uniform sampling for perceptually even size distribution.
+    %     More objects → smaller effective max (models real-world photography).
+    %     Example: roiSizeMin=0.08, roiSizeMax=0.80 means ROI spans 8-80% of image.
+    %     With 7 objects and sensitivity=0.12, effective max becomes ~46%.
+    %
+    % OBJECT COUNT BALANCING:
+    % - 'balanceObjectCount' (logical): distribute augmentations across 1..N objects
+    %     When enabled, generates images with varying numbers of objects (1 to numQuads),
+    %     creating balanced training data for detection models. When disabled, all
+    %     augmentations use all available quads from each paper.
     %
     % PAPER DAMAGE AUGMENTATION:
-    %   Simulates realistic paper defects from storage, handling, and environmental factors.
-    %   Three damage profiles with different severity levels:
-    %     - minimalWarp (30%):   Subtle projective jitter + edge bending only
-    %     - cornerChew (45%):    Corner clips/tears + edge cuts + surface wear
-    %     - sideCollapse (25%):  Heavy side damage (bites dominate over corners)
-    %
-    %   Three-phase pipeline:
-    %     Phase 0: Prepare ellipse guard masks and core protection zone
-    %     Phase 1: Base warp & shear (projective jitter, nonlinear edge bending)
-    %     Phase 2: Structural cuts (corner clips, tears, side bites, tapered edges)
-    %     Phase 3: Edge wear & thickness (wave noise, fraying, shadows)
+    %   Simulates realistic paper defects from storage and handling.
+    %   Simplified to corner clips only, applied to outer zone of quad.
     %
     %   Protected regions (never damaged):
-    %     - Inner ellipse cores sized by (1 - maxAreaRemovalFraction) when labels exist
-    %     - Bridge paths connecting ellipses to polygon centroid (prevent islands)
-    %     - Core polygon fallback when ellipses are missing (same area fraction)
+    %     - Ellipse regions when ellipse coordinates are available (primary mechanism)
+    %     - Fallback: core guard zone sized by maxAreaRemovalFraction
+    %       This creates ~36% area protection when no ellipses exist
+    %   Note: Stains/occlusions use coreAreaFraction (60% area) from CORE_PROTECTION
     %
     % Examples:
     %   augment_dataset('numAugmentations', 5, 'rngSeed', 42)
     %   augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
     %   augment_dataset('paperDamageProbability', 0.7, 'damageSeed', 42)
-    %   augment_dataset('damageProfileWeights', struct('minimalWarp',0.5,'cornerChew',0.3,'sideCollapse',0.2))
     %   augment_dataset('maxAreaRemovalFraction', 0.3)
+    %   augment_dataset('applyROINoiseAugmentation', true, ...
+    %                   'roiNoiseProfileWeights', struct('camera', 0.5, 'screen', 0.3, 'old_photo', 0.1, 'jpeg', 0.1))
+    %
+    %   % Variable image sizes (800-2000 width, 600-1500 height)
+    %   augment_dataset('imageSizeMinWidth', 800, 'imageSizeMaxWidth', 2000, ...
+    %                   'imageSizeMinHeight', 600, 'imageSizeMaxHeight', 1500)
+    %
+    %   % ROI size range (10-60% of image dimension)
+    %   augment_dataset('roiSizeMin', 0.10, 'roiSizeMax', 0.60)
+    %
+    %   % Balanced object count distribution (images with 1..N objects)
+    %   augment_dataset('numAugmentations', 10, 'balanceObjectCount', true)
+    %
+    %   % Disable object count balancing (all images use all quads)
+    %   augment_dataset('balanceObjectCount', false)
 
     %% =====================================================================
     %% CONFIGURATION CONSTANTS
@@ -100,7 +150,7 @@ function augment_dataset(varargin)
     COORDINATE_FILENAME = 'coordinates.txt';
     CONCENTRATION_PREFIX = 'con_';
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
-    MIN_VALID_POLYGON_AREA = 100;  % square pixels
+    MIN_VALID_QUAD_AREA = 100;  % square pixels
 
     % Camera/transformation parameters
     CAMERA = struct( ...
@@ -129,7 +179,27 @@ function augment_dataset(varargin)
         'skinLowFreqStrength', 6, ...
         'skinMidFreqStrength', 2, ...
         'skinHighFreqStrength', 1, ...
-        'poolMaxMemoryMB', 512);
+        'poolMaxMemoryMB', 512, ...
+        'whiteRGBVariation', 2, ...
+        'whiteNoiseStrength', 3, ...
+        'ambientGradientCount', [2, 4], ...
+        'ambientGradientRadiusPercent', [0.30, 0.60], ...
+        'ambientGradientStrength', [0.02, 0.08], ...
+        'dropShadowOffsetRange', [2, 8], ...
+        'dropShadowBlurRange', [8, 15], ...
+        'dropShadowDarknessRange', [0.80, 0.90], ...  % Default (used for bgType 5)
+        'shadowProbabilityByBgType', [0.50, 0.45, 0.30, 0.40, 0.85], ...  % Per background type
+        'shadowDarknessByBgType', {{ ...
+            [0.88, 0.95], ...   % Type 1: Uniform (medium gray) - subtle
+            [0.90, 0.96], ...   % Type 2: Speckled (gray) - very subtle
+            [0.94, 0.98], ...   % Type 3: Laminate (can be dark) - minimal but present
+            [0.90, 0.97], ...   % Type 4: Skin tone - subtle
+            [0.80, 0.90] ...    % Type 5: White - most visible (original behavior)
+        }}, ...
+        'specularHighlightProb', 0.15, ...  % Probability of specular highlight per quad
+        'specularHighlightIntensityRange', [1.05, 1.25], ...  % Multiplicative intensity range
+        'specularHighlightRadiusRange', [0.05, 0.15], ...  % Fraction of quad diagonal
+        'specularHighlightBlurRange', [0.3, 0.6]);
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
@@ -150,18 +220,18 @@ function augment_dataset(varargin)
         'blobDarkIntensityRange', [-60, -30], ...  % uint8 intensity units
         'blobLightIntensityRange', [20, 50]);  % uint8 intensity units
 
-    % Polygon placement parameters
+    % Quad placement parameters
     PLACEMENT = struct( ...
         'margin', 50, ...  % pixels from edge
         'minSpacing', 30, ...  % pixels between regions
         'maxOverlapRetries', 5);
 
-    % Distractor polygon parameters (synthetic look-alikes)
-    DISTRACTOR_POLYGONS = struct( ...
+    % Distractor quadrilateral parameters (synthetic look-alikes)
+    DISTRACTOR_QUADS = struct( ...
         'enabled', true, ...
         'minCount', 1, ...
         'maxCount', 10, ...
-        'sizeScaleRange', [0.5, 1.5], ...  % fraction of original polygon size
+        'sizeScaleRange', [0.5, 1.5], ...  % fraction of original quad size
         'maxPlacementAttempts', 30, ...
         'brightnessOffsetRange', [-20, 20], ...  % uint8 intensity units
         'contrastScaleRange', [0.9, 1.15], ...
@@ -172,16 +242,51 @@ function augment_dataset(varargin)
         'textureSurfaceTypes', [1, 2, 3, 4]);        % Background texture primitives to reuse
 
     % Paper damage augmentation parameters
+    % NOTE: Simplified to corner clips only after Phase 3 refactor.
+    % Removed unused params: profileWeights, sideBiteRange, taperStrengthRange,
+    % edgeWaveAmplitudeRange, edgeWaveFrequencyRange, maxOperations
     PAPER_DAMAGE = struct( ...
-        'probability', 0.3, ...  % Fraction of polygons with damage
-        'profileWeights', struct('minimalWarp', 0.30, 'cornerChew', 0.45, 'sideCollapse', 0.25), ...
-        'cornerClipRange', [0.06, 0.22], ...  % Fraction of shorter side
-        'sideBiteRange', [0.08, 0.28], ...  % Fraction of side length
-        'taperStrengthRange', [0.10, 0.30], ...  % Fraction of perpendicular dimension
-        'edgeWaveAmplitudeRange', [0.01, 0.05], ...  % Fraction of min dimension
-        'edgeWaveFrequencyRange', [1.5, 3.0], ...  % Cycles along perimeter
-        'maxOperations', 3, ...  % Max destructive ops per polygon
+        'probability', 0.20, ...  % Fraction of quads with damage
+        'cornerClipRange', [0.10, 0.35], ...  % Fraction of edge length (corner clip depth)
         'maxAreaRemovalFraction', 0.40);  % Fraction allowed to be removed per ellipse (or micropad fallback)
+
+    % ROI noise augmentation parameters
+    ROI_NOISE = struct( ...
+        'enabled', true, ...
+        'profileWeights', struct( ...
+            'camera', 0.35, ...
+            'screen', 0.25, ...
+            'old_photo', 0.20, ...
+            'jpeg', 0.20));
+
+    % Core protection configuration (used by stains and occlusions)
+    % Note: Paper damage uses PAPER_DAMAGE.maxAreaRemovalFraction instead.
+    % maxOuterDamageFraction/minOuterDamageFraction are reference values only -
+    % corner clips naturally produce ~10-35% outer zone damage without enforcement.
+    CORE_PROTECTION = struct( ...
+        'coreAreaFraction', 0.60, ...
+        'maxOuterDamageFraction', 0.40, ...  % Reference: max acceptable
+        'minOuterDamageFraction', 0.02, ...  % Reference: min visible
+        'thinOcclusionMaxWidth', 3, ...
+        'thinOcclusionMinWidth', 1, ...
+        'thickOcclusionMinGap', 2, ...
+        'thickOcclusionMaxWidth', 15, ...
+        'thinOcclusionProbability', 0.40, ...
+        'thinOcclusionMaxLength', 0.5, ...
+        'thinOcclusionMaxCount', 2, ...
+        'thinOcclusionMaxContrast', 30, ...
+        'thinOcclusionMaxCoverage', 0.08, ...
+        'outerStainProbability', 0.15, ...
+        'outerStainOpacityRange', [0.30, 0.80], ...
+        'coreStainProbability', 0.05, ...
+        'coreStainMaxOpacity', 0.15, ...
+        'coreStainMaxCoverage', 0.05, ...
+        'maxOuterStainCoverage', 0.40, ...
+        'stainSemiMajorRange', [10, 50], ...  % pixels
+        'stainSemiMinorRange', [5, 25], ...   % pixels
+        'enablePerQuadShadows', false, ...
+        'enableValidation', false, ...
+        'occlusionTypeWeights', [0.60, 0.25, 0.15]);
 
     %% =====================================================================
     %% INPUT PARSING
@@ -189,25 +294,50 @@ function augment_dataset(varargin)
     parser = inputParser();
     parser.FunctionName = mfilename;
 
-    addParameter(parser, 'numAugmentations', 10, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
+    addParameter(parser, 'numAugmentations', 20, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',1}));
     addParameter(parser, 'rngSeed', [], @(n) isempty(n) || isnumeric(n));
     addParameter(parser, 'phones', {}, @(c) iscellstr(c) || isstring(c));
     addParameter(parser, 'backgroundWidth', 4000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>',0}));
     addParameter(parser, 'backgroundHeight', 3000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>',0}));
     addParameter(parser, 'scenePrefix', 'synthetic', @(s) validateattributes(s, {'char','string'}, {'scalartext'}));
     addParameter(parser, 'photometricAugmentation', true, @islogical);
-    addParameter(parser, 'blurProbability', 0.25, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
+    addParameter(parser, 'blurProbability', 0.20, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'motionBlurProbability', 0.15, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
-    addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
+    addParameter(parser, 'occlusionProbability', 0.12, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', true, @islogical);
-    addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(parser, 'enableDistractorPolygons', true, @islogical);
+    addParameter(parser, 'extremeCasesProbability', 0.08, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(parser, 'enableDistractorQuads', true, @islogical);
     addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
     addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
     addParameter(parser, 'paperDamageProbability', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
     addParameter(parser, 'damageSeed', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && isfinite(n)));
-    addParameter(parser, 'damageProfileWeights', [], @(s) isempty(s) || isstruct(s));
+    addParameter(parser, 'damageProfileWeights', [], @(s) isempty(s) || isstruct(s));  % DEPRECATED: profiles no longer used after simplification
     addParameter(parser, 'maxAreaRemovalFraction', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n >= 0 && n <= 1));
+    addParameter(parser, 'applyROINoiseAugmentation', true, @(x) validateattributes(x, {'logical'}, {'scalar'}));
+    addParameter(parser, 'roiNoiseProfileWeights', [], @(s) isempty(s) || isstruct(s));
+
+    % Image size bounds (variable synthetic image size)
+    addParameter(parser, 'imageSizeMinWidth', 1280, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',320}));
+    addParameter(parser, 'imageSizeMaxWidth', 5000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer'}));
+    addParameter(parser, 'imageSizeMinHeight', 1280, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',240}));
+    addParameter(parser, 'imageSizeMaxHeight', 5000, @(n) validateattributes(n, {'numeric'}, {'scalar','integer'}));
+
+    % ROI size control (dimension-based)
+    addParameter(parser, 'roiSizeMin', 0.08, @(n) validateattributes(n, {'numeric'}, {'scalar','>',0,'<=',1}));
+    addParameter(parser, 'roiSizeMax', 0.80, @(n) validateattributes(n, {'numeric'}, {'scalar','>',0,'<=',1}));
+    addParameter(parser, 'roiFitMargin', 20, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0}));
+    addParameter(parser, 'roiCountSensitivity', 0.12, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
+
+    % Object count balancing
+    addParameter(parser, 'balanceObjectCount', true, @islogical);
+
+    % Edge feathering for natural ROI blending
+    addParameter(parser, 'edgeFeatherWidth', 4, @(n) validateattributes(n, {'numeric'}, {'scalar','integer','>=',0,'<=',20}));
+    addParameter(parser, 'edgeFeatherSigma', [], @(n) isempty(n) || (isnumeric(n) && isscalar(n) && n > 0));
+    addParameter(parser, 'edgeFeatherProbability', 0.5, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
+
+    % Stale labels prevention
+    addParameter(parser, 'clearOutputOnRerun', true, @islogical);
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -228,11 +358,31 @@ function augment_dataset(varargin)
     customBgHeight = ~ismember('backgroundHeight', defaultsUsed);
     customScenePrefix = ~ismember('scenePrefix', defaultsUsed);
 
-    % Load homography utilities from helper script
-    homography = homography_utils();
+    %% Add helper_scripts to path (contains geometry_transform and other utilities)
+    scriptDir = fileparts(mfilename('fullpath'));
+    helperDir = fullfile(scriptDir, 'helper_scripts');
+    if exist(helperDir, 'dir')
+        addpath(helperDir);
+    end
+
+    %% Load utility modules
+    geomTform = geometry_transform();
+    imageIO = image_io();
+    pathUtils = path_utils();
+    augSynth = augmentation_synthesis();
+    coordIO = coordinate_io();  % Authoritative source for coordinate I/O
+    roiNoise = roi_noise();  % ROI noise augmentation
+    occlusionUtils = occlusion_utils();  % Occlusion generation
 
     % Build configuration
     cfg = struct();
+    cfg.geomTform = geomTform;
+    cfg.pathUtils = pathUtils;
+    cfg.imageIO = imageIO;
+    cfg.augSynth = augSynth;
+    cfg.coordIO = coordIO;
+    cfg.roiNoise = roiNoise;
+    cfg.occlusionUtils = occlusionUtils;
     cfg.numAugmentations = opts.numAugmentations;
     cfg.backgroundOverride = struct( ...
         'useWidth', customBgWidth, ...
@@ -255,13 +405,13 @@ function augment_dataset(varargin)
     cfg.supportedFormats = SUPPORTED_FORMATS;
     cfg.camera = CAMERA;
     cfg.rotationRange = ROTATION_RANGE;
-    cfg.minValidPolygonArea = MIN_VALID_POLYGON_AREA;
+    cfg.minValidQuadArea = MIN_VALID_QUAD_AREA;
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
-    cfg.distractors = DISTRACTOR_POLYGONS;
-    cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorPolygons;
+    cfg.distractors = DISTRACTOR_QUADS;
+    cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorQuads;
     cfg.distractors.multiplier = max(0, opts.distractorMultiplier);
     if opts.distractorMaxCount >= 0
         cfg.distractors.maxCount = max(opts.distractorMaxCount, 0);
@@ -281,61 +431,89 @@ function augment_dataset(varargin)
         cfg.damage.maxAreaRemovalFraction = opts.maxAreaRemovalFraction;
     end
     if ~isempty(opts.damageProfileWeights)
-        % Validate custom weights sum to ~1.0
-        customWeights = opts.damageProfileWeights;
-        expectedFields = {'minimalWarp', 'cornerChew', 'sideCollapse'};
-        actualFields = fieldnames(customWeights);
-        if ~isequal(sort(actualFields), sort(expectedFields))
-            error('augmentDataset:invalidWeights', ...
-                  'Custom damage profile weights must contain exactly these fields: %s', ...
-                  strjoin(expectedFields, ', '));
-        end
-        fieldNames = fieldnames(customWeights);
-        weightSum = 0;
-        for i = 1:numel(fieldNames)
-            fieldVal = customWeights.(fieldNames{i});
-            if fieldVal < 0
-                error('augmentDataset:invalidWeights', ...
-                      'Damage profile weight "%s" must be non-negative (got %.4f)', ...
-                      fieldNames{i}, fieldVal);
-            end
-            weightSum = weightSum + fieldVal;
-        end
-        if abs(weightSum - 1.0) > 1e-6
-            error('augmentDataset:invalidWeights', ...
-                  'Custom damage profile weights must sum to 1.0 (got %.4f)', weightSum);
-        end
-        cfg.damage.profileWeights = customWeights;
+        warning('augmentDataset:deprecatedParameter', ...
+                'damageProfileWeights is deprecated and has no effect. Paper damage now uses corner clips only.');
     end
-    
-    % Precompute profile sampling arrays for performance
-    cfg.damage.profileNames = fieldnames(cfg.damage.profileWeights);
-    profileWeightValues = zeros(numel(cfg.damage.profileNames), 1);
-    for i = 1:numel(cfg.damage.profileNames)
-        profileWeightValues(i) = cfg.damage.profileWeights.(cfg.damage.profileNames{i});
-    end
-    cfg.damage.profileCumWeights = cumsum(profileWeightValues);
-    
+
     % Validate range bounds
     if cfg.damage.cornerClipRange(2) <= cfg.damage.cornerClipRange(1)
         error('augmentDataset:invalidRange', 'cornerClipRange upper bound must exceed lower bound');
     end
-    if cfg.damage.sideBiteRange(2) <= cfg.damage.sideBiteRange(1)
-        error('augmentDataset:invalidRange', 'sideBiteRange upper bound must exceed lower bound');
-    end
-    if cfg.damage.taperStrengthRange(2) <= cfg.damage.taperStrengthRange(1)
-        error('augmentDataset:invalidRange', 'taperStrengthRange upper bound must exceed lower bound');
-    end
-    if cfg.damage.edgeWaveAmplitudeRange(2) <= cfg.damage.edgeWaveAmplitudeRange(1)
-        error('augmentDataset:invalidRange', 'edgeWaveAmplitudeRange upper bound must exceed lower bound');
-    end
-    if cfg.damage.edgeWaveFrequencyRange(2) <= cfg.damage.edgeWaveFrequencyRange(1)
-        error('augmentDataset:invalidRange', 'edgeWaveFrequencyRange upper bound must exceed lower bound');
-    end
     cfg.damage.rngSeed = opts.damageSeed;
 
+    % ROI noise augmentation configuration
+    cfg.roiNoiseConfig = ROI_NOISE;
+    cfg.roiNoiseConfig.enabled = cfg.roiNoiseConfig.enabled && opts.applyROINoiseAugmentation;
+    if ~isempty(opts.roiNoiseProfileWeights)
+        cfg.roiNoiseConfig.profileWeights = opts.roiNoiseProfileWeights;
+    end
+
+    % Core protection configuration
+    % Add sceneSpace function handles from augmentation_synthesis module to avoid duplication
+    cfg.coreProtection = CORE_PROTECTION;
+    cfg.coreProtection.getLocalScale = augSynth.sceneSpace.getLocalScale;
+    cfg.coreProtection.computeCoreDiagonal = augSynth.sceneSpace.computeCoreDiagonal;
+
+    % Image size bounds configuration (variable synthetic image size)
+    cfg.imageSizeBounds = struct( ...
+        'minWidth', opts.imageSizeMinWidth, ...
+        'maxWidth', opts.imageSizeMaxWidth, ...
+        'minHeight', opts.imageSizeMinHeight, ...
+        'maxHeight', opts.imageSizeMaxHeight);
+
+    % Validate image size bounds
+    if cfg.imageSizeBounds.maxWidth < cfg.imageSizeBounds.minWidth
+        error('augmentDataset:invalidRange', 'imageSizeMaxWidth must be >= imageSizeMinWidth');
+    end
+    if cfg.imageSizeBounds.maxHeight < cfg.imageSizeBounds.minHeight
+        error('augmentDataset:invalidRange', 'imageSizeMaxHeight must be >= imageSizeMinHeight');
+    end
+
+    % ROI size configuration (dimension-based scaling)
+    cfg.roiSize = struct( ...
+        'minFrac', opts.roiSizeMin, ...
+        'maxFrac', opts.roiSizeMax, ...
+        'fitMargin', opts.roiFitMargin, ...
+        'countSensitivity', opts.roiCountSensitivity, ...
+        'retries', 10);
+
+    % Validate ROI size bounds
+    if cfg.roiSize.maxFrac < cfg.roiSize.minFrac
+        error('augmentDataset:invalidRange', 'roiSizeMax must be >= roiSizeMin');
+    end
+
+    % Validate fitMargin against minimum image size from bounds
+    minImageDim = min(cfg.imageSizeBounds.minWidth, cfg.imageSizeBounds.minHeight);
+    if 2 * cfg.roiSize.fitMargin >= minImageDim
+        error('augmentDataset:fitMarginExceedsBounds', ...
+            'roiFitMargin (%d) too large for minimum image size (%d). Require 2*margin < min dimension.', ...
+            cfg.roiSize.fitMargin, minImageDim);
+    end
+
+    % Also validate fitMargin against explicit background dimension overrides
+    if cfg.backgroundOverride.useWidth && 2 * cfg.roiSize.fitMargin >= cfg.backgroundOverride.width
+        error('augmentDataset:fitMarginExceedsWidth', ...
+            'roiFitMargin (%d) too large for backgroundWidth (%d). Require 2*margin < width.', ...
+            cfg.roiSize.fitMargin, cfg.backgroundOverride.width);
+    end
+    if cfg.backgroundOverride.useHeight && 2 * cfg.roiSize.fitMargin >= cfg.backgroundOverride.height
+        error('augmentDataset:fitMarginExceedsHeight', ...
+            'roiFitMargin (%d) too large for backgroundHeight (%d). Require 2*margin < height.', ...
+            cfg.roiSize.fitMargin, cfg.backgroundOverride.height);
+    end
+
+    % Object count balancing configuration
+    cfg.balanceObjectCount = opts.balanceObjectCount;
+
+    % Edge feathering configuration (probabilistic: 50% soft edges, 50% hard edges by default)
+    cfg.edgeFeather = struct('width', opts.edgeFeatherWidth, 'sigma', opts.edgeFeatherSigma, ...
+                             'probability', opts.edgeFeatherProbability);
+
+    % Stale labels prevention configuration
+    cfg.clearOutputOnRerun = opts.clearOutputOnRerun;
+
     % Resolve paths
-    projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
+    projectRoot = pathUtils.findProjectRoot(DEFAULT_INPUT_STAGE1);
     cfg.projectRoot = projectRoot;
     cfg.paths = struct( ...
         'stage1Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE1), ...
@@ -364,7 +542,7 @@ function augment_dataset(varargin)
     requestedPhones = string(opts.phones);
     requestedPhones = requestedPhones(requestedPhones ~= "");
 
-    phoneList = list_phones(cfg.paths.stage1Input);
+    phoneList = pathUtils.listSubfolders(cfg.paths.stage1Input);
     if isempty(phoneList)
         error('augmentDataset:noPhones', 'No phone folders found in %s', cfg.paths.stage1Input);
     end
@@ -394,14 +572,20 @@ function augment_dataset(varargin)
     if cfg.backgroundOverride.useWidth || cfg.backgroundOverride.useHeight
         fprintf('Background override: width=%s, height=%s\n', widthStr, heightStr);
     else
-        fprintf('Background size: matches source image dimensions\n');
+        fprintf('Image size range: %d-%d x %d-%d px\n', ...
+            cfg.imageSizeBounds.minWidth, cfg.imageSizeBounds.maxWidth, ...
+            cfg.imageSizeBounds.minHeight, cfg.imageSizeBounds.maxHeight);
     end
+    fprintf('ROI size range: %.0f%%-%.0f%% of image (margin=%dpx, count sensitivity=%.2f)\n', ...
+        cfg.roiSize.minFrac * 100, cfg.roiSize.maxFrac * 100, ...
+        cfg.roiSize.fitMargin, cfg.roiSize.countSensitivity);
+    fprintf('Object count balancing: %s\n', char(string(cfg.balanceObjectCount)));
     if cfg.useScenePrefix
         fprintf('Scene prefix: %s\n', cfg.scenePrefix);
     else
         fprintf('Scene prefix: (none)\n');
     end
-    fprintf('Backgrounds: 4 types (uniform, speckled, laminate, skin)\n');
+    fprintf('Backgrounds: 5 types (uniform, speckled, laminate, skin, white+shadows)\n');
     fprintf('Photometric augmentation: %s\n', char(string(cfg.photometricAugmentation)));
     fprintf('Blur probability: %.1f%%\n', cfg.blurProbability * 100);
     fprintf('==================================\n');
@@ -434,15 +618,15 @@ function augment_phone(phoneName, cfg)
         return;
     end
 
-    % Load polygon coordinates from stage 2 (required)
+    % Load quadrilateral coordinates from stage 2 (required)
     if ~isfile(stage2PhoneCoords)
-        warning('augmentDataset:noPolygonCoords', 'No polygon coordinates for %s. Skipping.', phoneName);
+        warning('augmentDataset:noQuadCoords', 'No quad coordinates for %s. Skipping.', phoneName);
         return;
     end
 
-    polygonEntries = read_polygon_coordinates(stage2PhoneCoords);
-    if isempty(polygonEntries)
-        warning('augmentDataset:emptyPolygons', 'No valid polygon entries for %s', phoneName);
+    quadEntries = read_quad_coordinates(stage2PhoneCoords);
+    if isempty(quadEntries)
+        warning('augmentDataset:emptyQuads', 'No valid quad entries for %s', phoneName);
         return;
     end
 
@@ -454,28 +638,47 @@ function augment_phone(phoneName, cfg)
         ellipseEntries = read_ellipse_coordinates(ellipsePhoneCoords);
         hasEllipses = ~isempty(ellipseEntries);
     else
-        fprintf('  [INFO] No ellipse coordinates. Will process polygons only.\n');
+        fprintf('  [INFO] No ellipse coordinates. Will process quads only.\n');
     end
 
     % Build lookup structures
     ellipseMap = group_ellipses_by_parent(ellipseEntries, hasEllipses);
-    paperGroups = group_polygons_by_image(polygonEntries);
+    paperGroups = group_quads_by_image(quadEntries);
 
     % Create output directories
     stage1PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage1Output, phoneName);
     stage2PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage2Output, phoneName);
     stage3PhoneOut = fullfile(cfg.projectRoot, cfg.paths.stage3Output, phoneName);
-    ensure_folder(stage1PhoneOut);
-    ensure_folder(stage2PhoneOut);
+    cfg.pathUtils.ensureFolder(stage1PhoneOut);
+    cfg.pathUtils.ensureFolder(stage2PhoneOut);
     % Only create stage3 output folder if we have ellipse data
     if hasEllipses
-        ensure_folder(stage3PhoneOut);
+        cfg.pathUtils.ensureFolder(stage3PhoneOut);
+    end
+
+    % Clear output folders to prevent stale labels from previous runs
+    if cfg.clearOutputOnRerun
+        clear_folder_contents(stage1PhoneOut);
+        clear_folder_contents(stage2PhoneOut);
+        if hasEllipses
+            clear_folder_contents(stage3PhoneOut);
+        end
+    end
+
+    stage2CoordPath = fullfile(stage2PhoneOut, cfg.files.coordinates);
+    % Start fresh (don't load existing) when clearing outputs
+    stage2Map = init_stage2_map(stage2CoordPath, cfg.clearOutputOnRerun);
+    stage3Map = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    if hasEllipses
+        stage3CoordPath = fullfile(stage3PhoneOut, cfg.files.coordinates);
+        % Start fresh (don't load existing) when clearing outputs
+        stage3Map = init_stage3_map(stage3CoordPath, cfg.clearOutputOnRerun);
     end
 
     % Get unique paper names
     paperNames = keys(paperGroups);
     fprintf('  Total papers: %d\n', numel(paperNames));
-    fprintf('  Total polygons: %d\n', numel(polygonEntries));
+    fprintf('  Total quads: %d\n', numel(quadEntries));
     fprintf('  Total ellipses: %d\n', numel(ellipseEntries));
 
     % Process each paper
@@ -490,8 +693,8 @@ function augment_phone(phoneName, cfg)
             continue;
         end
 
-        % Load image once (using imread_raw to handle EXIF orientation)
-        stage1Img = imread_raw(imgPath);
+        % Load image once (using loadImageRaw to handle EXIF orientation)
+        stage1Img = cfg.imageIO.loadImageRaw(imgPath);
 
         % Convert grayscale to RGB (synthetic backgrounds are always RGB)
         if size(stage1Img, 3) == 1
@@ -500,36 +703,80 @@ function augment_phone(phoneName, cfg)
 
         imgExt = '.png';
 
-        % Get all polygons from this paper
-        polygons = paperGroups(paperBase);
+        % Get all quads from this paper
+        quads = paperGroups(paperBase);
+        quadCache = build_quad_cache(stage1Img, quads);
 
         % Emit passthrough sample (augIdx = 0) with original geometry
-        emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellipseMap, ...
+        emit_passthrough_sample(paperBase, stage1Img, quads, quadCache, ellipseMap, ...
                                  hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
-                                 stage3PhoneOut, cfg);
+                                 stage3PhoneOut, cfg, stage2Map, stage3Map);
 
         % Generate synthetic augmentations only
         if cfg.numAugmentations < 1
             continue;
         end
-        for augIdx = 1:cfg.numAugmentations
-            augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
-                                 hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
-                                 stage3PhoneOut, paperIdx, phoneName, cfg);
+
+        % Compute augmentation schedule for balanced object count distribution
+        schedule = compute_augmentation_schedule(numel(quads), cfg.numAugmentations, cfg.balanceObjectCount);
+        globalAugIdx = 0;
+
+        for schedIdx = 1:numel(schedule)
+            k = schedule(schedIdx).k;  % Number of objects to use
+            scheduleCount = schedule(schedIdx).count;  % Number of augmentations with k objects
+
+            for localIdx = 1:scheduleCount
+                globalAugIdx = globalAugIdx + 1;
+
+                % Select random subset of quads if balancing is enabled
+                if cfg.balanceObjectCount && k < numel(quads)
+                    selectedIndices = randperm(numel(quads), k);  % No Statistics Toolbox needed
+                    selectedQuads = quads(selectedIndices);
+                    selectedCache = quadCache(selectedIndices);
+                    selectedEllipseMap = filter_ellipse_map(ellipseMap, selectedQuads, paperBase);
+                else
+                    selectedQuads = quads;
+                    selectedCache = quadCache;
+                    selectedEllipseMap = ellipseMap;
+                end
+
+                augment_single_paper(paperBase, imgExt, stage1Img, selectedQuads, selectedEllipseMap, ...
+                                     hasEllipses, globalAugIdx, stage1PhoneOut, stage2PhoneOut, ...
+                                     stage3PhoneOut, paperIdx, phoneName, cfg, stage2Map, ...
+                                     stage3Map, selectedCache);
+            end
         end
     end
 
     % Paper damage summary logging
     if cfg.damage.probability > 0
-        fprintf('  Paper damage applied per polygon with %.0f%% probability\n', cfg.damage.probability * 100);
+        fprintf('  Paper damage applied per quad with %.0f%% probability\n', cfg.damage.probability * 100);
+    end
+
+    write_stage2_map(stage2Map, stage2PhoneOut, cfg.files.coordinates);
+    if hasEllipses && stage3Map.Count > 0
+        write_stage3_map(stage3Map, stage3PhoneOut, cfg.files.coordinates);
     end
 
 end
 
 %% -------------------------------------------------------------------------
-function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, ...
+function quadCache = build_quad_cache(stage1Img, quads)
+    quadCache = struct('quadImg', cell(numel(quads), 1), ...
+                       'contentBbox', cell(numel(quads), 1));
+
+    for idx = 1:numel(quads)
+        origVertices = double(quads(idx).vertices);
+        [quadImg, contentBbox] = extract_quad_masked(stage1Img, origVertices);
+        quadCache(idx).quadImg = quadImg;
+        quadCache(idx).contentBbox = contentBbox;
+    end
+end
+
+%% -------------------------------------------------------------------------
+function emit_passthrough_sample(paperBase, stage1Img, quads, quadCache, ellipseMap, ...
                                  hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
-                                 stage3PhoneOut, cfg)
+                                 stage3PhoneOut, cfg, stage2Map, stage3Map)
     % Generate aug_000 assets by reusing original captures without augmentation
 
     imgExt = '.png';
@@ -552,71 +799,76 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
               'Cannot emit passthrough scene %s: %s', sceneOutPath, writeErr.message);
     end
 
-    stage2Coords = cell(numel(polygons), 1);
-    % Pre-allocate for 3 ellipses per polygon (experimental design)
-    maxEllipsesPerPolygon = 3;
-    stage3Coords = cell(max(1, numel(polygons) * maxEllipsesPerPolygon), 1);
-    polyCount = 0;
+    stage2Coords = cell(numel(quads), 1);
+    % Pre-allocate for 3 ellipses per quad (experimental design)
+    maxEllipsesPerQuad = 3;
+    stage3Coords = cell(max(1, numel(quads) * maxEllipsesPerQuad), 1);
+    quadCount = 0;
     s2Count = 0;
     s3Count = 0;
 
-    for idx = 1:numel(polygons)
-        poly = polygons(idx);
-        origVertices = double(poly.vertices);
+    for idx = 1:numel(quads)
+        quad = quads(idx);
+        origVertices = double(quad.vertices);
 
-        if ~is_valid_polygon(origVertices, cfg.minValidPolygonArea)
-            warning('augmentDataset:passthroughInvalidPolygon', ...
-                    '  ! Polygon %s con %d invalid for passthrough. Skipping.', ...
-                    paperBase, poly.concentration);
+        if ~is_valid_quad(origVertices, cfg.minValidQuadArea)
+            warning('augmentDataset:passthroughInvalidQuad', ...
+                    '  ! Quad %s con %d invalid for passthrough. Skipping.', ...
+                    paperBase, quad.concentration);
             continue;
         end
 
-        [polygonImg, ~] = extract_polygon_masked(stage1Img, origVertices);
-        if isempty(polygonImg)
+        quadImg = quadCache(idx).quadImg;
+        if isempty(quadImg)
             warning('augmentDataset:passthroughEmptyCrop', ...
-                    '  ! Polygon %s con %d produced empty crop.', ...
-                    paperBase, poly.concentration);
+                    '  ! Quad %s con %d produced empty crop.', ...
+                    paperBase, quad.concentration);
             continue;
         end
 
-        concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
-        ensure_folder(concDir);
-        polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, poly.concentration, imgExt);
-        polygonOutPath = fullfile(concDir, polygonFileName);
-        imwrite(polygonImg, polygonOutPath);
+        concDir = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, quad.concentration));
+        cfg.pathUtils.ensureFolder(concDir);
+        quadFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, quad.concentration, imgExt);
+        quadOutPath = fullfile(concDir, quadFileName);
+        imwrite(quadImg, quadOutPath);
 
-        polyCount = polyCount + 1;
+        quadCount = quadCount + 1;
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
-            'image', polygonFileName, ...
-            'concentration', poly.concentration, ...
+            'image', quadFileName, ...
+            'concentration', quad.concentration, ...
             'vertices', origVertices, ...
-            'rotation', poly.rotation);
+            'rotation', quad.rotation);
 
-        ellipseKey = sprintf('%s#%d', paperBase, poly.concentration);
+        ellipseKey = sprintf('%s#%d', paperBase, quad.concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
             ellipseList = ellipseMap(ellipseKey);
+            % Get contentBbox for image-to-crop coordinate conversion
+            contentBbox = quadCache(idx).contentBbox;  % [minX, minY, width, height]
             for eIdx = 1:numel(ellipseList)
                 ellipseIn = ellipseList(eIdx);
+                % Convert ellipse center from image-space to crop-space
+                % Stage-3 coordinates are stored in image-space (per coordinate_io.m)
+                cropSpaceCenter = ellipseIn.center - [contentBbox(1)-1, contentBbox(2)-1];
                 ellipseGeom = struct( ...
-                    'center', ellipseIn.center, ...
+                    'center', cropSpaceCenter, ...
                     'semiMajor', ellipseIn.semiMajor, ...
                     'semiMinor', ellipseIn.semiMinor, ...
                     'rotation', ellipseIn.rotation);
 
-                [patchImg, patchValid] = crop_ellipse_patch(polygonImg, ellipseGeom);
+                [patchImg, patchValid] = crop_ellipse_patch(quadImg, ellipseGeom);
                 if ~patchValid || isempty(patchImg)
                     warning('augmentDataset:passthroughPatchInvalid', ...
                             '  ! Ellipse %s con %d rep %d invalid for passthrough.', ...
-                            paperBase, poly.concentration, ellipseIn.replicate);
+                            paperBase, quad.concentration, ellipseIn.replicate);
                     continue;
                 end
 
-                ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, poly.concentration));
-                ensure_folder(ellipseDir);
+                ellipseDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, quad.concentration));
+                cfg.pathUtils.ensureFolder(ellipseDir);
                 patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
-                                        poly.concentration, ellipseIn.replicate, imgExt);
+                                        quad.concentration, ellipseIn.replicate, imgExt);
                 patchOutPath = fullfile(ellipseDir, patchFileName);
                 imwrite(patchImg, patchOutPath);
 
@@ -625,8 +877,8 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
                     stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
-                    'image', polygonFileName, ...
-                    'concentration', poly.concentration, ...
+                    'image', patchFileName, ...
+                    'concentration', quad.concentration, ...
                     'replicate', ellipseIn.replicate, ...
                     'center', ellipseGeom.center, ...
                     'semiMajor', ellipseGeom.semiMajor, ...
@@ -636,9 +888,9 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
         end
     end
 
-    if polyCount == 0
-        warning('augmentDataset:passthroughNoPolygons', ...
-                '  ! No valid polygons for passthrough %s. Removing scene.', sceneName);
+    if quadCount == 0
+        warning('augmentDataset:passthroughNoQuads', ...
+                '  ! No valid quads for passthrough %s. Removing scene.', sceneName);
         if exist(sceneOutPath, 'file') == 2
             delete(sceneOutPath);
         end
@@ -648,90 +900,96 @@ function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, 
     stage2Coords = stage2Coords(1:s2Count);
     stage3Coords = stage3Coords(1:s3Count);
 
-    write_stage2_coordinates(stage2Coords, stage2PhoneOut, cfg.files.coordinates);
+    update_stage2_map(stage2Map, stage2Coords);
     if s3Count > 0
-        write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
+        update_stage3_map(stage3Map, stage3Coords);
     end
 
-    fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
+    fprintf('     Passthrough: %s (%d quads, %d ellipses)\n', ...
             sceneFileName, numel(stage2Coords), numel(stage3Coords));
 end
 
 %% -------------------------------------------------------------------------
-function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap, ...
+function augment_single_paper(paperBase, imgExt, stage1Img, quads, ellipseMap, ...
                                hasEllipses, augIdx, stage1PhoneOut, stage2PhoneOut, ...
-                               stage3PhoneOut, paperIdx, phoneName, cfg)
+                               stage3PhoneOut, paperIdx, phoneName, cfg, stage2Map, ...
+                               stage3Map, quadCache)
     % Generate one augmented version of a paper with all its concentration regions
-
-    [origHeight, origWidth, ~] = size(stage1Img);
 
     % Sample transformation (same for all regions in this augmentation)
     if rand() < cfg.extremeCasesProbability
-        % Extreme camera viewpoint
+        % Extreme camera viewpoint (more challenging than normal 60° max)
         extremeCamera = cfg.camera;
-        extremeCamera.maxAngleDeg = 75;
-        extremeCamera.zRange = [0.8, 4.0];
-        viewParams = homography.sample_viewpoint(extremeCamera);
+        extremeCamera.maxAngleDeg = 70;
+        extremeCamera.zRange = [0.8, 2.5];  % Closer range for more perspective distortion
+        viewParams = cfg.geomTform.homog.sampleViewpoint(extremeCamera);
+        activeCameraCfg = extremeCamera;
     else
         % Normal camera viewpoint
-        viewParams = homography.sample_viewpoint(cfg.camera);
+        viewParams = cfg.geomTform.homog.sampleViewpoint(cfg.camera);
+        activeCameraCfg = cfg.camera;
     end
-    tformPersp = homography.compute_homography(size(stage1Img), viewParams, cfg.camera);
-    rotAngle = homography.rand_range(cfg.rotationRange);
-    tformRot = homography.centered_rotation_tform(size(stage1Img), rotAngle);
+    tformPersp = cfg.geomTform.homog.computeHomography(size(stage1Img), viewParams, activeCameraCfg);
+    rotAngle = cfg.geomTform.homog.randRange(cfg.rotationRange);
+    tformRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), rotAngle);
 
     % Pre-allocate coordinate accumulators
-    % Stage 2: one entry per polygon (upper bound = validCount after validation)
-    % Stage 3: 3 ellipses per polygon (experimental design)
-    maxPolygons = numel(polygons);
-    maxEllipsesPerPolygon = 3;
-    stage2Coords = cell(maxPolygons, 1);
-    stage3Coords = cell(maxPolygons * maxEllipsesPerPolygon, 1);
+    % Stage 2: one entry per quad (upper bound = validCount after validation)
+    % Stage 3: 3 ellipses per quad (experimental design)
+    maxQuads = numel(quads);
+    maxEllipsesPerQuad = 3;
+    stage2Coords = cell(maxQuads, 1);
+    stage3Coords = cell(maxQuads * maxEllipsesPerQuad, 1);
     s2Count = 0;
     s3Count = 0;
 
-    % Cache deterministic hashes for reproducible per-polygon damage sampling
+    % Cache deterministic hashes for reproducible per-quad damage sampling
     phoneHash = stable_string_hash(phoneName);
     paperHash = stable_string_hash(paperBase);
 
-    % Temporary storage for transformed polygon crops and their properties
-    transformedRegions = cell(numel(polygons), 1);
+    % Temporary storage for transformed quad crops and their properties
+    transformedRegions = cell(numel(quads), 1);
     validCount = 0;
 
-    % Transform all polygons and extract crops
-    for polyIdx = 1:numel(polygons)
-        polyEntry = polygons(polyIdx);
-        concentration = polyEntry.concentration;
-        origVertices = polyEntry.vertices;
+    % Transform all quads and extract crops
+    for quadIdx = 1:numel(quads)
+        quadEntry = quads(quadIdx);
+        concentration = quadEntry.concentration;
+        origVertices = quadEntry.vertices;
 
         % Apply shared perspective transformation
-        augVertices = homography.transform_polygon(origVertices, tformPersp);
-        augVertices = homography.transform_polygon(augVertices, tformRot);
+        augVertices = cfg.geomTform.homog.transformQuad(origVertices, tformPersp);
+        augVertices = cfg.geomTform.homog.transformQuad(augVertices, tformRot);
 
-        % Apply independent rotation per polygon if enabled
+        % Apply independent rotation per quad if enabled
         if cfg.independentRotation
-            independentRotAngle = homography.rand_range(cfg.rotationRange);
-            tformIndepRot = homography.centered_rotation_tform(size(stage1Img), independentRotAngle);
+            independentRotAngle = cfg.geomTform.homog.randRange(cfg.rotationRange);
+            tformIndepRot = cfg.geomTform.homog.centeredRotationTform(size(stage1Img), independentRotAngle);
         else
             independentRotAngle = 0;
             tformIndepRot = affine2d(eye(3));
         end
-        augVertices = homography.transform_polygon(augVertices, tformIndepRot);
+        augVertices = cfg.geomTform.homog.transformQuad(augVertices, tformIndepRot);
 
-        % Validate transformed polygon
-        if ~is_valid_polygon(augVertices, cfg.minValidPolygonArea)
-            warning('augmentDataset:degeneratePolygon', ...
-                    '  ! Polygon %s con %d degenerate after transform. Skipping.', ...
+        % Validate transformed quad
+        if ~is_valid_quad(augVertices, cfg.minValidQuadArea)
+            warning('augmentDataset:degenerateQuad', ...
+                    '  ! Quad %s con %d degenerate after transform. Skipping.', ...
                     paperBase, concentration);
             continue;
         end
 
-        % Extract polygon content with masking
-        [polygonContent, contentBbox] = extract_polygon_masked(stage1Img, origVertices);
+        % Extract quad content with masking
+        quadContent = quadCache(quadIdx).quadImg;
+        contentBbox = quadCache(quadIdx).contentBbox;
 
         % Transform extracted content to match augmented shape
-        augPolygonImg = homography.transform_polygon_content(polygonContent, ...
+        % Returns both RGB (pre-multiplied at edges) and continuous alpha for compositing
+        [augQuadImg, augAlpha] = cfg.geomTform.homog.transformQuadContent(quadContent, ...
                                                   origVertices, augVertices, contentBbox);
+
+        % Note: Edge feathering is applied AFTER scaling (see scaling loop below)
+        % to ensure consistent feather width regardless of scale factor.
 
         % Convert augmented vertices to cropped coordinate space (shared by damage + ellipse transforms)
         minXCrop = min(augVertices(:,1));
@@ -743,16 +1001,16 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         ellipseKey = sprintf('%s#%d', paperBase, concentration);
         if hasEllipses && isKey(ellipseMap, ellipseKey)
             rawEllipseList = ellipseMap(ellipseKey);
-            ellipseAugList = homography.transform_region_ellipses( ...
+            ellipseAugList = cfg.geomTform.homog.transformRegionEllipses( ...
                 rawEllipseList, paperBase, concentration, origVertices, contentBbox, ...
                 augVertices, minXCrop, minYCrop, tformPersp, tformRot, ...
                 tformIndepRot, rotAngle + independentRotAngle);
         end
 
-        % Apply paper damage augmentation per polygon using configured probability
+        % Apply paper damage augmentation per quad using configured probability
         if cfg.damage.probability > 0
-            % Extract alpha mask from transformed polygon
-            polygonAlpha = any(augPolygonImg > 0, 3);  % Non-zero in any channel
+            % Convert continuous alpha to binary for damage operations
+            quadAlphaBinary = augAlpha > 0.5;
 
             % Apply damage (with deterministic RNG if seed provided)
             damageRng = [];
@@ -763,12 +1021,44 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                             paperIdx * 10000 + concentration * 100 + augIdx;
             end
 
-            [damagedRGB, ~, ~, ~, damageCornersCrop] = apply_paper_damage( ...
-                augPolygonImg, polygonAlpha, augVerticesCrop, ellipseAugList, cfg.damage, damageRng);
+            [damagedRGB, damagedAlpha, ~, ~, ~] = cfg.augSynth.damage.apply( ...
+                augQuadImg, quadAlphaBinary, augVerticesCrop, ellipseAugList, cfg.damage, damageRng);
 
-            % Replace augPolygonImg and propagate updated quadrilateral vertices
-            augPolygonImg = damagedRGB;
-            augVertices = damageCornersCrop + [minXCrop, minYCrop];
+            % Check if damage was actually applied by comparing masks
+            % Note: damageCorners is never updated by apply_paper_damage, so we detect
+            % damage via mask differences instead
+            damageWasApplied = ~isequal(damagedAlpha, quadAlphaBinary);
+
+            % Replace augQuadImg (vertices unchanged since damage doesn't modify corners)
+            augQuadImg = damagedRGB;
+
+            % Only use binary alpha if damage was applied (changes shape)
+            % Otherwise preserve continuous alpha for smooth edge compositing
+            if damageWasApplied
+                % Un-premultiply edge pixels that survive damage but had fractional alpha.
+                % These pixels have RGB = original * continuous_alpha, need to restore original
+                % so they composite correctly with the new binary alpha (prevents dark edges).
+                %
+                % Use ratio clamping (max 10x) rather than just alpha threshold to prevent
+                % extreme amplification that could cause bright rims from quantization noise.
+                % Alpha threshold 0.01 skips near-invisible pixels; ratio cap handles the rest.
+                MAX_UNPREMULTIPLY_RATIO = 10.0;
+                survivingEdges = damagedAlpha & (augAlpha < 0.99) & (augAlpha > 0.01);
+                if any(survivingEdges(:))
+                    % Compute capped ratio: min(1/alpha, MAX_RATIO)
+                    ratio = ones(size(augAlpha), 'double');
+                    ratio(survivingEdges) = min(MAX_UNPREMULTIPLY_RATIO, ...
+                        1.0 ./ double(augAlpha(survivingEdges)));
+                    for c = 1:3
+                        channel = double(augQuadImg(:,:,c));
+                        channel(survivingEdges) = channel(survivingEdges) .* ratio(survivingEdges);
+                        augQuadImg(:,:,c) = uint8(min(255, max(0, channel)));
+                    end
+                end
+                augAlpha = single(damagedAlpha);
+                % Note: Edge feathering is applied AFTER scaling to ensure
+                % consistent feather width regardless of scale factor.
+            end
         end
 
         % Store transformed region for later composition
@@ -776,11 +1066,12 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         transformedRegions{validCount} = struct( ...
             'concentration', concentration, ...
             'augVertices', augVertices, ...
-            'augPolygonImg', augPolygonImg, ...
+            'augQuadImg', augQuadImg, ...
+            'augAlpha', augAlpha, ...  % Continuous alpha for pre-multiplied compositing
             'contentBbox', contentBbox, ...
             'origVertices', origVertices, ...
             'independentRotAngle', independentRotAngle, ...
-            'originalRotation', polyEntry.rotation, ...
+            'originalRotation', quadEntry.rotation, ...
             'augEllipses', ellipseAugList);
     end
 
@@ -792,11 +1083,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         return;
     end
 
-    % Compute individual polygon bounding boxes for random placement
-    polygonBboxes = cell(validCount, 1);
+    % Compute individual quad bounding boxes for random placement
+    quadBboxes = cell(validCount, 1);
     for i = 1:validCount
         verts = transformedRegions{i}.augVertices;
-        polygonBboxes{i} = struct( ...
+        quadBboxes{i} = struct( ...
             'minX', min(verts(:,1)), ...
             'maxX', max(verts(:,1)), ...
             'minY', min(verts(:,2)), ...
@@ -805,9 +1096,11 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             'height', max(verts(:,2)) - min(verts(:,2)));
     end
 
-    % Start with default background size (real capture resolution)
-    bgWidth = origWidth;
-    bgHeight = origHeight;
+    % Sample random background dimensions within configured bounds
+    bgWidth = round(cfg.imageSizeBounds.minWidth + rand() * (cfg.imageSizeBounds.maxWidth - cfg.imageSizeBounds.minWidth));
+    bgHeight = round(cfg.imageSizeBounds.minHeight + rand() * (cfg.imageSizeBounds.maxHeight - cfg.imageSizeBounds.minHeight));
+
+    % Allow explicit override for backward compatibility
     if cfg.backgroundOverride.useWidth
         bgWidth = cfg.backgroundOverride.width;
     end
@@ -815,21 +1108,161 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         bgHeight = cfg.backgroundOverride.height;
     end
 
-    % Place polygons at random non-overlapping positions
-    % Calculate polygon density to adapt spacing requirements
-    totalPolygonArea = 0;
+    % Sample edge feathering decision once per augmentation (probabilistic: soft vs hard edges)
+    % When feathering is disabled for this augmentation, use 0 width (hard edges)
+    useFeathering = rand() < cfg.edgeFeather.probability;
+    effectiveFeatherWidth = useFeathering * cfg.edgeFeather.width;
+
+    % Store original (pre-scale) copies for retry logic
+    originalRegions = transformedRegions;
+    originalBboxes = quadBboxes;
+
+    % Apply randomized object scale with fit constraints
     for i = 1:validCount
-        bbox = polygonBboxes{i};
-        totalPolygonArea = totalPolygonArea + (bbox.width * bbox.height);
+        region = originalRegions{i};
+        bbox = originalBboxes{i};
+
+        % Sample scale factor using dimension-based constraints
+        scaleFactor = sample_roi_scale(cfg.roiSize, bgWidth, bgHeight, bbox.width, bbox.height, validCount);
+
+        % Scale quad content if scale factor is valid and not 1.0
+        if scaleFactor > 0 && abs(scaleFactor - 1.0) > 1e-6
+            % Convert vertices to relative coordinates for scaling
+            relativeVerts = region.augVertices - [bbox.minX, bbox.minY];
+
+            % Scale image, vertices, ellipses, and alpha
+            [scaledImg, scaledVerts, scaledEllipses, scaledAlpha] = scale_quad_content( ...
+                region.augQuadImg, relativeVerts, region.augEllipses, scaleFactor, region.augAlpha);
+
+            % Update transformed region with scaled content
+            transformedRegions{i}.augQuadImg = scaledImg;
+            transformedRegions{i}.augVertices = scaledVerts + [bbox.minX, bbox.minY] * scaleFactor;
+            transformedRegions{i}.augEllipses = scaledEllipses;
+            transformedRegions{i}.augAlpha = scaledAlpha;
+        end
+
+        % Apply edge feathering AFTER scaling for consistent feather width
+        % regardless of scale factor. This ensures e.g., 3px feather is always
+        % 3px in the final output, not 1.5px at 0.5x scale or 6px at 2x scale.
+        % Uses effectiveFeatherWidth (sampled probabilistically per-augmentation).
+        if effectiveFeatherWidth > 0
+            [featheredImg, featheredAlpha] = cfg.imageIO.featherQuadEdges( ...
+                transformedRegions{i}.augQuadImg, transformedRegions{i}.augAlpha, ...
+                effectiveFeatherWidth, cfg.edgeFeather.sigma);
+            transformedRegions{i}.augQuadImg = featheredImg;
+            transformedRegions{i}.augAlpha = featheredAlpha;
+        end
+
+        % Recompute bounding box after scaling (feathering doesn't change bounds)
+        verts = transformedRegions{i}.augVertices;
+        quadBboxes{i} = struct( ...
+            'minX', min(verts(:,1)), ...
+            'maxX', max(verts(:,1)), ...
+            'minY', min(verts(:,2)), ...
+            'maxY', max(verts(:,2)), ...
+            'width', max(verts(:,1)) - min(verts(:,1)), ...
+            'height', max(verts(:,2)) - min(verts(:,2)));
     end
-    randomPositions = place_polygons_nonoverlapping(polygonBboxes, ...
-                                                     bgWidth, bgHeight, ...
-                                                     cfg.placement.margin, ...
-                                                     cfg.placement.minSpacing, ...
-                                                     cfg.placement.maxOverlapRetries);
+
+    % Place quads at random non-overlapping positions with retry for scale adjustment
+    placementSuccess = false;
+    maxPlacementAttempts = cfg.roiSize.retries;
+
+    for placementAttempt = 1:maxPlacementAttempts
+        randomPositions = place_quads_nonoverlapping(quadBboxes, ...
+                                                         bgWidth, bgHeight, ...
+                                                         cfg.placement.margin, ...
+                                                         cfg.placement.minSpacing, ...
+                                                         cfg.placement.maxOverlapRetries);
+
+        % Verify all positions are valid (within bounds with margin for quad size)
+        allValid = true;
+        for i = 1:validCount
+            pos = randomPositions{i};
+            bbox = quadBboxes{i};
+            if isempty(pos) || pos.x < 0 || pos.y < 0 || ...
+               (pos.x + bbox.width > bgWidth) || (pos.y + bbox.height > bgHeight)
+                allValid = false;
+                break;
+            end
+        end
+
+        if allValid
+            placementSuccess = true;
+            break;
+        end
+
+        % If placement failed and more attempts remain, resample scales from ORIGINAL state
+        if placementAttempt < maxPlacementAttempts
+            for i = 1:validCount
+                % Use ORIGINAL unscaled region and bbox to avoid compounding
+                region = originalRegions{i};
+                origBbox = originalBboxes{i};
+
+                % Resample with a smaller scale factor (bias toward fitting)
+                % Reduce by 10% per retry attempt to progressively shrink
+                retryReduction = 0.9 ^ placementAttempt;
+                scaleFactor = sample_roi_scale(cfg.roiSize, bgWidth, bgHeight, ...
+                                               origBbox.width, origBbox.height, validCount) * retryReduction;
+
+                if scaleFactor > 0 && abs(scaleFactor - 1.0) > 1e-6
+                    relativeVerts = region.augVertices - [origBbox.minX, origBbox.minY];
+                    [scaledImg, scaledVerts, scaledEllipses, scaledAlpha] = scale_quad_content( ...
+                        region.augQuadImg, relativeVerts, region.augEllipses, scaleFactor, region.augAlpha);
+
+                    transformedRegions{i}.augQuadImg = scaledImg;
+                    transformedRegions{i}.augVertices = scaledVerts + [origBbox.minX, origBbox.minY] * scaleFactor;
+                    transformedRegions{i}.augEllipses = scaledEllipses;
+                    transformedRegions{i}.augAlpha = scaledAlpha;
+                else
+                    % Reset to original unscaled, unfeathered content to prevent
+                    % double feathering from previous iteration
+                    transformedRegions{i} = originalRegions{i};
+                end
+
+                % Apply edge feathering AFTER scaling (consistent with main loop)
+                % Uses effectiveFeatherWidth (sampled probabilistically per-augmentation).
+                if effectiveFeatherWidth > 0
+                    [featheredImg, featheredAlpha] = cfg.imageIO.featherQuadEdges( ...
+                        transformedRegions{i}.augQuadImg, transformedRegions{i}.augAlpha, ...
+                        effectiveFeatherWidth, cfg.edgeFeather.sigma);
+                    transformedRegions{i}.augQuadImg = featheredImg;
+                    transformedRegions{i}.augAlpha = featheredAlpha;
+                end
+
+                % Update bounding box
+                verts = transformedRegions{i}.augVertices;
+                quadBboxes{i} = struct( ...
+                    'minX', min(verts(:,1)), ...
+                    'maxX', max(verts(:,1)), ...
+                    'minY', min(verts(:,2)), ...
+                    'maxY', max(verts(:,2)), ...
+                    'width', max(verts(:,1)) - min(verts(:,1)), ...
+                    'height', max(verts(:,2)) - min(verts(:,2)));
+            end
+        end
+    end
+
+    if ~placementSuccess
+        warning('augmentDataset:placementFailed', ...
+                '  ! Placement failed for %s aug %d after %d attempts. Skipping this augmentation.', ...
+                paperBase, augIdx, maxPlacementAttempts);
+        return;  % Skip this augmentation to avoid coordinate/visual mismatch
+    end
 
     % Generate realistic background with final size
-    background = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
+    [background, bgType] = generate_realistic_lab_surface(bgWidth, bgHeight, cfg.texture, cfg.artifacts);
+
+    % Sample shared light direction once per scene (consistent across all quads)
+    lightAngle = rand() * 360;
+
+    % Determine if shadows should be applied for this scene based on bgType probability
+    shadowProbByType = cfg.texture.shadowProbabilityByBgType;
+    applyShadowsThisScene = rand() < shadowProbByType(bgType);
+
+    % Get darkness range for this background type
+    darknessByType = cfg.texture.shadowDarknessByBgType;
+    shadowDarknessRange = darknessByType{bgType};
 
     % Composite each region onto background and save outputs
     if cfg.useScenePrefix
@@ -838,31 +1271,74 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         baseSceneId = paperBase;
     end
     sceneName = sprintf('%s_aug_%03d', baseSceneId, augIdx);
-    scenePolygons = cell(validCount, 1);
+    sceneQuads = cell(validCount, 1);
     occupiedBboxes = zeros(validCount, 4);
-    polygonIdx = 0;
+    quadIdx = 0;
+
+    % Collect quad vertices for ROI noise augmentation
+    sceneQuadVertices = cell(validCount, 1);
+
+    % Store crop metadata for saving AFTER scene augmentations
+    % This ensures crops include all augmentations (distractors, stains, ROI noise, photometric, blur)
+    cropMetadata = cell(validCount, 1);
 
     for i = 1:validCount
         region = transformedRegions{i};
         concentration = region.concentration;
         augVertices = region.augVertices;
-        augPolygonImg = region.augPolygonImg;
+        augQuadImg = region.augQuadImg;
+        augAlpha = region.augAlpha;  % Continuous alpha for pre-multiplied compositing
 
-        % Get random position for this polygon
+        % Get random position for this quad
         pos = randomPositions{i};
 
-        % Compute offset to move polygon from its current position to random position
+        % Compute offset to move quad from its current position to random position
         % Random position specifies the top-left corner of the bounding box
-        currentMinX = polygonBboxes{i}.minX;
-        currentMinY = polygonBboxes{i}.minY;
+        currentMinX = quadBboxes{i}.minX;
+        currentMinY = quadBboxes{i}.minY;
         offsetX = pos.x - currentMinX;
         offsetY = pos.y - currentMinY;
 
         % Translate vertices to background coordinates
         sceneVertices = augVertices + [offsetX, offsetY];
 
-        % Composite onto background
-        background = composite_to_background(background, augPolygonImg, sceneVertices);
+        % Apply drop shadow with adaptive darkness based on background type
+        if applyShadowsThisScene
+            % Create shadow params with bgType-specific darkness range
+            shadowParams = struct( ...
+                'dropShadowOffsetRange', cfg.texture.dropShadowOffsetRange, ...
+                'dropShadowBlurRange', cfg.texture.dropShadowBlurRange, ...
+                'dropShadowDarknessRange', shadowDarknessRange);
+
+            % Generate and apply drop shadow
+            imgSize = [size(background, 1), size(background, 2)];
+            shadowMask = cfg.augSynth.shadows.generateDropShadow( ...
+                sceneVertices, lightAngle, imgSize, shadowParams);
+
+            % Compute shadow region bounding box (account for shadow offset and blur)
+            % Use max offset + 3-sigma Gaussian tail for proper coverage
+            shadowExpand = cfg.texture.dropShadowOffsetRange(2) + 3 * cfg.texture.dropShadowBlurRange(2);
+            minX = max(1, floor(min(sceneVertices(:,1))) - shadowExpand);
+            maxX = min(size(background, 2), ceil(max(sceneVertices(:,1))) + shadowExpand);
+            minY = max(1, floor(min(sceneVertices(:,2))) - shadowExpand);
+            maxY = min(size(background, 1), ceil(max(sceneVertices(:,2))) + shadowExpand);
+
+            % Apply shadow mask to background region (per-channel multiply)
+            if maxX >= minX && maxY >= minY
+                bgRegion = background(minY:maxY, minX:maxX, :);
+                shadowRegion = shadowMask(minY:maxY, minX:maxX);
+                for c = 1:3
+                    bgRegion(:,:,c) = uint8(double(bgRegion(:,:,c)) .* shadowRegion);
+                end
+                background(minY:maxY, minX:maxX, :) = bgRegion;
+            end
+        end
+
+        % Composite onto background using pre-multiplied alpha
+        background = composite_to_background(background, augQuadImg, sceneVertices, augAlpha);
+
+        % Collect quad vertices for ROI noise augmentation
+        sceneQuadVertices{i} = sceneVertices;
 
         % Paper lies flat on surface; no shadows needed
         minSceneX = min(sceneVertices(:,1));
@@ -871,61 +1347,70 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         maxSceneY = max(sceneVertices(:,2));
         occupiedBboxes(i, :) = [minSceneX, minSceneY, maxSceneX, maxSceneY];
 
-        % Save polygon crop (stage 2 output)
+        % Prepare quad output path (saving deferred until after scene augmentations)
         concDirOut = fullfile(stage2PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
-        ensure_folder(concDirOut);
+        cfg.pathUtils.ensureFolder(concDirOut);
 
-        polygonFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, concentration, imgExt);
-        polygonOutPath = fullfile(concDirOut, polygonFileName);
-        imwrite(augPolygonImg, polygonOutPath);
+        quadFileName = sprintf('%s_%s%d%s', sceneName, cfg.concPrefix, concentration, imgExt);
+        quadOutPath = fullfile(concDirOut, quadFileName);
 
-        % Record stage 2 coordinates (polygon in scene)
+        % Store crop metadata for saving AFTER all scene augmentations
+        % This ensures stage 2/3 crops include distractors, stains, ROI noise, photometric, blur
+        cropMetadata{i} = struct( ...
+            'quadOutPath', quadOutPath, ...
+            'concentration', concentration, ...
+            'ellipseCropList', region.augEllipses, ...
+            'stage3PhoneOut', stage3PhoneOut);
+
+        % Record stage 2 coordinates (quad in scene)
         % Compute total applied rotation and update saved rotation field
+        %
+        % ROTATION SEMANTICS:
+        %   The rotation field in Stage 2 coordinates is a UI-only alignment hint
+        %   (see cut_micropads.m documentation). When augmenting:
+        %   - originalRotation: The source image's UI hint (from 2_micropads)
+        %   - totalAppliedRotation: Sum of scene rotation + any independent quad rotation
+        %   - augmentedRotation: Adjusted hint for the augmented image
+        %
+        %   Formula: augmentedRotation = originalRotation - totalAppliedRotation
+        %   This ensures that if a user loads the augmented image in the UI and applies
+        %   the saved rotation, the visual alignment is preserved.
         totalAppliedRotation = rotAngle + region.independentRotAngle;
-        augmentedRotation = homography.normalizeAngle(region.originalRotation - totalAppliedRotation);
+        augmentedRotation = cfg.geomTform.normalizeAngle(region.originalRotation - totalAppliedRotation);
 
         s2Count = s2Count + 1;
         stage2Coords{s2Count} = struct( ...
-            'image', polygonFileName, ...
+            'image', quadFileName, ...
             'concentration', concentration, ...
             'vertices', sceneVertices, ...
             'rotation', augmentedRotation);
 
-        % Track polygon in scene space for optional occlusions
-        polygonIdx = polygonIdx + 1;
-        scenePolygons{polygonIdx} = sceneVertices;
+        % Track quad in scene space for optional occlusions
+        quadIdx = quadIdx + 1;
+        sceneQuads{quadIdx} = sceneVertices;
 
-        % Process ellipses for this concentration (stage 3)
+        % Record stage 3 coordinates (ellipse in quad-crop space)
+        % NOTE: These coordinates are in QUAD-CROP space (not scene space) and are keyed
+        % by patch filenames. They are NOT intended for use with extract_features.m, which
+        % expects scene base names and scene-space coordinates. Augmented Stage 3 data is
+        % preserved for potential future use but is currently not consumed by downstream tools.
+        % Saving deferred until after scene augmentations
         ellipseCropList = region.augEllipses;
         if hasEllipses && ~isempty(ellipseCropList)
             for eIdx = 1:numel(ellipseCropList)
                 ellipseCrop = ellipseCropList(eIdx);
                 replicateId = ellipseCrop.replicate;
 
-                % Extract ellipse patch
-                [patchImg, patchValid] = crop_ellipse_patch(augPolygonImg, ellipseCrop);
-                if ~patchValid
-                    warning('augmentDataset:patchInvalid', ...
-                            '  ! Ellipse patch %s con %d rep %d invalid. Skipping.', ...
-                            paperBase, concentration, replicateId);
-                    continue;
-                end
+                % Compute patch filename (must match the filename used when saving at lines 1496-1497)
+                patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, concentration, replicateId, imgExt);
 
-                % Save ellipse patch (stage 3 output)
-                ellipseConcDir = fullfile(stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, concentration));
-                ensure_folder(ellipseConcDir);
-                patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
-                                        concentration, replicateId, imgExt);
-                patchOutPath = fullfile(ellipseConcDir, patchFileName);
-                imwrite(patchImg, patchOutPath);
-
-                % Record stage 3 coordinates (ellipse in polygon-crop space)
+                % Record stage 3 coordinates (ellipse in quad-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
                     stage3Coords = [stage3Coords; cell(s3Count, 1)]; %#ok<AGROW> % Rare case: more ellipses than expected
                 end
                 stage3Coords{s3Count} = struct( ...
-                    'image', polygonFileName, ...
+                    'image', patchFileName, ...
                     'concentration', concentration, ...
                     'replicate', replicateId, ...
                     'center', ellipseCrop.center, ...
@@ -937,37 +1422,102 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
 
     end
 
-    % Trim scenePolygons to actual size
-    scenePolygons = scenePolygons(1:polygonIdx);
+    % Trim sceneQuads to actual size
+    sceneQuads = sceneQuads(1:quadIdx);
 
     additionalDistractors = 0;
     if cfg.distractors.enabled && cfg.distractors.multiplier > 0
-        [background, additionalDistractors] = add_polygon_distractors(background, transformedRegions, polygonBboxes, occupiedBboxes, cfg);
+        [background, additionalDistractors] = add_quad_distractors(background, transformedRegions, quadBboxes, occupiedBboxes, cfg);
     end
 
-    % Optional: add thin occlusions (e.g., hair/strap-like) over polygons
-    if cfg.occlusionProbability > 0 && ~isempty(scenePolygons)
-        background = add_polygon_occlusions(background, scenePolygons, cfg.occlusionProbability);
+    % Apply per-quad augmentations: paper stains and occlusions
+    if ~isempty(sceneQuads)
+        for qIdx = 1:numel(sceneQuads)
+            verts = sceneQuads{qIdx};
+            if isempty(verts) || any(~isfinite(verts(:)))
+                continue;
+            end
+
+            % Create masks for this quad
+            [imgH, imgW, ~] = size(background);
+            quadMask = poly2mask(verts(:,1), verts(:,2), imgH, imgW);
+
+            % Compute core mask
+            coreScale = getCoreScale(cfg.coreProtection.coreAreaFraction);
+            coreVertices = shrink_quad_toward_centroid(verts, coreScale);
+            coreMask = poly2mask(coreVertices(:,1), coreVertices(:,2), imgH, imgW);
+            outerMask = quadMask & ~coreMask;
+
+            % Apply paper stains (post-composite, per-quad)
+            background = cfg.augSynth.stains.apply(background, quadMask, coreMask, cfg.coreProtection);
+
+            % Apply occlusions (if enabled)
+            if cfg.occlusionProbability > 0 && rand() < cfg.occlusionProbability
+                % Use identity transform (acceptable simplification - extreme viewpoints
+                % are a small fraction of samples, so local scale is close to 1.
+                % Full Jacobian-based conversion would add complexity for minimal benefit.)
+                quadTransform = eye(3);
+
+                % Apply occlusions (augRecord output unused - kept for debugging)
+                [background, ~] = cfg.occlusionUtils.addQuadOcclusions(background, quadMask, coreMask, coreVertices, ...
+                                                       outerMask, quadTransform, cfg.coreProtection, struct());
+            end
+
+            % Apply specular highlights (simulates phone camera reflections on laminated/glossy surfaces)
+            if rand() < cfg.texture.specularHighlightProb
+                background = cfg.augSynth.specular.apply(background, verts, cfg.texture);
+            end
+        end
+    end
+
+    % NOTE: Global projective jitter removed - applying geometric transforms after
+    % coordinate recording causes label/image mismatch. Other augmentations
+    % (rotation, perspective, viewpoint variation) provide sufficient geometric diversity.
+
+    % Apply ROI noise augmentation (before photometric augmentation)
+    % Track if JPEG was applied to prevent double compression in photometric step
+    jpegAlreadyApplied = false;
+    if cfg.roiNoiseConfig.enabled
+        % Create ROI mask from all quad vertices
+        [imgHeight, imgWidth, ~] = size(background);
+        roiMask = cfg.roiNoise.createMaskFromQuads(sceneQuadVertices, imgHeight, imgWidth);
+
+        % Only apply noise if ROI mask has pixels
+        if any(roiMask(:))
+            % Select noise profile
+            profileName = cfg.roiNoise.selectProfile(cfg.roiNoiseConfig.profileWeights);
+
+            % Track JPEG selection to prevent double compression (case-insensitive)
+            if strcmpi(profileName, 'jpeg')
+                jpegAlreadyApplied = true;
+            end
+
+            % Generate reproducible seed from current RNG state
+            roiNoiseSeed = randi(2^31 - 1);
+
+            % Apply noise to ROIs with soft edge blending (uses effectiveFeatherWidth: 0 for hard edges, cfg value for soft)
+            background = cfg.roiNoise.applyToROIs(background, roiMask, profileName, roiNoiseSeed, effectiveFeatherWidth);
+        end
     end
 
     % Apply photometric augmentation and non-overlapping blur before saving
     if cfg.photometricAugmentation
         % Phase 1.7: Extreme photometric conditions (low lighting)
         if rand() < cfg.extremeCasesProbability
-            background = apply_photometric_augmentation(background, 'extreme');
+            background = apply_photometric_augmentation(background, 'extreme', jpegAlreadyApplied);
         else
-            background = apply_photometric_augmentation(background, 'subtle');
+            background = apply_photometric_augmentation(background, 'subtle', jpegAlreadyApplied);
         end
     end
 
     % Ensure at most one blur type is applied to avoid double-softening
     blurApplied = false;
     if cfg.motionBlurProbability > 0 && rand() < cfg.motionBlurProbability
-        background = apply_motion_blur(background);
+        background = cfg.imageIO.applyMotionBlur(background);
         blurApplied = true;
     end
     if ~blurApplied && cfg.blurProbability > 0 && rand() < cfg.blurProbability
-        blurSigma = 0.25 + rand() * 0.40;  % [0.25, 0.65] pixels - very subtle
+        blurSigma = 0.5 + rand() * 1.5;  % [0.5, 2.0] pixels - realistic defocus/motion
         background = imgaussfilt(background, blurSigma);
     end
 
@@ -976,27 +1526,139 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
     imwrite(background, sceneOutPath);
 
+    % === Extract and save augmented crops from final scene ===
+    % Now that all scene augmentations are applied (distractors, stains, occlusions,
+    % ROI noise, photometric, blur), extract quad regions and ellipse patches.
+    % This ensures stage 2/3 crops match the augmented scene pixels.
+    for i = 1:validCount
+        meta = cropMetadata{i};
+        sceneVerts = sceneQuadVertices{i};
+
+        % Extract quad region from final augmented background
+        augmentedQuadCrop = extract_quad_from_scene(background, sceneVerts);
+        if isempty(augmentedQuadCrop)
+            warning('augmentDataset:extractFailed', ...
+                    '  ! Failed to extract quad %d from scene. Skipping crop save.', i);
+            continue;
+        end
+
+        % Save quad crop (stage 2 output)
+        imwrite(augmentedQuadCrop, meta.quadOutPath);
+
+        % Extract and save ellipse patches (stage 3 output)
+        if hasEllipses && ~isempty(meta.ellipseCropList)
+            for eIdx = 1:numel(meta.ellipseCropList)
+                ellipseCrop = meta.ellipseCropList(eIdx);
+                replicateId = ellipseCrop.replicate;
+
+                % Extract ellipse patch from augmented quad crop
+                [patchImg, patchValid] = crop_ellipse_patch(augmentedQuadCrop, ellipseCrop);
+                if ~patchValid
+                    warning('augmentDataset:patchInvalid', ...
+                            '  ! Ellipse patch %s con %d rep %d invalid after augmentation. Skipping.', ...
+                            paperBase, meta.concentration, replicateId);
+                    continue;
+                end
+
+                % Save ellipse patch (stage 3 output)
+                ellipseConcDir = fullfile(meta.stage3PhoneOut, sprintf('%s%d', cfg.concPrefix, meta.concentration));
+                cfg.pathUtils.ensureFolder(ellipseConcDir);
+                patchFileName = sprintf('%s_%s%d_rep%d%s', sceneName, cfg.concPrefix, ...
+                                        meta.concentration, replicateId, imgExt);
+                patchOutPath = fullfile(ellipseConcDir, patchFileName);
+                imwrite(patchImg, patchOutPath);
+            end
+        end
+    end
+
     % Trim coordinate arrays to actual size
     stage2Coords = stage2Coords(1:s2Count);
     stage3Coords = stage3Coords(1:s3Count);
 
     % Write coordinates
-    write_stage2_coordinates(stage2Coords, stage2PhoneOut, cfg.files.coordinates);
+    update_stage2_map(stage2Map, stage2Coords);
     if s3Count > 0
-        write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
+        update_stage3_map(stage3Map, stage3Coords);
     end
 
-    fprintf('     Generated: %s (%d polygons, %d ellipses, %d distractors)\n', ...
+    fprintf('     Generated: %s (%d quads, %d ellipses, %d distractors)\n', ...
             sceneFileName, numel(stage2Coords), numel(stage3Coords), additionalDistractors);
 end
+
+%% =========================================================================
+%% CORE PROTECTION HELPERS
+%% =========================================================================
+
+function coreScale = getCoreScale(coreAreaFraction)
+    % Compute coreScale from coreAreaFraction (SINGLE SOURCE OF TRUTH)
+    % coreScale is the linear scaling factor such that coreScale^2 = coreAreaFraction
+    coreScale = sqrt(coreAreaFraction);
+end
+
+function scaledVertices = shrink_quad_toward_centroid(vertices, scaleFactor)
+    % Shrink quad vertices toward centroid by scaleFactor
+    % scaleFactor = 0.775 for 60% area retention
+    centroid = mean(vertices, 1);
+    scaledVertices = (vertices - centroid) * scaleFactor + centroid;
+end
+
+function quadCrop = extract_quad_from_scene(sceneImg, sceneVerts)
+    % Extract quadrilateral region from augmented scene image
+    %
+    % This extracts the bounding box region that was composited onto the scene.
+    % Uses the same coordinate calculation as composite_to_background to ensure
+    % pixel-perfect alignment between scene and crop.
+    %
+    % INPUTS:
+    %   sceneImg   - Final augmented scene image (H x W x 3)
+    %   sceneVerts - 4x2 quad vertices in scene coordinates
+    %
+    % OUTPUTS:
+    %   quadCrop   - Extracted region from scene (may include background pixels
+    %                in corners outside the quad shape)
+
+    [imgH, imgW, ~] = size(sceneImg);
+
+    % Use same bounds calculation as composite_to_background for consistency
+    minX = max(1, floor(min(sceneVerts(:,1))));
+    maxX = min(imgW, ceil(max(sceneVerts(:,1))));
+    minY = max(1, floor(min(sceneVerts(:,2))));
+    maxY = min(imgH, ceil(max(sceneVerts(:,2))));
+
+    % Guard: degenerate region
+    if maxX < minX || maxY < minY
+        quadCrop = [];
+        return;
+    end
+
+    % Extract bounding box region from scene
+    quadCrop = sceneImg(minY:maxY, minX:maxX, :);
+end
+
+% NOTE: Paper stain functions (apply_paper_stains, generateIrregularStain,
+% shrinkMaskToCoverage, sampleRealisticStainColor, blendStain) have been moved to
+% augmentation_synthesis.m. Access via cfg.augSynth.stains.apply() and related functions.
 
 %% =========================================================================
 %% CORE PROCESSING FUNCTIONS
 %% =========================================================================
 
-function [content, bbox] = extract_polygon_masked(img, vertices)
-    % Extract polygon region with masking to avoid black pixels.
-    % Optimization: restrict poly2mask to the local bbox instead of the full frame.
+function [content, bbox] = extract_quad_masked(img, vertices)
+    % Extract quadrilateral region with masking to avoid black pixels.
+    %
+    % Delegates to mask_utils.cropWithQuadMask for consistent masking
+    % across all scripts. See mask_utils.m for authoritative implementation.
+    %
+    % OUTPUTS:
+    %   content - Cropped and masked image (bounding box size)
+    %   bbox    - [minX, minY, width, height] of cropped region
+    %
+    % See also: mask_utils.cropWithQuadMask
+
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
+    end
 
     [imgH, imgW, numChannels] = size(img);
 
@@ -1006,15 +1668,11 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
         return;
     end
 
-    minX = floor(min(vertices(:,1)));
-    maxX = ceil(max(vertices(:,1)));
-    minY = floor(min(vertices(:,2)));
-    maxY = ceil(max(vertices(:,2)));
-
-    minX = max(1, minX);
-    minY = max(1, minY);
-    maxX = min(imgW, maxX);
-    maxY = min(imgH, maxY);
+    % Compute bounding box for return value
+    minX = max(1, floor(min(vertices(:,1))));
+    maxX = min(imgW, ceil(max(vertices(:,1))));
+    minY = max(1, floor(min(vertices(:,2))));
+    maxY = min(imgH, ceil(max(vertices(:,2))));
 
     if maxX < minX || maxY < minY
         content = zeros(0, 0, numChannels, 'like', img);
@@ -1022,30 +1680,31 @@ function [content, bbox] = extract_polygon_masked(img, vertices)
         return;
     end
 
-    bboxWidth = maxX - minX + 1;
-    bboxHeight = maxY - minY + 1;
+    % Delegate masking to mask_utils
+    [content, ~] = masks.cropWithQuadMask(img, vertices);
 
-    relVerts = vertices - [minX - 1, minY - 1];
-
-    mask = poly2mask(relVerts(:,1), relVerts(:,2), bboxHeight, bboxWidth);
-    if ~any(mask(:))
+    if isempty(content)
         content = zeros(0, 0, numChannels, 'like', img);
         bbox = [1, 1, 0, 0];
         return;
     end
 
-    bboxContent = img(minY:maxY, minX:maxX, :);
-    if numChannels == 3
-        content = bboxContent .* cast(repmat(mask, [1, 1, 3]), 'like', bboxContent);
-    else
-        content = bboxContent .* cast(mask, 'like', bboxContent);
-    end
-
+    bboxWidth = maxX - minX + 1;
+    bboxHeight = maxY - minY + 1;
     bbox = [minX, minY, bboxWidth, bboxHeight];
 end
 
-function bg = composite_to_background(bg, polygonImg, sceneVerts)
-    % Composite transformed polygon onto background using per-channel alpha blending
+function bg = composite_to_background(bg, quadImg, sceneVerts, quadAlpha)
+    % Composite transformed quad onto background using pre-multiplied alpha blending
+    %
+    % When quadAlpha is provided (continuous 0-1), uses proper pre-multiplied
+    % alpha compositing: result = foreground + background * (1 - alpha)
+    % This correctly handles edge pixels where RGB is blended with black fill.
+    %
+    % When quadAlpha is not provided (backward compatibility for distractors),
+    % falls back to binary mask from color values.
+
+    hasProvidedAlpha = nargin >= 4 && ~isempty(quadAlpha);
 
     % Compute target region in background
     minX = max(1, floor(min(sceneVerts(:,1))));
@@ -1061,464 +1720,100 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
         return;
     end
 
-    % Resize polygon to target size only when necessary. In the common case the
-    % warped patch already matches the target bbox; skip extra resampling to
-    % preserve edges and save time.
-    [patchH, patchW, ~] = size(polygonImg);
-    if patchH == targetHeight && patchW == targetWidth
-        resized = polygonImg;
+    % Resize quad to target size only when necessary
+    [patchH, patchW, ~] = size(quadImg);
+    needsResize = patchH ~= targetHeight || patchW ~= targetWidth;
+
+    % Handle alpha mask and choose appropriate interpolation method
+    if hasProvidedAlpha
+        % With alpha: use bilinear for both RGB and alpha to maintain pre-multiplied
+        % relationship. Bilinear with black fill naturally preserves pre-multiplied
+        % state: RGB blends toward black at edges in proportion to alpha blend.
+        if needsResize
+            resized = imresize(quadImg, [targetHeight, targetWidth], 'bilinear');
+            resizedAlpha = imresize(quadAlpha, [targetHeight, targetWidth], 'bilinear');
+        else
+            resized = quadImg;
+            resizedAlpha = quadAlpha;
+        end
+        % Convert to double and clamp to [0,1] for robustness
+        alpha = max(0, min(1, double(resizedAlpha)));
     else
-        % Use nearest-neighbor to prevent color bleeding across masked boundaries
-        resized = imresize(polygonImg, [targetHeight, targetWidth], 'nearest');
+        % Without alpha (distractors): use nearest to avoid dark halos from
+        % bilinear blending with black, since mask is derived from color values
+        if needsResize
+            resized = imresize(quadImg, [targetHeight, targetWidth], 'nearest');
+        else
+            resized = quadImg;
+        end
+
+        % Backward compatibility: derive binary mask from color values (for distractors)
+        vertsTarget = sceneVerts - [minX - 1, minY - 1];
+        targetMask = poly2mask(vertsTarget(:,1), vertsTarget(:,2), targetHeight, targetWidth);
+
+        if ~any(targetMask(:))
+            return;
+        end
+
+        % Use the synthesized patch mask to support hollow distractors
+        patchMask = any(resized > 0, 3);
+        effectiveMask = targetMask & patchMask;
+        if ~any(effectiveMask(:))
+            return;
+        end
+        alpha = double(effectiveMask);
     end
 
-    % Create mask for target region
-    vertsTarget = sceneVerts - [minX - 1, minY - 1];
-    targetMask = poly2mask(vertsTarget(:,1), vertsTarget(:,2), targetHeight, targetWidth);
-
-    % If mask is empty, nothing to composite
-    if ~any(targetMask(:))
+    % Guard: no alpha coverage
+    if ~any(alpha(:) > 0)
         return;
     end
 
-    % Use the synthesized patch mask to support hollow distractors
-    patchMask = any(resized > 0, 3);
-    effectiveMask = targetMask & patchMask;
-    if ~any(effectiveMask(:))
-        return;
-    end
-
-    % Composite per-channel using arithmetic (no logical linearization)
+    % Composite per-channel using pre-multiplied alpha formula:
+    % result = foreground_premultiplied + background * (1 - alpha)
+    %
+    % The transformed quad RGB is effectively pre-multiplied because imwarp
+    % with FillValues=0 blends edge pixels with black, producing: RGB * alpha
+    % This formula correctly reconstructs the original colors at edges.
     bgRegion = bg(minY:maxY, minX:maxX, :);
 
-    % Prepare alpha in double for stable math
-    alpha = double(effectiveMask);
-
-    % All images are RGB at this point (converted on load)
     numChannels = size(bgRegion, 3);
     for c = 1:numChannels
         R = double(bgRegion(:,:,c));
         F = double(resized(:,:,c));
-        bgRegion(:,:,c) = uint8(R .* (1 - alpha) + F .* alpha);
+        % Pre-multiplied compositing: F already contains F_original * alpha at edges
+        % Explicit min(255, ...) for robustness against edge cases
+        bgRegion(:,:,c) = uint8(min(255, F + R .* (1 - alpha)));
     end
 
     bg(minY:maxY, minX:maxX, :) = bgRegion;
 end
 
-function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes, occupiedBboxes, cfg)
-    % Inject additional polygon-shaped distractors matching source geometry statistics.
+function [bg, placedCount] = add_quad_distractors(bg, regions, quadBboxes, occupiedBboxes, cfg)
+    % Delegating wrapper to augmentation_synthesis helper
+    % Build placement functions struct for the helper
+    placementFuncs = struct();
+    placementFuncs.randomTopLeft = @random_top_left;
+    placementFuncs.bboxesOverlap = @bboxes_overlap;
+    placementFuncs.compositeToBackground = @composite_to_background;
 
-    distractorCfg = cfg.distractors;
-    if isempty(regions) || ~distractorCfg.enabled
-        placedCount = 0;
-        return;
-    end
-
-    targetCount = randi([distractorCfg.minCount, distractorCfg.maxCount]);
-    if targetCount <= 0
-        placedCount = 0;
-        return;
-    end
-
-    [bgHeight, bgWidth, ~] = size(bg);
-    if bgHeight < 1 || bgWidth < 1
-        placedCount = 0;
-        return;
-    end
-
-    numSource = numel(regions);
-    maxBboxes = targetCount + size(occupiedBboxes, 1);
-    allBboxes = zeros(maxBboxes, 4);
-    bboxCount = 0;
-
-    if ~isempty(occupiedBboxes)
-        bboxCount = size(occupiedBboxes, 1);
-        allBboxes(1:bboxCount, :) = double(occupiedBboxes);
-    end
-
-    placedCount = 0;
-    for k = 1:targetCount
-        srcIdx = randi(numSource);
-        region = regions{srcIdx};
-        bboxInfo = polygonBboxes{srcIdx};
-        templatePatch = region.augPolygonImg;
-
-        if isempty(templatePatch) || bboxInfo.width <= 0 || bboxInfo.height <= 0
-            continue;
-        end
-
-        patchType = sample_distractor_type(distractorCfg);
-        patch = synthesize_distractor_patch(templatePatch, cfg.texture, distractorCfg, patchType);
-        if isempty(patch)
-            continue;
-        end
-
-        patch = jitter_polygon_patch(patch, distractorCfg);
-
-        % Apply random uniform scaling to distractor
-        scaleRange = distractorCfg.sizeScaleRange;
-        scaleFactor = scaleRange(1) + rand() * diff(scaleRange);
-        [patch, localVerts] = scale_distractor_patch(patch, region.augVertices, bboxInfo, scaleFactor);
-
-        if isempty(patch)
-            continue;
-        end
-
-        % Compute scaled bbox dimensions
-        scaledWidth = round(bboxInfo.width * scaleFactor);
-        scaledHeight = round(bboxInfo.height * scaleFactor);
-        if scaledWidth <= 0 || scaledHeight <= 0
-            continue;
-        end
-
-        bboxStruct = struct('width', scaledWidth, 'height', scaledHeight);
-        for attempt = 1:distractorCfg.maxPlacementAttempts
-            [xCandidate, yCandidate] = random_top_left(bboxStruct, cfg.placement.margin, bgWidth, bgHeight);
-            if ~isfinite(xCandidate) || ~isfinite(yCandidate)
-                continue;
-            end
-
-            candidateBbox = [xCandidate, yCandidate, xCandidate + scaledWidth, yCandidate + scaledHeight];
-
-            % Check collision with all placed bboxes (O(n) iteration acceptable for small distractor counts)
-            hasConflict = false;
-            for j = 1:bboxCount
-                if bboxes_overlap(candidateBbox, allBboxes(j, :), cfg.placement.minSpacing)
-                    hasConflict = true;
-                    break;
-                end
-            end
-            if hasConflict
-                continue;
-            end
-
-            sceneVerts = localVerts + [xCandidate, yCandidate];
-
-            bg = composite_to_background(bg, patch, sceneVerts);
-            bboxCount = bboxCount + 1;
-            allBboxes(bboxCount, :) = candidateBbox;
-            placedCount = placedCount + 1;
-            break;
-        end
-    end
+    [bg, placedCount] = cfg.augSynth.distractors.addQuad(bg, regions, quadBboxes, occupiedBboxes, cfg, placementFuncs);
 end
 
-function patchType = sample_distractor_type(distractorCfg)
-    % Sample distractor rendering style using configured weights.
-
-    weights = [1, 1, 1];
-    if isfield(distractorCfg, 'typeWeights')
-        candidate = double(distractorCfg.typeWeights(:)');
-        candidate = candidate(isfinite(candidate) & candidate >= 0);
-        if ~isempty(candidate)
-            limit = min(3, numel(candidate));
-            weights(1:limit) = candidate(1:limit);
-        end
-    end
-
-    totalWeight = sum(weights);
-    if totalWeight <= 0
-        weights = [1, 1, 1];
-        totalWeight = 3;
-    end
-
-    cumulative = cumsum(weights);
-    r = rand() * totalWeight;
-    patchType = find(r <= cumulative, 1, 'first');
-    if isempty(patchType)
-        patchType = 2;
-    end
-end
-
-function patch = synthesize_distractor_patch(templatePatch, textureCfg, distractorCfg, patchType)
-    % Create a synthetic distractor polygon using the original mask as a template.
-
-    if isempty(templatePatch)
-        patch = templatePatch;
-        return;
-    end
-
-    mask = any(templatePatch > 0, 3);
-    if ~any(mask(:))
-        patch = [];
-        return;
-    end
-
-    numChannels = size(templatePatch, 3);
-    baseColor = sample_distractor_color(textureCfg, numChannels);
-    if nargin < 4 || isempty(patchType) || ~ismember(patchType, 1:3)
-        patchType = 2;
-    end
-
-    maskFloat = single(mask);
-    baseColorNorm = single(baseColor) / 255;
-    [height, width, ~] = size(templatePatch);
-    patchFloat = zeros(height, width, numChannels, 'single');
-
-    switch patchType
-        case 1  % Outline only
-            outlineMask = compute_outline_mask(mask, distractorCfg);
-            if ~any(outlineMask(:))
-                patch = [];
-                return;
-            end
-            outlineFloat = single(outlineMask);
-            strokeScale = 1 + 0.12 * (single(rand(1, numChannels)) - 0.5);
-            strokeScale = max(0.6, min(1.4, strokeScale));
-            for c = 1:numChannels
-                patchFloat(:,:,c) = outlineFloat * (baseColorNorm(c) * strokeScale(c));
-            end
-            activeMask = outlineMask;
-
-        case 3  % Textured fill
-            texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg);
-            channelScale = 1 + 0.10 * (single(rand(1, numChannels)) - 0.5);
-            channelScale = max(0.7, min(1.3, channelScale));
-            for c = 1:numChannels
-                modulation = texture * channelScale(c);
-                patchFloat(:,:,c) = (baseColorNorm(c) + modulation) .* maskFloat;
-            end
-            activeMask = mask;
-
-        otherwise  % Solid fill
-            for c = 1:numChannels
-                patchFloat(:,:,c) = maskFloat * baseColorNorm(c);
-            end
-            activeMask = mask;
-    end
-
-    patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch);
-end
-
-function outlineMask = compute_outline_mask(mask, distractorCfg)
-    % Compute an outline mask from the filled polygon mask.
-
-    thickness = sample_outline_width(distractorCfg);
-    outlineMask = bwperim(mask);
-    if thickness > 1
-        radius = max(0, thickness - 1);
-        se = strel('disk', radius, 0);
-        outlineMask = imdilate(outlineMask, se);
-        outlineMask = outlineMask & mask;
-    end
-
-    if ~any(outlineMask(:))
-        outlineMask = mask;
-    end
-end
-
-function thickness = sample_outline_width(distractorCfg)
-    % Sample outline stroke thickness in pixels.
-
-    range = resolve_range(distractorCfg, 'outlineWidthRange', [1.5, 4.0], 1);
-    widthVal = sample_range_value(range);
-    thickness = max(1, round(widthVal));
-end
-
-function baseColor = sample_distractor_color(textureCfg, numChannels)
-    if nargin < 2 || isempty(numChannels)
-        numChannels = 3;
-    end
-
-    switch randi(4)
-        case 1  % Uniform surface
-            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-        case 2  % Speckled surface
-            baseGray = 160 + randi([-25, 25]);
-            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        case 3  % Laminate surface
-            if rand() < 0.5
-                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-            else
-                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-            end
-        otherwise  % Skin-like hues
-            hsv = [0.03 + rand() * 0.07, 0.25 + rand() * 0.35, 0.55 + rand() * 0.35];
-            baseRGB = round(255 * hsv2rgb(hsv));
-    end
-
-    baseRGB = max(80, min(220, baseRGB));
-
-    if numChannels ~= numel(baseRGB)
-        if numChannels < numel(baseRGB)
-            baseColor = baseRGB(1:numChannels);
-        else
-            baseColor = repmat(baseRGB(end), 1, numChannels);
-            baseColor(1:numel(baseRGB)) = baseRGB;
-        end
-    else
-        baseColor = baseRGB;
-    end
-end
-
-function jittered = jitter_polygon_patch(patch, distractorCfg)
-    % Apply lightweight photometric jitter while preserving mask boundaries.
+function [patchImg, isValid] = crop_ellipse_patch(quadImg, ellipse)
+    % Crop elliptical patch from quad image
     %
-    % Inputs:
-    %   patch - RGB image (uint8)
-    %   distractorCfg - Configuration struct
+    % Delegates ellipse mask creation to mask_utils.createEllipseMask for
+    % consistent masking across all scripts.
+    %
+    % See also: mask_utils.createEllipseMask
 
-    if isempty(patch)
-        jittered = patch;
-        return;
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
     end
 
-    mask = any(patch > 0, 3);
-    if ~any(mask(:))
-        jittered = patch;
-        return;
-    end
-
-    patchFloat = im2single(patch);
-
-    contrastRange = resolve_range(distractorCfg, 'contrastScaleRange', [1, 1], 0);
-    contrastScale = sample_range_value(contrastRange);
-
-    brightnessRange = resolve_range(distractorCfg, 'brightnessOffsetRange', [0, 0]);
-    brightnessOffset = sample_range_value(brightnessRange) / 255;
-
-    patchFloat = (patchFloat - 0.5) * contrastScale + 0.5 + brightnessOffset;
-
-    if isfield(distractorCfg, 'noiseStd') && distractorCfg.noiseStd > 0
-        sigma = distractorCfg.noiseStd / 255;
-        patchFloat = patchFloat + sigma * randn(size(patchFloat), 'like', patchFloat);
-    end
-
-    mask3 = repmat(single(mask), [1, 1, size(patchFloat, 3)]);
-    patchFloat = min(1, max(0, patchFloat .* mask3));
-
-    jittered = cast_patch_like_template(patchFloat, patch);
-end
-
-function patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch)
-    if isempty(activeMask) || ~any(activeMask(:))
-        patch = [];
-        return;
-    end
-
-    mask3 = repmat(single(activeMask), [1, 1, size(patchFloat, 3)]);
-    patchFloat = min(1, max(0, patchFloat .* mask3));
-
-    patch = cast_patch_like_template(patchFloat, templatePatch);
-end
-
-function patch = cast_patch_like_template(patchFloat, templatePatch)
-    if isa(templatePatch, 'uint8')
-        patch = im2uint8(patchFloat);
-    elseif isa(templatePatch, 'uint16')
-        patch = im2uint16(patchFloat);
-    elseif isa(templatePatch, 'single')
-        patch = patchFloat;
-    else
-        patch = cast(patchFloat, 'like', templatePatch);
-    end
-end
-
-function texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg)
-    [height, width] = size(mask);
-
-    surfaceTypes = 1:4;
-    if isfield(distractorCfg, 'textureSurfaceTypes')
-        candidate = unique(round(double(distractorCfg.textureSurfaceTypes(:)')));
-        candidate = candidate(isfinite(candidate) & candidate >= 1 & candidate <= 4);
-        if ~isempty(candidate)
-            surfaceTypes = candidate;
-        end
-    end
-    surfaceType = surfaceTypes(randi(numel(surfaceTypes)));
-
-    texture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
-    texture = single(texture);
-
-    activeVals = texture(mask);
-    if isempty(activeVals)
-        activeVals = single(randn(height * width, 1));
-    end
-    textureMean = mean(activeVals);
-    textureStd = std(activeVals);
-    if ~isfinite(textureStd) || textureStd < eps
-        textureStd = 1;
-    end
-
-    texture = (texture - single(textureMean)) / single(textureStd);
-
-    gainRange = resolve_range(distractorCfg, 'textureGainRange', [0.06, 0.18], 0);
-    gain = sample_range_value(gainRange);
-
-    texture = texture * single(gain);
-end
-
-function range = resolve_range(cfg, fieldName, defaultRange, minValue)
-    if nargin < 4
-        minValue = -inf;
-    end
-
-    range = defaultRange;
-    if isfield(cfg, fieldName)
-        values = double(cfg.(fieldName)(:).');
-        values = values(isfinite(values));
-        if isempty(values)
-            range = defaultRange;
-        elseif numel(values) >= 2
-            range = sort(values(1:2));
-        else
-            range = [values(1), values(1)];
-        end
-    end
-
-    range = max(minValue, range);
-    if numel(range) < 2
-        range = [range(1), range(1)];
-    elseif range(1) > range(2)
-        range(2) = range(1);
-    end
-end
-
-function value = sample_range_value(range)
-    range = range(:).';
-    if isempty(range)
-        value = 0;
-        return;
-    end
-
-    if isscalar(range) || range(2) <= range(1)
-        value = range(1);
-    else
-        value = range(1) + rand() * (range(2) - range(1));
-    end
-end
-
-function [scaledPatch, scaledLocalVerts] = scale_distractor_patch(patch, vertices, bboxInfo, scaleFactor)
-    % Apply uniform scaling to distractor patch and vertices.
-    % Scales patch via imresize and adjusts vertices to match new dimensions.
-
-    if isempty(patch) || scaleFactor <= 0
-        scaledPatch = [];
-        scaledLocalVerts = [];
-        return;
-    end
-
-    % Resize patch image
-    [origHeight, origWidth, ~] = size(patch);
-    newHeight = round(origHeight * scaleFactor);
-    newWidth = round(origWidth * scaleFactor);
-
-    if newHeight < 1 || newWidth < 1
-        scaledPatch = [];
-        scaledLocalVerts = [];
-        return;
-    end
-
-    scaledPatch = imresize(patch, [newHeight, newWidth], 'nearest');
-
-    % Scale vertices relative to bbox origin
-    localVerts = vertices - [bboxInfo.minX, bboxInfo.minY];
-    scaledLocalVerts = localVerts * scaleFactor;
-end
-
-function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
-    % Crop elliptical patch from polygon image
-    [imgHeight, imgWidth, ~] = size(polygonImg);
+    [imgHeight, imgWidth, ~] = size(quadImg);
     bbox = ellipse_bounding_box(ellipse);
 
     x1 = max(1, floor(bbox(1)));
@@ -1532,20 +1827,13 @@ function [patchImg, isValid] = crop_ellipse_patch(polygonImg, ellipse)
         return;
     end
 
-    patchImg = polygonImg(y1:y2, x1:x2, :);
+    patchImg = quadImg(y1:y2, x1:x2, :);
     [h, w, ~] = size(patchImg);
 
-    % Create ellipse mask
-    [X, Y] = meshgrid(1:w, 1:h);
+    % Create ellipse mask using mask_utils (center relative to patch)
     cx = ellipse.center(1) - x1 + 1;
     cy = ellipse.center(2) - y1 + 1;
-
-    theta = deg2rad(ellipse.rotation);
-    dx = X - cx;
-    dy = Y - cy;
-    xRot =  dx * cos(theta) + dy * sin(theta);
-    yRot = -dx * sin(theta) + dy * cos(theta);
-    mask = (xRot / ellipse.semiMajor).^2 + (yRot / ellipse.semiMinor).^2 <= 1;
+    mask = masks.createEllipseMask([h, w], cx, cy, ellipse.semiMajor, ellipse.semiMinor, ellipse.rotation);
 
     if ~any(mask(:))
         patchImg = [];
@@ -1565,647 +1853,410 @@ end
 
 function bbox = ellipse_bounding_box(ellipse)
     % Compute axis-aligned bounding box for rotated ellipse
-    theta = deg2rad(ellipse.rotation);
-    a = ellipse.semiMajor;
-    b = ellipse.semiMinor;
-    dx = sqrt((a * cos(theta))^2 + (b * sin(theta))^2);
-    dy = sqrt((a * sin(theta))^2 + (b * cos(theta))^2);
-    xc = ellipse.center(1);
-    yc = ellipse.center(2);
-    bbox = [xc - dx, yc - dy, xc + dx, yc + dy];
+    %
+    % Delegates to mask_utils.computeEllipseBoundingBox for consistent
+    % calculation across all scripts. Uses Inf for image dimensions to
+    % get unbounded bbox (caller handles clamping).
+    %
+    % See also: mask_utils.computeEllipseBoundingBox
+
+    persistent masks
+    if isempty(masks)
+        masks = mask_utils();
+    end
+
+    [x1, y1, x2, y2] = masks.computeEllipseBoundingBox(...
+        ellipse.center(1), ellipse.center(2), ...
+        ellipse.semiMajor, ellipse.semiMinor, ...
+        ellipse.rotation, Inf, Inf);
+
+    bbox = [x1, y1, x2, y2];
 end
 
 %% =========================================================================
-%% BACKGROUND GENERATION (PROCEDURAL TEXTURES)
+%% BACKGROUND GENERATION (delegates to augmentation_synthesis helper)
 %% =========================================================================
 
-function bg = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
-    % Generate realistic lab surface backgrounds with pooled single-precision textures
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    surfaceType = randi(4);
-    texture = borrow_background_texture(surfaceType, width, height, textureCfg);
-
-    switch surfaceType
-        case 1  % Uniform surface
-            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-            noiseAmplitude = textureCfg.uniformNoiseRange(1) + rand() * diff(textureCfg.uniformNoiseRange);
-            texture = texture .* single(noiseAmplitude);
-        case 2  % Speckled surface
-            baseGray = 160 + randi([-25, 25]);
-            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        case 3  % Laminate surface
-            if rand() < 0.5
-                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-            else
-                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-            end
-        otherwise  % Skin texture
-            h = 0.03 + rand() * 0.07;
-            s = 0.25 + rand() * 0.35;
-            v = 0.55 + rand() * 0.35;
-            baseRGB = round(255 * hsv2rgb([h, s, v]));
-    end
-
-    baseRGB = max(100, min(230, baseRGB));
-
-    numChannels = 3;  % RGB backgrounds only
-    bgSingle = repmat(reshape(single(baseRGB), [1, 1, numChannels]), [height, width, 1]);
-    for c = 1:numChannels
-        bgSingle(:,:,c) = bgSingle(:,:,c) + texture;
-    end
-
-    if rand() < 0.60
-        bgSingle = add_lighting_gradient(bgSingle, width, height);
-    end
-
-    bg = clamp_uint8(bgSingle);
-    bg = add_sparse_artifacts(bg, width, height, artifactCfg);
+function [bg, bgType] = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
+    %% Generate realistic lab surface backgrounds (delegates to helper)
+    % Generates background using augmentation_synthesis, then adds sparse artifacts.
+    augSynth = augmentation_synthesis();
+    [bg, bgType] = augSynth.bg.generate(width, height, textureCfg);
+    bg = augSynth.artifacts.addSparse(bg, width, height, artifactCfg);
 end
 
-function texture = borrow_background_texture(surfaceType, width, height, textureCfg)
-    persistent poolState
-
-    if isempty(poolState) || texture_pool_config_changed(poolState, width, height, textureCfg)
-        if ~isempty(poolState)
-            oldWidth = poolState.width;
-            oldHeight = poolState.height;
-            widthDiff = abs(width - oldWidth) / max(oldWidth, 1);
-            heightDiff = abs(height - oldHeight) / max(oldHeight, 1);
-            if widthDiff > 0.01 || heightDiff > 0.01
-                warning('augmentDataset:poolDimensionChange', ...
-                    'Background dimensions changed from %dx%d to %dx%d. Texture pool reset. Run ''clear functions'' to avoid this warning.', ...
-                    oldWidth, oldHeight, width, height);
-            end
-        end
-        poolState = initialize_background_texture_pool(width, height, textureCfg);
-    end
-
-    entry = poolState.surface(surfaceType);
-    if entry.cursor > entry.poolSize
-        entry.order = randperm(entry.poolSize);
-        entry.cursor = 1;
-    end
-
-    slot = entry.order(entry.cursor);
-    entry.cursor = entry.cursor + 1;
-
-    baseTexture = entry.textures{slot};
-    if isempty(baseTexture)
-        baseTexture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
-        entry.textures{slot} = baseTexture;
-    end
-
-    texture = apply_texture_pool_jitter(baseTexture, poolState);
-
-    entry.usage(slot) = entry.usage(slot) + 1;
-    if entry.usage(slot) >= poolState.refreshInterval
-        entry.textures{slot} = [];
-        entry.usage(slot) = 0;
-    end
-
-    poolState.surface(surfaceType) = entry;
-end
-
-function poolState = initialize_background_texture_pool(width, height, textureCfg)
-    requestedPoolSize = max(1, round(textureCfg.poolSize));
-    bytesPerTexture = max(1, double(width) * double(height) * 4);
-    surfaces = 4;
-    maxPoolBytes = textureCfg.poolMaxMemoryMB * 1024 * 1024;
-    maxPerSurface = max(1, floor((maxPoolBytes / surfaces) / bytesPerTexture));
-    poolSize = min(requestedPoolSize, maxPerSurface);
-    refreshInterval = max(1, round(textureCfg.poolRefreshInterval));
-
-    surfaceTemplate = struct( ...
-        'textures', {cell(poolSize, 1)}, ...
-        'usage', zeros(poolSize, 1, 'uint32'), ...
-        'order', randperm(poolSize), ...
-        'cursor', 1, ...
-        'poolSize', poolSize);
-
-    poolState = struct();
-    poolState.width = width;
-    poolState.height = height;
-    poolState.cfgSnapshot = textureCfg;
-    poolState.poolSize = poolSize;
-    poolState.refreshInterval = refreshInterval;
-    poolState.shiftPixels = max(0, round(textureCfg.poolShiftPixels));
-    poolState.scaleRange = sort(textureCfg.poolScaleRange);
-    if numel(poolState.scaleRange) ~= 2 || any(~isfinite(poolState.scaleRange))
-        poolState.scaleRange = [1, 1];
-    end
-    poolState.flipProb = max(0, min(1, textureCfg.poolFlipProbability));
-    poolState.surface = repmat(surfaceTemplate, 1, 4);
-    for surfaceType = 1:4
-        entry = poolState.surface(surfaceType);
-        entry.order = randperm(entry.poolSize);
-        entry.cursor = 1;
-        entry.usage(:) = 0;
-        poolState.surface(surfaceType) = entry;
-    end
-end
-
-function changed = texture_pool_config_changed(poolState, width, height, textureCfg)
-    changed = poolState.width ~= width || poolState.height ~= height || ~isequal(poolState.cfgSnapshot, textureCfg);
-end
-
-function texture = generate_surface_texture_base(surfaceType, width, height, textureCfg)
-    height = max(1, round(double(height)));
-    width = max(1, round(double(width)));
-
-    persistent randBuffer1 randBuffer2 bufferSize
-    if isempty(bufferSize) || any(bufferSize ~= [height, width])
-        randBuffer1 = zeros(height, width, 'single');
-        randBuffer2 = zeros(height, width, 'single');
-        bufferSize = [height, width];
-    end
-
-    switch surfaceType
-        case 1  % Uniform noise baseline (scaled per sample)
-            randBuffer1(:) = single(randn(height, width));
-            texture = randBuffer1;
-        case 2  % Speckled surface (high + low frequency noise)
-            randBuffer1(:) = single(randn(height, width));
-            randBuffer1 = randBuffer1 .* single(textureCfg.speckleHighFreq);
-
-            randBuffer2(:) = single(randn(height, width));
-            randBuffer2 = imgaussfilt(randBuffer2, 8);
-            randBuffer2 = randBuffer2 .* single(textureCfg.speckleLowFreq);
-
-            texture = randBuffer1 + randBuffer2;
-        case 3  % Laminate grain
-            texture = generate_laminate_texture(width, height, textureCfg);
-        case 4  % Skin-like microtexture
-            texture = generate_skin_texture(width, height, textureCfg);
-        otherwise
-            randBuffer1(:) = single(randn(height, width));
-            texture = randBuffer1;
-    end
-end
-
-function texture = apply_texture_pool_jitter(baseTexture, poolState)
-    % Apply random jitter to pooled texture
-    texture = baseTexture;
-
-    if poolState.shiftPixels > 0
-        shiftX = randi([-poolState.shiftPixels, poolState.shiftPixels]);
-        shiftY = randi([-poolState.shiftPixels, poolState.shiftPixels]);
-        if shiftX ~= 0 || shiftY ~= 0
-            texture = circshift(texture, [shiftY, shiftX]);
-        end
-    end
-
-    if poolState.flipProb > 0
-        if rand() < poolState.flipProb
-            texture = flip(texture, 2);
-        end
-        if rand() < poolState.flipProb
-            texture = flip(texture, 1);
-        end
-    end
-
-    scaleRange = poolState.scaleRange;
-    if numel(scaleRange) == 2 && scaleRange(2) > scaleRange(1)
-        scale = scaleRange(1) + rand() * (scaleRange(2) - scaleRange(1));
-        texture = texture .* single(scale);
-    end
-end
-
-function texture = generate_laminate_texture(width, height, textureCfg)
-    % Generate high-contrast laminate surface with subtle noise (single precision).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    texture = single(randn(height, width)) .* single(textureCfg.laminateNoiseStrength);
-end
-
-function texture = generate_skin_texture(width, height, textureCfg)
-    % Generate subtle skin-like microtexture (single precision).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-
-    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(textureCfg.skinLowFreqStrength);
-    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(textureCfg.skinMidFreqStrength);
-    highFreq = single(randn(height, width)) .* single(textureCfg.skinHighFreqStrength);
-
-    texture = lowFreq + midFreq + highFreq;
-end
-
-function bg = add_lighting_gradient(bg, width, height)
-    % Add simple linear lighting gradient to simulate directional lighting (single-aware).
-
-    width = max(1, round(width));
-    height = max(1, round(height));
-    if width < 50 || height < 50
-        return;
-    end
-
-    lightAngle = rand() * 2 * pi;
-    xAxis = single(0:(width - 1));
-    yAxis = single(0:(height - 1));
-    if width > 1
-        xAxis = xAxis / single(width - 1);
-    else
-        xAxis = zeros(size(xAxis), 'single');
-    end
-    if height > 1
-        yAxis = yAxis / single(height - 1);
-    else
-        yAxis = zeros(size(yAxis), 'single');
-    end
-
-    [Ygrid, Xgrid] = ndgrid(yAxis, xAxis);
-    projection = Xgrid .* single(cos(lightAngle)) + Ygrid .* single(sin(lightAngle));
-
-    gradientStrength = single(0.05 + rand() * 0.05);
-    gradient = single(1) - gradientStrength/2 + projection .* gradientStrength;
-    gradient = max(single(0.90), min(single(1.10), gradient));
-
-    for c = 1:size(bg, 3)
-        bg(:,:,c) = bg(:,:,c) .* gradient;
-    end
-end
-
-function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
-    % Add variable-density artifacts anywhere on background for robust detection training
-    %
-    % OPTIMIZATION: Ellipses/lines use unit-square normalization (default 64x64 defined
-    % in artifactCfg.unitMaskSize) to avoid large meshgrid allocations. Polygonal artifacts
-    % render directly at target resolution so corner geometry remains crisp.
-    %
-    % Artifacts: rectangles, quadrilaterals, triangles, ellipses, lines
-    % Count: configurable via artifactCfg.countRange (default 5-30)
-    % Size: 1-100% of image diagonal (allows artifacts larger than frame)
-    % Placement: unconstrained (artifacts can extend beyond boundaries for uniform spatial distribution)
-
-    % Quick guard for tiny backgrounds
-    width = max(1, round(width));
-    height = max(1, round(height));
-    if width < 8 || height < 8
-        return;
-    end
-
-    % Number of artifacts: variable (1-100 by default)
-    numArtifacts = artifactCfg.countRange(1) + randi(diff(artifactCfg.countRange) + 1);
-
-    % Image diagonal for relative sizing (allows artifacts larger than image dimensions)
-    diagSize = sqrt(width^2 + height^2);
-
-    if isfield(artifactCfg, 'unitMaskSize') && ~isempty(artifactCfg.unitMaskSize)
-        unitMaskSize = max(8, round(double(artifactCfg.unitMaskSize)));
-    else
-        unitMaskSize = 64;
-    end
-    unitCoords = linspace(0, 1, unitMaskSize);
-    [unitGridX, unitGridY] = meshgrid(unitCoords, unitCoords);
-    unitCenteredX = unitGridX - 0.5;
-    unitCenteredY = unitGridY - 0.5;
-
-    for i = 1:numArtifacts
-        % Select artifact type (equal probability)
-        artifactTypeRand = rand();
-        if artifactTypeRand < 0.20
-            artifactType = 'rectangle';
-        elseif artifactTypeRand < 0.40
-            artifactType = 'quadrilateral';
-        elseif artifactTypeRand < 0.60
-            artifactType = 'triangle';
-        elseif artifactTypeRand < 0.80
-            artifactType = 'ellipse';
-        else
-            artifactType = 'line';
-        end
-
-        % Uniform size: 1-100% of image diagonal (allows artifacts larger than frame)
-        artifactSize = round(diagSize * (artifactCfg.sizeRangePercent(1) + rand() * diff(artifactCfg.sizeRangePercent)));
-        artifactSize = max(artifactCfg.minSizePixels, artifactSize);
-
-        % Lines: use artifactSize as length, add smaller width
-        if strcmp(artifactType, 'line')
-            lineLength = artifactSize;
-            lineWidth = max(1, round(artifactSize * artifactCfg.lineWidthRatio));
-            artifactSize = lineLength + artifactCfg.lineRotationPadding;
-        end
-
-        % Unconstrained random placement (artifacts can extend beyond frame boundaries)
-        % Overhang margin creates partial artifacts at edges and uniform spatial distribution
-        margin = round(artifactSize * artifactCfg.overhangMargin);
-        xMin = 1 - margin;
-        xMax = width + margin;
-        yMin = 1 - margin;
-        yMax = height + margin;
-
-        x = randi([xMin, xMax]);
-        y = randi([yMin, yMax]);
-
-        % Create artifact mask; polygons draw directly at target resolution to keep sharp edges
-        mask = [];
-        unitMask = [];
-        switch artifactType
-            case 'ellipse'
-                radiusAFraction = 0.5 * (artifactCfg.ellipseRadiusARange(1) + rand() * diff(artifactCfg.ellipseRadiusARange));
-                radiusBFraction = 0.5 * (artifactCfg.ellipseRadiusBRange(1) + rand() * diff(artifactCfg.ellipseRadiusBRange));
-                radiusAFraction = max(radiusAFraction, 1e-3);
-                radiusBFraction = max(radiusBFraction, 1e-3);
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
-                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
-                unitMask = single((xRot / radiusAFraction).^2 + (yRot / radiusBFraction).^2 <= 1);
-
-            case 'rectangle'
-                rectWidthFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHeightFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
-                rectHalfWidth = max(rectWidthFraction * artifactSize / 2, 0.5);
-                rectHalfHeight = max(rectHeightFraction * artifactSize / 2, 0.5);
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                baseVerts = [
-                    -rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth, -rectHalfHeight;
-                    rectHalfWidth,  rectHalfHeight;
-                    -rectHalfWidth,  rectHalfHeight];
-                rotMatrix = [cosTheta, -sinTheta; sinTheta, cosTheta];
-                rotatedVerts = baseVerts * rotMatrix';
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = rotatedVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            case 'quadrilateral'
-                baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                baseHeightFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
-                perturbFraction = artifactCfg.quadPerturbation;
-                halfWidth = max(baseWidthFraction / 2, 1e-3);
-                halfHeight = max(baseHeightFraction / 2, 1e-3);
-                verticesNorm = [
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction;
-                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction
-                ];
-                centeredVerts = (verticesNorm - 0.5) * (artifactSize - 1);
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            case 'triangle'
-                baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
-                radius = max(baseSizeFraction * (artifactSize - 1) / 2, 0.5);
-                angle = rand() * 2 * pi;
-                verticesNorm = [
-                    cos(angle),           sin(angle);
-                    cos(angle + 2*pi/3),  sin(angle + 2*pi/3);
-                    cos(angle + 4*pi/3),  sin(angle + 4*pi/3)
-                ];
-                centeredVerts = radius * verticesNorm;
-                centerPix = [(artifactSize + 1) / 2, (artifactSize + 1) / 2];
-                verticesPix = centeredVerts + centerPix;
-                mask = generate_polygon_mask(verticesPix, artifactSize);
-
-            otherwise  % 'line'
-                angle = rand() * pi;
-                cosTheta = cos(angle);
-                sinTheta = sin(angle);
-                lengthNorm = min(1, lineLength / artifactSize);
-                halfLengthNorm = max(lengthNorm / 2, 1e-3);
-                halfWidthNorm = max(lineWidth / artifactSize, 1 / artifactSize);
-                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
-                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
-                lineCore = (abs(xRot) <= halfLengthNorm) & (abs(yRot) <= halfWidthNorm);
-                unitMask = single(lineCore);
-        end
-
-        if isempty(mask) && isempty(unitMask)
-            continue;
-        end
-
-        if isempty(mask)
-            mask = imresize(unitMask, [artifactSize, artifactSize], 'nearest');
-            mask = max(mask, single(0));
-            mask = min(mask, single(1));
-        end
-        if ~any(mask(:))
-            continue;
-        end
-
-        % Random intensity: darker or lighter
-        % Lines tend to be darker; blobs can be either
-        if strcmp(artifactType, 'line')
-            intensity = artifactCfg.lineIntensityRange(1) + randi(diff(artifactCfg.lineIntensityRange) + 1);
-        else
-            if rand() < 0.5
-                intensity = artifactCfg.blobDarkIntensityRange(1) + randi(diff(artifactCfg.blobDarkIntensityRange) + 1);
-            else
-                intensity = artifactCfg.blobLightIntensityRange(1) + randi(diff(artifactCfg.blobLightIntensityRange) + 1);
-            end
-        end
-
-        % Blend into background, handling artifacts that extend beyond frame boundaries
-        % Compute valid intersection between artifact bbox and image bounds
-        xStart = max(1, x);
-        yStart = max(1, y);
-        xEnd = min(width, x + artifactSize - 1);
-        yEnd = min(height, y + artifactSize - 1);
-
-        % Validate intersection exists
-        if xEnd < xStart || yEnd < yStart
-            continue;  % Artifact completely outside bounds
-        end
-
-        % Compute corresponding mask region (offset if artifact starts outside frame)
-        maskXStart = max(1, 2 - x);  % Offset into mask if x < 1
-        maskYStart = max(1, 2 - y);  % Offset into mask if y < 1
-        maskXEnd = maskXStart + (xEnd - xStart);
-        maskYEnd = maskYStart + (yEnd - yStart);
-
-        % Blend artifact into background
-        maskRegion = single(mask(maskYStart:maskYEnd, maskXStart:maskXEnd));
-        intensitySingle = single(intensity);
-        numChannels = size(bg, 3);
-        for c = 1:numChannels
-            region = single(bg(yStart:yEnd, xStart:xEnd, c));
-            region = region + maskRegion .* intensitySingle;
-            bg(yStart:yEnd, xStart:xEnd, c) = clamp_uint8(region);
-        end
-    end
-end
-
-function mask = generate_polygon_mask(verticesPix, targetSize)
-    % Rasterize polygon vertices expressed in pixel coordinates into a binary mask.
-    if isempty(verticesPix) || size(verticesPix, 2) ~= 2
-        mask = [];
-        return;
-    end
-
-    verticesPix = double(verticesPix);
-    polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), targetSize, targetSize);
-    if ~any(polyMask(:))
-        mask = [];
-        return;
-    end
-
-    mask = single(polyMask);
-end
-
-function bg = add_polygon_occlusions(bg, scenePolygons, probability)
-    % Draw thin occlusions (e.g., hair/strap-like) across polygons with some probability.
-    % Each occlusion is a soft line that slightly darkens or lightens the image beneath.
-
-    if probability <= 0
-        return;
-    end
-
-    [imgH, imgW, ~] = size(bg);
-
-    for i = 1:numel(scenePolygons)
-        if rand() >= probability
-            continue;
-        end
-
-        verts = scenePolygons{i};
-        if isempty(verts) || any(~isfinite(verts(:)))
-            continue;
-        end
-
-        minX = max(1, floor(min(verts(:,1))));
-        maxX = min(imgW, ceil(max(verts(:,1))));
-        minY = max(1, floor(min(verts(:,2))));
-        maxY = min(imgH, ceil(max(verts(:,2))));
-        if maxX <= minX || maxY <= minY
-            continue;
-        end
-
-        % Build local grid for the polygon bbox
-        [X, Y] = meshgrid(minX:maxX, minY:maxY);
-
-        % Polygon mask for clipping
-        polyMask = poly2mask(verts(:,1) - (minX - 1), verts(:,2) - (minY - 1), maxY - minY + 1, maxX - minX + 1);
-        if ~any(polyMask(:))
-            continue;
-        end
-
-        % Choose line params centered near polygon centroid
-        cx = mean(verts(:,1));
-        cy = mean(verts(:,2));
-        angle = rand() * 2 * pi;      % random orientation
-        halfWidth = 1 + rand() * 2;   % ~2-3 px thick
-
-        % Distance to a line through (cx,cy) with normal [sin, -cos]
-        d = abs((X - cx) * sin(angle) - (Y - cy) * cos(angle));
-        lineMask = double(d <= halfWidth);
-        lineMask = imgaussfilt(lineMask, 0.8);
-
-        % Clip to polygon region
-        lineMask = lineMask .* double(polyMask);
-        if ~any(lineMask(:))
-            continue;
-        end
-
-        % Random intensity: slight darken or lighten
-        if rand() < 0.5
-            delta = -(20 + randi(20));
-        else
-            delta =  (20 + randi(20));
-        end
-
-        % Blend into background
-        region = bg(minY:maxY, minX:maxX, :);
-        numChannels = size(region, 3);
-        for c = 1:numChannels
-            plane = double(region(:,:,c));
-            plane = plane + lineMask * double(delta);
-            region(:,:,c) = clamp_uint8(plane);
-        end
-        bg(minY:maxY, minX:maxX, :) = region;
-    end
-end
-
+% NOTE: Occlusion functions (add_quad_occlusions, sampleOcclusionWidth, drawLine,
+% applyOcclusionColor, generateOcclusionColor, generateBlobOcclusion,
+% generateFingerOcclusion, enforceContrastLimit, clipToMaxLength) have been moved to
+% occlusion_utils.m. Access via cfg.occlusionUtils.addQuadOcclusions().
+
+% NOTE: getLocalScale and computeCoreDiagonal functions are in augmentation_synthesis.m
+% (sceneSpace module). They are accessed via function handles in cfg.coreProtection.
+
+% NOTE: Specular highlight function (apply_specular_highlight) has been moved to
+% augmentation_synthesis.m. Access via cfg.augSynth.specular.apply().
 
 %% =========================================================================
 %% PHOTOMETRIC AUGMENTATION (NEW IN V3)
 %% =========================================================================
 
-function img = apply_photometric_augmentation(img, mode)
-    % Apply color-safe photometric augmentation to entire scene
-    % Preserves relative color relationships between concentration regions
+function img = apply_photometric_augmentation(img, mode, jpegAlreadyApplied)
+    % Apply lighting-realistic photometric augmentation to entire scene
+    % Simulates real-world lighting/white-balance variation for detector robustness
+    %
+    % NOTE: Brightness, contrast, white balance, and saturation adjustments have been
+    % removed to avoid redundancy with YOLO's HSV augmentation (hsv_h=0.015, hsv_s=0.7,
+    % hsv_v=0.4). Only unique augmentations are kept: gamma, color temperature, sensor
+    % noise, and JPEG artifacts.
+    %
+    % The 'extreme' mode still applies brightness reduction for very low lighting simulation.
     %
     % Inputs:
     %   img - RGB image (uint8)
     %   mode - 'subtle' (default), 'moderate', or 'extreme' (Phase 1.7)
+    %   jpegAlreadyApplied - (optional) If true, skip JPEG to prevent double compression
+
+    % Configuration constants (centralized for easy tuning)
+    PHOTOMETRIC = struct( ...
+        'gammaProb', 0.40, ...         % Gamma correction probability
+        'gammaRange', [0.92, 1.08], ...% Gamma exponent range
+        'colorTempProb', 0.35, ...     % Color temperature variation probability
+        'warmthRange', [-0.10, 0.10], ...% Warmth shift range
+        'noiseProb', 0.30, ...         % Sensor noise probability
+        'noiseSigmaRange', [3, 11], ...% Noise sigma range (uint8 scale)
+        'jpegProb', 0.25, ...          % JPEG compression probability
+        'jpegQualityRange', [60, 95]); % JPEG quality range
 
     if nargin < 2
         mode = 'subtle';
     end
+    if nargin < 3
+        jpegAlreadyApplied = false;
+    end
+
+    % Store original before photometric (for clamping)
+    imgOrig = im2double(img);
 
     % Convert to double in [0,1] for processing
-    imgDouble = im2double(img);
+    imgDouble = imgOrig;
 
-    % 1. Global brightness adjustment
-    if strcmp(mode, 'subtle')
-        brightRange = [0.95, 1.05];  % ±5% (reduced from ±10%)
-    elseif strcmp(mode, 'extreme')
-        brightRange = [0.40, 0.60];  % Very low lighting (Phase 1.7)
-    else
-        brightRange = [0.90, 1.10];  % ±10% (reduced from ±15%)
-    end
-    brightFactor = brightRange(1) + rand() * diff(brightRange);
-    imgDouble = imgDouble * brightFactor;
-
-    % 2. Global contrast adjustment (around image mean)
-    if strcmp(mode, 'subtle')
-        contrastRange = [0.96, 1.04];  % ±4% (reduced from ±8%)
-    else
-        contrastRange = [0.92, 1.08];  % ±8% (reduced from ±12%)
-    end
-    contrastFactor = contrastRange(1) + rand() * diff(contrastRange);
-    imgMean = mean(imgDouble(:));
-    imgDouble = (imgDouble - imgMean) * contrastFactor + imgMean;
-
-    % 3. White balance jitter (per-channel gain), 60% probability
-    if rand() < 0.60
-        numChannels = size(imgDouble, 3);
-        if numChannels == 3  % White balance requires RGB
-            gains = [0.92 + rand() * 0.16, 0.92 + rand() * 0.16, 0.92 + rand() * 0.16];
-            for c = 1:numChannels
-                imgDouble(:,:,c) = imgDouble(:,:,c) * gains(c);
-            end
-        end
+    % 1. Extreme brightness reduction (only for 'extreme' mode - Phase 1.7)
+    % This simulates very low lighting conditions that YOLO's HSV augmentation doesn't cover.
+    if strcmp(mode, 'extreme')
+        brightRange = [0.40, 0.60];  % Very low lighting
+        brightFactor = brightRange(1) + rand() * diff(brightRange);
+        imgDouble = imgDouble * brightFactor;
     end
 
-    % 4. Subtle saturation adjustment (preserve hue) - 60% of augmented samples
-    if rand() < 0.6
-        % Clamp before color-space conversion to avoid numeric spill
-        imgDouble = min(1, max(0, imgDouble));
-        imgHSV = rgb2hsv(imgDouble);
-        satFactor = 0.94 + rand() * 0.12;  % [0.94, 1.06]
-        imgHSV(:,:,2) = min(1, max(0, imgHSV(:,:,2) * satFactor));
-        imgDouble = hsv2rgb(imgHSV);
-    end
-
-    % 5. Gamma correction (exposure simulation) - 40% of augmented samples
-    %    Ensure input is within [0,1] before exponentiation to avoid
-    %    negative^fraction -> complex results.
-    if rand() < 0.4
-        gamma = 0.92 + rand() * 0.16;  % [0.92, 1.08]
+    % 2. Gamma correction (exposure simulation) - unique to MATLAB
+    if rand() < PHOTOMETRIC.gammaProb
+        gamma = PHOTOMETRIC.gammaRange(1) + rand() * diff(PHOTOMETRIC.gammaRange);
         imgDouble = min(1, max(0, imgDouble));
         imgDouble = imgDouble .^ gamma;
+    end
+
+    % 3. Color temperature variation - unique to MATLAB
+    if rand() < PHOTOMETRIC.colorTempProb
+        warmth = PHOTOMETRIC.warmthRange(1) + rand() * diff(PHOTOMETRIC.warmthRange);
+        imgDouble(:,:,1) = imgDouble(:,:,1) * (1 + warmth);       % Red channel
+        imgDouble(:,:,3) = imgDouble(:,:,3) * (1 - warmth * 0.6); % Blue channel (less affected)
+    end
+
+    % Clamp cumulative color shifts to prevent excessive color drift
+    MAX_CUMULATIVE_COLOR_SHIFT = 0.40;
+    for ch = 1:3
+        imgDouble(:,:,ch) = clampToMaxShift(imgOrig(:,:,ch)*255, imgDouble(:,:,ch)*255, MAX_CUMULATIVE_COLOR_SHIFT) / 255;
+    end
+
+    % 4. Apply sensor noise (AFTER color clamping, BEFORE final conversion) - unique to MATLAB
+    if rand() < PHOTOMETRIC.noiseProb
+        sigmaRange = PHOTOMETRIC.noiseSigmaRange;
+        noiseSigma = (sigmaRange(1) + rand() * diff(sigmaRange)) / 255;
+        imgDouble = imgDouble + randn(size(imgDouble)) * noiseSigma;
+    end
+
+    % 5. JPEG compression artifacts (FINAL step) - unique to MATLAB
+    % Skip if JPEG was already applied by ROI noise to prevent double compression
+    if ~jpegAlreadyApplied && rand() < PHOTOMETRIC.jpegProb
+        qualityRange = PHOTOMETRIC.jpegQualityRange;
+        quality = qualityRange(1) + randi(diff(qualityRange));
+        img = uint8(min(255, max(0, imgDouble * 255)));  % Convert first
+
+        tempFile = [tempname '.jpg'];
+        try
+            imwrite(img, tempFile, 'Quality', quality);
+            img = imread(tempFile);
+            delete(tempFile);
+        catch ME
+            % Cleanup temp file on error
+            if exist(tempFile, 'file')
+                delete(tempFile);
+            end
+            warning('augmentDataset:jpegFailed', 'JPEG compression failed: %s', ME.message);
+        end
+        return;  % Already converted to uint8
     end
 
     % Final clamp and convert back to uint8
     img = im2uint8(min(1, max(0, imgDouble)));
 end
 
+function clampedValues = clampToMaxShift(origChannel, adjChannel, maxShift)
+    % Clamp adjusted channel to be within maxShift of original
+    % Returns CLAMPED VALUES (not deltas) - assign directly to output
+
+    DARK_THRESHOLD = 30;
+    absMaxDelta = maxShift * 255;
+
+    clampedValues = adjChannel;
+
+    % Bright pixels: relative clamping
+    brightMask = origChannel > DARK_THRESHOLD;
+    if any(brightMask(:))
+        origVals = origChannel(brightMask);
+        origVals(origVals == 0) = 1;  % Defensive: prevent division by zero
+        relDelta = (adjChannel(brightMask) - origChannel(brightMask)) ./ origVals;
+        clampedRelDelta = max(-maxShift, min(maxShift, relDelta));
+        clampedValues(brightMask) = origChannel(brightMask) .* (1 + clampedRelDelta);
+    end
+
+    % Dark pixels: absolute clamping
+    darkMask = ~brightMask;
+    if any(darkMask(:))
+        absDelta = adjChannel(darkMask) - origChannel(darkMask);
+        clampedAbsDelta = max(-absMaxDelta, min(absMaxDelta, absDelta));
+        clampedValues(darkMask) = origChannel(darkMask) + clampedAbsDelta;
+    end
+
+    clampedValues = max(0, min(255, clampedValues));
+end
+
 %% =========================================================================
 %% UTILITY FUNCTIONS
 %% =========================================================================
 
+function clear_folder_contents(folderPath)
+    % Clear all contents of a folder (images and subfolders) for clean reruns
+    %
+    % Deletes all files and subdirectories within folderPath but preserves
+    % the folder itself. Used to prevent stale labels from previous runs.
+    % Warns on permission errors but continues with remaining files.
+    %
+    % Input:
+    %   folderPath - Path to folder to clear
+
+    if ~isfolder(folderPath)
+        return;
+    end
+
+    % Delete all files in the folder
+    files = dir(folderPath);
+    for i = 1:numel(files)
+        if files(i).isdir
+            if strcmp(files(i).name, '.') || strcmp(files(i).name, '..')
+                continue;
+            end
+            % Recursively delete subfolders (e.g., con_* directories)
+            try
+                rmdir(fullfile(folderPath, files(i).name), 's');
+            catch ME
+                warning('augmentDataset:clearFolderFailed', ...
+                        'Failed to delete folder %s: %s', files(i).name, ME.message);
+            end
+        else
+            try
+                delete(fullfile(folderPath, files(i).name));
+            catch ME
+                warning('augmentDataset:clearFileFailed', ...
+                        'Failed to delete file %s: %s', files(i).name, ME.message);
+            end
+        end
+    end
+end
+
+function schedule = compute_augmentation_schedule(numQuads, numAugmentations, balanceEnabled)
+    % Distributes numAugmentations across k=1..N object counts for balanced training
+    %
+    % When balanceEnabled is true, generates a schedule that produces augmented
+    % images with varying numbers of objects (1 to numQuads), distributing
+    % augmentations evenly across all object counts.
+    %
+    % Inputs:
+    %   numQuads - Total number of quads available from this paper
+    %   numAugmentations - Total number of augmentations to generate
+    %   balanceEnabled - If true, distribute across object counts; if false, use all quads
+    %
+    % Output:
+    %   schedule - Struct array with fields:
+    %              .k - Number of objects to use
+    %              .count - Number of augmentations to generate with k objects
+
+    if ~balanceEnabled || numQuads <= 1
+        % No balancing: use all quads for every augmentation
+        schedule = struct('k', numQuads, 'count', numAugmentations);
+        return;
+    end
+
+    % Distribute augmentations evenly across k=1..numQuads
+    baseCount = floor(numAugmentations / numQuads);
+    remainder = mod(numAugmentations, numQuads);
+
+    schedule = struct('k', {}, 'count', {});
+    for k = 1:numQuads
+        % Distribute remainder to lower k values first (more variety)
+        count = baseCount + (k <= remainder);
+        if count > 0
+            schedule(end+1) = struct('k', k, 'count', count); %#ok<AGROW>
+        end
+    end
+end
+
+function filtered = filter_ellipse_map(ellipseMap, selectedQuads, paperBase)
+    % Filter ellipse map to include only entries for selected quads
+    %
+    % Inputs:
+    %   ellipseMap - containers.Map with keys like 'paperBase#concentration'
+    %   selectedQuads - Struct array of selected quads with .concentration field
+    %   paperBase - Base name of the paper image
+    %
+    % Output:
+    %   filtered - containers.Map containing only entries for selected quads
+
+    filtered = containers.Map('KeyType', 'char', 'ValueType', 'any');
+
+    for i = 1:numel(selectedQuads)
+        key = sprintf('%s#%d', paperBase, selectedQuads(i).concentration);
+        if ellipseMap.isKey(key)
+            filtered(key) = ellipseMap(key);
+        end
+    end
+end
+
+function scaleFactor = sample_roi_scale(sizeCfg, bgWidth, bgHeight, bboxWidth, bboxHeight, objectCount)
+    % Compute scale factor using dimension-based constraints
+    %
+    % Constraint: ROI's largest side is [minFrac, maxFrac] of image's smallest side
+    % Object count scaling: More objects -> smaller max size (realistic photography)
+    %
+    % Inputs:
+    %   sizeCfg - ROI size configuration struct with minFrac, maxFrac, fitMargin, countSensitivity
+    %   bgWidth, bgHeight - Background image dimensions
+    %   bboxWidth, bboxHeight - ROI bounding box dimensions (before scaling)
+    %   objectCount - Number of objects being placed in this image
+
+    % Guard against division by zero (degenerate bounding box)
+    if bboxWidth <= 0 || bboxHeight <= 0
+        scaleFactor = 1.0;
+        return;
+    end
+
+    imgMinDim = min(bgWidth, bgHeight);
+    roiMaxDim = max(bboxWidth, bboxHeight);
+
+    % Apply object count scaling to maxFrac
+    % More objects -> smaller effective max (models zooming out to fit all)
+    % Floor at minFrac to preserve documented minimum size guarantee
+    countScaling = 1 / (1 + sizeCfg.countSensitivity * (objectCount - 1));
+    effectiveMaxFrac = max(sizeCfg.maxFrac * countScaling, sizeCfg.minFrac);
+
+    % Dimension-based scale bounds
+    minScaleDim = (sizeCfg.minFrac * imgMinDim) / roiMaxDim;
+    maxScaleDim = (effectiveMaxFrac * imgMinDim) / roiMaxDim;
+
+    % Fit constraint (ensure ROI fits within image with margin)
+    maxScaleW = (bgWidth - 2 * sizeCfg.fitMargin) / bboxWidth;
+    maxScaleH = (bgHeight - 2 * sizeCfg.fitMargin) / bboxHeight;
+    maxScaleFit = min(maxScaleW, maxScaleH);
+
+    % Final valid range
+    effectiveMin = minScaleDim;
+    effectiveMax = min(maxScaleDim, maxScaleFit);
+
+    % Handle edge case where constraints conflict
+    if effectiveMax < effectiveMin
+        % Fit constraint is tighter than size constraint; use fit if positive
+        scaleFactor = max(effectiveMax, 0.01);
+        return;
+    end
+
+    % Log-uniform sampling for perceptually even size distribution
+    logMin = log(effectiveMin);
+    logMax = log(effectiveMax);
+    scaleFactor = exp(logMin + rand() * (logMax - logMin));
+
+    % Ensure valid result
+    if ~isfinite(scaleFactor) || scaleFactor <= 0
+        scaleFactor = effectiveMin;
+    end
+end
+
+function [scaledImg, scaledVerts, scaledEllipses, scaledAlpha] = scale_quad_content(quadImg, vertices, ellipseList, scaleFactor, quadAlpha)
+    % Scale quad content (image, vertices, ellipses, alpha) by scaleFactor
+    %
+    % Inputs:
+    %   quadImg - The quad image (masked crop)
+    %   vertices - 4x2 array of quad vertices (relative to bbox origin)
+    %   ellipseList - Array of ellipse structs with .center, .semiMajor, .semiMinor
+    %   scaleFactor - Scale factor to apply
+    %   quadAlpha - (optional) Alpha mask for compositing (single, 0-1 range)
+    %
+    % Outputs:
+    %   scaledImg - Scaled image
+    %   scaledVerts - Scaled vertices
+    %   scaledEllipses - Scaled ellipse annotations
+    %   scaledAlpha - Scaled alpha mask (if provided)
+
+    hasAlpha = nargin >= 5 && ~isempty(quadAlpha);
+
+    if scaleFactor == 1.0 || abs(scaleFactor - 1.0) < 1e-6
+        scaledImg = quadImg;
+        scaledVerts = vertices;
+        scaledEllipses = ellipseList;
+        if hasAlpha
+            scaledAlpha = quadAlpha;
+        else
+            scaledAlpha = [];
+        end
+        return;
+    end
+
+    [h, w, ~] = size(quadImg);
+    newH = max(1, round(h * scaleFactor));
+    newW = max(1, round(w * scaleFactor));
+
+    % Use bilinear for RGB to maintain pre-multiplied relationship with alpha.
+    % Mathematical basis: bilinear interpolation naturally preserves pre-multiplied
+    % state because blending RGB with black (zero padding at boundaries) produces
+    % RGB_new = RGB * blend_factor, while alpha blends to alpha_new = alpha *
+    % blend_factor, maintaining RGB_new = original * alpha_new.
+    scaledImg = imresize(quadImg, [newH, newW], 'bilinear');
+
+    % Scale alpha with bilinear interpolation to maintain smooth edge transitions
+    if hasAlpha
+        scaledAlpha = imresize(quadAlpha, [newH, newW], 'bilinear');
+        % Clamp to [0,1] and cast to single for type consistency
+        scaledAlpha = single(max(0, min(1, scaledAlpha)));
+    else
+        scaledAlpha = [];
+    end
+
+    % Scale vertices
+    scaledVerts = vertices * scaleFactor;
+
+    % Scale ellipse annotations proportionally
+    scaledEllipses = ellipseList;
+    for eIdx = 1:numel(scaledEllipses)
+        scaledEllipses(eIdx).center = scaledEllipses(eIdx).center * scaleFactor;
+        scaledEllipses(eIdx).semiMajor = scaledEllipses(eIdx).semiMajor * scaleFactor;
+        scaledEllipses(eIdx).semiMinor = scaledEllipses(eIdx).semiMinor * scaleFactor;
+    end
+end
+
 function hashVal = stable_string_hash(strInput)
-    % Deterministic uint32 hash for reproducible RNG offsets
+    % Deterministic uint32 hash for reproducible RNG offsets.
+    % Uses FNV-1a algorithm. Note: As with any 32-bit hash, collisions are
+    % possible for different inputs - this is acceptable for seeding purposes
+    % where occasional collision causes different (but still valid) results.
 
     if nargin == 0 || isempty(strInput)
         hashVal = 0;
@@ -2238,52 +2289,109 @@ function hashVal = stable_string_hash(strInput)
 end
 
 %% =========================================================================
-%% COORDINATE FILE I/O
+%% COORDINATE FILE I/O (delegated to coordinate_io.m)
 %% =========================================================================
+% These functions delegate parsing to coordinate_io.m (authoritative source)
+% and adapt field names to match augment_dataset's internal conventions.
 
-function write_coordinates_atomic(coordPath, headerLine, formatFunc, entries)
-    % Generic atomic coordinate writer with deduplication
+function stage2Map = init_stage2_map(coordPath, startFresh)
+    % Initialize stage 2 coordinate map
     %
     % Inputs:
-    %   coordPath - target coordinate file path
-    %   headerLine - header line string
-    %   formatFunc - function handle that formats one entry struct as string
-    %   entries - cell array of coordinate entry structs
+    %   coordPath - Path to existing coordinates.txt (may not exist)
+    %   startFresh - If true, return empty map (ignore existing coordinates)
+    %                If false, load and merge with existing coordinates
+    %                Typically passed cfg.clearOutputOnRerun from caller
+    %
+    % When clearOutputOnRerun=true, we pass startFresh=true which creates an
+    % empty map (output folders are cleared separately). When clearOutputOnRerun=false,
+    % we pass startFresh=false which loads existing coordinates for merging.
+    stage2Map = containers.Map('KeyType', 'char', 'ValueType', 'any');
 
-    tmpPath = tempname(fileparts(coordPath));
-    fid = fopen(tmpPath, 'wt');
-    if fid == -1
-        error('augmentDataset:coordWrite', 'Cannot open temp file: %s', tmpPath);
+    if nargin < 2
+        startFresh = true;  % Default to fresh start
+    end
+    if startFresh
+        return;
     end
 
-    % Write header
-    fprintf(fid, '%s\n', headerLine);
-
-    % Write entries
-    for i = 1:numel(entries)
-        if ~isempty(entries{i})
-            fprintf(fid, '%s\n', formatFunc(entries{i}));
-        end
-    end
-
-    fclose(fid);
-
-    % Atomic move with fallback
-    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
-    if ~ok
-        warning(msgid, 'movefile failed: %s. Trying copyfile fallback.', msg);
-        [ok2, msg2, msgid2] = copyfile(tmpPath, coordPath, 'f');
-        if ok2
-            delete(tmpPath);
-        else
-            error(msgid2, 'Coordinate write failed: %s', msg2);
+    existing = read_quad_coordinates(coordPath);
+    if ~isempty(existing)
+        for k = 1:numel(existing)
+            e = existing(k);
+            key = sprintf('%s|%d', char(e.image), e.concentration);
+            stage2Map(key) = e;
         end
     end
 end
 
-function write_stage2_coordinates(coords, outputDir, filename)
-    % Atomically write stage 2 coordinates (deduplicated by image+concentration)
-    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+function stage3Map = init_stage3_map(coordPath, startFresh)
+    % Initialize stage 3 coordinate map
+    %
+    % Inputs:
+    %   coordPath - Path to existing coordinates.txt (may not exist)
+    %   startFresh - If true, return empty map (ignore existing coordinates)
+    %                If false, load and merge with existing coordinates
+    %                Typically passed cfg.clearOutputOnRerun from caller
+    %
+    % See init_stage2_map for detailed semantics.
+    stage3Map = containers.Map('KeyType', 'char', 'ValueType', 'any');
+
+    if nargin < 2
+        startFresh = true;  % Default to fresh start
+    end
+    if startFresh
+        return;
+    end
+
+    existing = read_ellipse_coordinates(coordPath);
+    if ~isempty(existing)
+        for k = 1:numel(existing)
+            e = existing(k);
+            key = sprintf('%s|%d|%d', char(e.image), e.concentration, e.replicate);
+            stage3Map(key) = e;
+        end
+    end
+end
+
+function update_stage2_map(stage2Map, coords)
+    if isempty(coords)
+        return;
+    end
+    % Strip extension from image name to match init_stage2_map key format
+    % (coordinate_io.read_quad_coordinates strips extensions when reading)
+    coordIO = coordinate_io();
+    for i = 1:numel(coords)
+        c = coords{i};
+        strippedImage = coordIO.strip_image_extension(char(c.image));
+        key = sprintf('%s|%d', strippedImage, c.concentration);
+        if stage2Map.isKey(key)
+            warning('augmentDataset:duplicateKey', 'Overwriting stage2 key: %s', key);
+        end
+        stage2Map(key) = c;
+    end
+end
+
+function update_stage3_map(stage3Map, coords)
+    if isempty(coords)
+        return;
+    end
+    % Strip extension from image name to match init_stage3_map key format
+    % (coordinate_io.read_ellipse_coordinates strips extensions when reading)
+    coordIO = coordinate_io();
+    for i = 1:numel(coords)
+        c = coords{i};
+        strippedImage = coordIO.strip_image_extension(char(c.image));
+        key = sprintf('%s|%d|%d', strippedImage, c.concentration, c.replicate);
+        if stage3Map.isKey(key)
+            warning('augmentDataset:duplicateKey', 'Overwriting stage3 key: %s', key);
+        end
+        stage3Map(key) = c;
+    end
+end
+
+function write_stage2_map(stage2Map, outputDir, filename)
+    coordIO = coordinate_io();
 
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
@@ -2291,57 +2399,36 @@ function write_stage2_coordinates(coords, outputDir, filename)
     end
     coordPath = fullfile(coordFolder, filename);
 
-    % Load existing entries (if any)
-    existing = read_polygon_coordinates(coordPath);
-    map = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    if ~isempty(existing)
-        for k = 1:numel(existing)
-            e = existing(k);
-            key = sprintf('%s|%d', char(e.image), e.concentration);
-            map(key) = e;
-        end
-    end
+    keysArr = stage2Map.keys;
+    numEntries = numel(keysArr);
+    names = cell(numEntries, 1);
+    nums = zeros(numEntries, 10);  % concentration + 8 coords + rotation
 
-    % Merge/override with new rows
-    for i = 1:numel(coords)
-        c = coords{i};
-        key = sprintf('%s|%d', char(c.image), c.concentration);
-        map(key) = c;
-    end
-
-    % Stage 2 format function
-    function str = formatStage2(e)
+    for i = 1:numEntries
+        e = stage2Map(keysArr{i});
+        names{i} = char(e.image);
         verts = round(e.vertices);
         rotation = 0;
         if isfield(e, 'rotation') && ~isempty(e.rotation)
             rotation = e.rotation;
         end
-        str = sprintf('%s %d %d %d %d %d %d %d %d %d %.2f', ...
-            e.image, e.concentration, ...
-            verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
-            verts(3,1), verts(3,2), verts(4,1), verts(4,2), rotation);
+        nums(i, :) = [e.concentration, ...
+                      verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
+                      verts(3,1), verts(3,2), verts(4,1), verts(4,2), rotation];
     end
 
-    headerLine = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
+    header = coordIO.QUAD_HEADER;
+    writeFmt = coordIO.QUAD_WRITE_FMT;
 
-    % Convert map to cell array
-    keysArr = map.keys;
-    entries = cell(numel(keysArr), 1);
-    for i = 1:numel(keysArr)
-        entries{i} = map(keysArr{i});
-    end
-
-    write_coordinates_atomic(coordPath, headerLine, @formatStage2, entries);
+    coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
 
-function write_stage3_coordinates(coords, outputDir, filename)
-    % Atomically write stage 3 coordinates (dedup by image+concentration+replicate)
-    % Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-
-    % Skip if no coordinates to write
-    if isempty(coords)
+function write_stage3_map(stage3Map, outputDir, filename)
+    if stage3Map.Count == 0
         return;
     end
+
+    coordIO = coordinate_io();
 
     coordFolder = outputDir;
     if ~exist(coordFolder, 'dir')
@@ -2349,188 +2436,112 @@ function write_stage3_coordinates(coords, outputDir, filename)
     end
     coordPath = fullfile(coordFolder, filename);
 
-    % Load existing entries (if any)
-    existing = read_ellipse_coordinates(coordPath);
-    map = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    if ~isempty(existing)
-        for k = 1:numel(existing)
-            e = existing(k);
-            key = sprintf('%s|%d|%d', char(e.image), e.concentration, e.replicate);
-            map(key) = e;
-        end
+    keysArr = stage3Map.keys;
+    numEntries = numel(keysArr);
+    names = cell(numEntries, 1);
+    nums = zeros(numEntries, 7);  % concentration, replicate, x, y, semiMajor, semiMinor, rotation
+
+    for i = 1:numEntries
+        e = stage3Map(keysArr{i});
+        names{i} = char(e.image);
+        nums(i, :) = [e.concentration, e.replicate, ...
+                      e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation];
     end
 
-    % Merge/override with new rows
-    for i = 1:numel(coords)
-        c = coords{i};
-        key = sprintf('%s|%d|%d', char(c.image), c.concentration, c.replicate);
-        map(key) = c;
-    end
+    header = coordIO.ELLIPSE_HEADER;
+    writeFmt = coordIO.ELLIPSE_WRITE_FMT;
 
-    % Stage 3 format function
-    function str = formatStage3(e)
-        str = sprintf('%s %d %d %.2f %.2f %.4f %.4f %.2f', ...
-            e.image, e.concentration, e.replicate, ...
-            e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation);
-    end
-
-    headerLine = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
-
-    % Convert map to cell array
-    keysArr = map.keys;
-    entries = cell(numel(keysArr), 1);
-    for i = 1:numel(keysArr)
-        entries{i} = map(keysArr{i});
-    end
-
-    write_coordinates_atomic(coordPath, headerLine, @formatStage3, entries);
+    coordIO.atomicWriteCoordinates(coordPath, header, names, nums, writeFmt, coordFolder);
 end
 
-function lines = read_coordinate_file_lines(coordPath)
-    % Read non-empty lines from coordinate file, skipping header
-    % Returns cell array of trimmed lines, or empty cell array if file doesn't exist
-    lines = {};
+function entries = read_quad_coordinates(coordPath)
+    % Read quadrilateral coordinates from stage 2 (2_micropads)
+    % Delegates parsing to coordinate_io.parseQuadCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .image, .concentration, .vertices, .rotation
+    % (Maps from coordinate_io's .imageName to .image for backward compatibility)
+
+    entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
 
     if ~isfile(coordPath)
         return;
     end
 
-    fid = fopen(coordPath, 'rt');
-    if fid == -1
-        warning('augmentDataset:coordReadFail', 'Cannot open %s for reading', coordPath);
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseQuadCoordinateFile(coordPath);
+
+    if isempty(rawEntries)
         return;
     end
-    cleaner = onCleanup(@() fclose(fid));
 
-    % Skip header if present (header starts with literal word "image")
-    headerLine = fgetl(fid);
-    if ~ischar(headerLine)
-        fseek(fid, 0, 'bof');
-    else
-        tokens = strsplit(strtrim(headerLine));
-        if isempty(tokens) || ~strcmp(tokens{1}, 'image')
-            fseek(fid, 0, 'bof');
-        end
+    % Map field names from coordinate_io format to augment_dataset format
+    numEntries = numel(rawEntries);
+    entries = struct('image', cell(1, numEntries), ...
+                     'concentration', cell(1, numEntries), ...
+                     'vertices', cell(1, numEntries), ...
+                     'rotation', cell(1, numEntries));
+
+    for i = 1:numEntries
+        entries(i).image = rawEntries(i).imageName;  % Map imageName -> image
+        entries(i).concentration = rawEntries(i).concentration;
+        entries(i).vertices = rawEntries(i).vertices;
+        entries(i).rotation = rawEntries(i).rotation;
     end
-
-    % Read all non-empty lines
-    lines = cell(1000, 1);
-    lineCount = 0;
-    while true
-        line = fgetl(fid);
-        if ~ischar(line)
-            break;
-        end
-        trimmed = strtrim(line);
-        if ~isempty(trimmed)
-            lineCount = lineCount + 1;
-            if lineCount > length(lines)
-                lines = [lines; cell(1000, 1)]; %#ok<AGROW> % Intentional chunked growth (1000-line batches)
-            end
-            lines{lineCount} = trimmed;
-        end
-    end
-    lines = lines(1:lineCount);
-end
-
-function entries = read_polygon_coordinates(coordPath)
-    % Read polygon coordinates from stage 2 (2_micropads)
-    % Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
-    lines = read_coordinate_file_lines(coordPath);
-
-    % Pre-allocate with efficient estimate
-    maxEntries = max(100, numel(lines) * 2);
-    entries = struct('image', {}, 'concentration', {}, 'vertices', {}, 'rotation', {});
-    entries(maxEntries).image = '';
-    count = 0;
-    skippedCount = 0;
-
-    for i = 1:numel(lines)
-        parts = strsplit(lines{i});
-        if numel(parts) < 10
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        imgName = parts{1};
-        concentration = str2double(parts{2});
-        coords = str2double(parts(3:10));
-
-        % Read rotation if available (11th field), default to 0 if missing
-        if numel(parts) >= 11
-            rotation = str2double(parts{11});
-            if isnan(rotation)
-                rotation = 0;
-            end
-        else
-            rotation = 0;
-        end
-
-        if any(isnan([concentration, coords]))
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        vertices = reshape(coords, [2, 4])';
-
-        count = count + 1;
-        entries(count) = struct('image', imgName, ...
-                                'concentration', concentration, ...
-                                'vertices', vertices, ...
-                                'rotation', rotation);
-    end
-
-    if skippedCount > 0
-        warning('augmentDataset:invalidCoords', ...
-                'Skipped %d invalid coordinate entries in %s', skippedCount, coordPath);
-    end
-
-    entries = entries(1:count);
 end
 
 function entries = read_ellipse_coordinates(coordPath)
-    % Read ellipse coordinates from stage 3
-    lines = read_coordinate_file_lines(coordPath);
+    % Read ellipse coordinates from stage 3 (3_elliptical_regions)
+    % Delegates parsing to coordinate_io.parseEllipseCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .image, .concentration, .replicate,
+    %                                   .center, .semiMajor, .semiMinor, .rotation
+    % (Maps from coordinate_io field names for backward compatibility)
 
-    % Pre-allocate with generous estimate
-    maxEntries = max(100, numel(lines) * 2);
     entries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
                      'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
-    entries(maxEntries).image = '';
-    count = 0;
-    skippedCount = 0;
 
-    for i = 1:numel(lines)
-        parts = strsplit(lines{i});
-        if numel(parts) < 8
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        imgName = parts{1};
-        nums = str2double(parts(2:8));
-
-        if any(isnan(nums))
-            skippedCount = skippedCount + 1;
-            continue;
-        end
-
-        count = count + 1;
-        entries(count) = struct('image', imgName, ...
-                                'concentration', nums(1), ...
-                                'replicate', nums(2), ...
-                                'center', nums(3:4), ...
-                                'semiMajor', nums(5), ...
-                                'semiMinor', nums(6), ...
-                                'rotation', nums(7));
+    if ~isfile(coordPath)
+        return;
     end
 
-    if skippedCount > 0
-        fprintf('  Note: Skipped %d invalid ellipse coordinate entries in %s (missing or invalid values)\n', ...
-                skippedCount, coordPath);
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseEllipseCoordinateFile(coordPath);
+
+    if isempty(rawEntries)
+        return;
     end
 
-    entries = entries(1:count);
+    % Map field names from coordinate_io format to augment_dataset format
+    numEntries = numel(rawEntries);
+    entries = struct('image', cell(1, numEntries), ...
+                     'concentration', cell(1, numEntries), ...
+                     'replicate', cell(1, numEntries), ...
+                     'center', cell(1, numEntries), ...
+                     'semiMajor', cell(1, numEntries), ...
+                     'semiMinor', cell(1, numEntries), ...
+                     'rotation', cell(1, numEntries));
+
+    for i = 1:numEntries
+        entries(i).image = rawEntries(i).imageName;  % Map imageName -> image
+        entries(i).concentration = rawEntries(i).concentration;
+        entries(i).replicate = rawEntries(i).replicate;
+        entries(i).center = [rawEntries(i).x, rawEntries(i).y];  % Combine x,y -> center
+
+        % Validate ellipse axis constraint: semiMajor >= semiMinor
+        major = rawEntries(i).semiMajorAxis;
+        minor = rawEntries(i).semiMinorAxis;
+        rot = rawEntries(i).rotationAngle;
+        if minor > major
+            % Swap axes and rotate 90 degrees to maintain ellipse shape
+            entries(i).semiMajor = minor;
+            entries(i).semiMinor = major;
+            entries(i).rotation = rot + 90;
+        else
+            entries(i).semiMajor = major;
+            entries(i).semiMinor = minor;
+            entries(i).rotation = rot;
+        end
+    end
 end
 
 %% =========================================================================
@@ -2567,13 +2578,14 @@ function ellipseMap = group_ellipses_by_parent(ellipseEntries, hasEllipses)
     end
 end
 
-function paperGroups = group_polygons_by_image(polygonEntries)
-    % Group polygons by source image name
+function paperGroups = group_quads_by_image(quadEntries)
+    % Group quads by source image name
     paperGroups = containers.Map('KeyType', 'char', 'ValueType', 'any');
 
-    for i = 1:numel(polygonEntries)
-        p = polygonEntries(i);
-        [~, imgBase, ~] = fileparts(p.image);
+    for i = 1:numel(quadEntries)
+        p = quadEntries(i);
+        % p.image is already a base name; avoid stripping dot-suffixes (e.g., Roboflow hashes)
+        imgBase = char(p.image);
 
         if ~isKey(paperGroups, imgBase)
             paperGroups(imgBase) = p;
@@ -2588,18 +2600,18 @@ end
 %% VALIDATION AND UTILITIES
 %% =========================================================================
 
-function valid = is_valid_polygon(vertices, minArea)
-    % Check if polygon is valid (non-degenerate)
+function valid = is_valid_quad(vertices, minArea)
+    % Check if quadrilateral is valid (non-degenerate)
     area = polyarea(vertices(:,1), vertices(:,2));
     valid = area > minArea;
 end
 
-function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
-    % Place polygons randomly with collision avoidance using spatial grid acceleration
+function positions = place_quads_nonoverlapping(quadBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
+    % Place quads randomly with collision avoidance using spatial grid acceleration
 
-    numPolygons = numel(polygonBboxes);
-    positions = cell(numPolygons, 1);
-    placedBboxes = zeros(numPolygons, 4);
+    numQuads = numel(quadBboxes);
+    positions = cell(numQuads, 1);
+    placedBboxes = zeros(numQuads, 4);
 
     % Initialize spatial grid for O(1) collision detection
     gridCellSize = minSpacing;
@@ -2607,8 +2619,8 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
     gridHeight = ceil(bgHeight / gridCellSize);
     grid = cell(gridHeight, gridWidth);
 
-    for i = 1:numPolygons
-        bbox = polygonBboxes{i};
+    for i = 1:numQuads
+        bbox = quadBboxes{i};
         placed = false;
         lastCandidate = [];
 
@@ -2631,9 +2643,9 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
             hasOverlap = false;
             for cy = cellMinY:cellMaxY
                 for cx = cellMinX:cellMaxX
-                    cellPolygons = grid{cy, cx};
-                    for k = 1:numel(cellPolygons)
-                        j = cellPolygons(k);
+                    cellQuads = grid{cy, cx};
+                    for k = 1:numel(cellQuads)
+                        j = cellQuads(k);
                         if bboxes_overlap(candidateBbox, placedBboxes(j, :), minSpacing)
                             hasOverlap = true;
                             break;
@@ -2667,14 +2679,20 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
             lastCandidate = [x, y];
         end
 
-        % If all retries failed, force placement anyway
+        % If all retries failed, force placement anyway (may cause overlap)
         if ~placed
             if isempty(lastCandidate) || any(~isfinite(lastCandidate))
                 x = max(0, (bgWidth - bbox.width) / 2);
                 y = max(0, (bgHeight - bbox.height) / 2);
+                warning('augmentDataset:forcedPlacement', ...
+                        'Quad %d placement failed after %d retries. Forcing center placement (may overlap).', ...
+                        i, maxRetries);
             else
                 x = lastCandidate(1);
                 y = lastCandidate(2);
+                warning('augmentDataset:forcedPlacement', ...
+                        'Quad %d placement failed after %d retries. Using last candidate position (may overlap).', ...
+                        i, maxRetries);
             end
             positions{i} = struct('x', x, 'y', y);
             placedBboxes(i, :) = [x, y, x + bbox.width, y + bbox.height];
@@ -2683,13 +2701,19 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
 end
 
 function [x, y] = random_top_left(bboxStruct, margin, widthVal, heightVal)
+    % Generate random placement position for quad bounding box
+    % Returns INTEGER coordinates to ensure pixel-perfect alignment between:
+    % - composite_to_background target region sizing
+    % - extract_quad_from_scene extraction region sizing
+    % This preserves ellipse coordinate validity in the extracted crop.
     availX = max(0, widthVal - bboxStruct.width - 2 * margin);
     if availX > 0
         x = margin + rand() * availX;
     else
         x = max(0, (widthVal - bboxStruct.width) / 2);
     end
-    x = min(x, widthVal - bboxStruct.width);
+    x = max(0, min(x, widthVal - bboxStruct.width));
+    x = round(x);  % Integer position for pixel-perfect alignment
 
     availY = max(0, heightVal - bboxStruct.height - 2 * margin);
     if availY > 0
@@ -2697,7 +2721,8 @@ function [x, y] = random_top_left(bboxStruct, margin, widthVal, heightVal)
     else
         y = max(0, (heightVal - bboxStruct.height) / 2);
     end
-    y = min(y, heightVal - bboxStruct.height);
+    y = max(0, min(y, heightVal - bboxStruct.height));
+    y = round(y);  % Integer position for pixel-perfect alignment
 end
 
 function overlap = bboxes_overlap(bbox1, bbox2, minSpacing)
@@ -2729,1212 +2754,7 @@ function imgPath = find_stage1_image(folder, baseName, supportedFormats)
     end
 end
 
-
-function phoneDirs = list_phones(stage2Root)
-    if ~isfolder(stage2Root)
-        phoneDirs = {};
-        return;
-    end
-    d = dir(stage2Root);
-    mask = [d.isdir] & ~ismember({d.name}, {'.', '..'});
-    phoneDirs = {d(mask).name};
-end
-
-function img = clamp_uint8(img)
-    % Clamp image values to [0, 255] and convert to uint8
-    % Input must be in [0, 255] range (not normalized [0, 1])
-    img = uint8(min(255, max(0, img)));
-end
-
-function img = apply_motion_blur(img)
-    % Apply slight motion blur with cached PSFs to avoid redundant kernel generation
-    persistent psf_cache
-    if isempty(psf_cache)
-        psf_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
-    end
-
-    len = 4 + randi(4);            % 5-8 px
-    ang = rand() * 180;            % degrees
-    ang_rounded = round(ang);
-    cache_key = sprintf('%d_%d', len, ang_rounded);
-
-    if isKey(psf_cache, cache_key)
-        psf = psf_cache(cache_key);
-    else
-        psf = fspecial('motion', len, ang_rounded);
-        psf_cache(cache_key) = psf;
-    end
-
-    img = imfilter(img, psf, 'replicate');
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% downstream rather than via image metadata.
-
-    I = imread(fname);
-end
-
-function ensure_folder(pathStr)
-    if ~isempty(pathStr) && ~isfolder(pathStr)
-        mkdir(pathStr);
-    end
-end
-
-function projectRoot = find_project_root(inputFolder)
-    % Find project root by searching up directory tree
-    currentDir = pwd;
-    searchDir = currentDir;
-    maxLevels = 5;
-
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-        searchDir = parentDir;
-    end
-
-    warning('augmentDataset:pathResolution', ...
-            'Could not find input folder "%s". Using current directory.', inputFolder);
-    projectRoot = currentDir;
-end
-
-%% -------------------------------------------------------------------------
-function [damagedRGB, damagedAlpha, maskEditable, maskProtected, damageCorners] = apply_paper_damage(polygonRGB, polygonAlpha, quadCorners, ellipseList, damageCfg, rngState)
-    % Apply paper defect augmentation pipeline to polygon patch
-    %
-    % INPUTS:
-    %   polygonRGB - [H x W x 3] uint8 color content
-    %   polygonAlpha - [H x W] logical mask
-    %   quadCorners - [4 x 2] vertex coordinates
-    %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
-    %   damageCfg - cfg.damage struct
-    %   rngState - RNG state for reproducibility
-    %
-    % OUTPUTS:
-%   damagedRGB - [H x W x 3] uint8 damaged color content
-%   damagedAlpha - [H x W] logical damaged mask
-%   maskEditable - [H x W] logical editable mask
-%   maskProtected - [H x W] logical protected mask
-%   damageCorners - [4 x 2] polygon vertices after warp/shear (crop space)
-
-    % Save/restore RNG only when determinism is requested so random draws do
-    % not replay for every polygon.
-    savedRngState = [];
-    if ~isempty(rngState)
-        savedRngState = rng();
-        rng(rngState);
-    end
-
-    % Initialize outputs
-    damagedRGB = polygonRGB;
-    damagedAlpha = polygonAlpha;
-    damageCorners = double(quadCorners);
-
-    % Check if damage should be applied
-    if rand() > damageCfg.probability
-        maskEditable = false(size(polygonAlpha));
-        maskProtected = false(size(polygonAlpha));
-        if ~isempty(savedRngState)
-            rng(savedRngState);
-        end
-        return;
-    end
-
-    % Sample damage profile using precomputed cumulative weights
-    rVal = rand();
-    profileIdx = find(rVal <= damageCfg.profileCumWeights, 1, 'first');
-    if isempty(profileIdx)
-        profileIdx = numel(damageCfg.profileNames);
-    end
-    selectedProfile = damageCfg.profileNames{profileIdx};
-
-    % Phase 0: Prepare masks for damage operations
-    [H, W, ~] = size(polygonRGB);
-    maskPolygon = damagedAlpha;
-    maskProtected = false(H, W);
-    maskPreCuts = damagedAlpha;
-    hasEllipses = ~isempty(ellipseList) && numel(ellipseList) > 0;
-    originalArea = sum(maskPolygon(:));
-
-    guardCenters = zeros(max(1, numel(ellipseList)), 2);
-    guardCenterCount = 0;
-    ellipseProtectionActive = false;
-
-    maxRemovalFraction = [];
-    if isfield(damageCfg, 'maxAreaRemovalFraction') && ~isempty(damageCfg.maxAreaRemovalFraction)
-        maxRemovalFraction = min(max(damageCfg.maxAreaRemovalFraction, 0), 1);
-    end
-
-    if hasEllipses
-        % Compute bounding box for all ellipses to minimize meshgrid size
-        ellipseBBox = compute_ellipse_bbox_union(ellipseList, W, H);
-        
-        if ~isempty(ellipseBBox)
-            % Create meshgrid only for ROI containing all ellipses
-            [xx, yy] = meshgrid(ellipseBBox.xMin:ellipseBBox.xMax, ellipseBBox.yMin:ellipseBBox.yMax);
-
-            keepFraction = 1;
-            if ~isempty(maxRemovalFraction)
-                keepFraction = max(0, 1 - maxRemovalFraction);
-            end
-            ellipseAxisScale = sqrt(keepFraction);
-            
-            for eIdx = 1:numel(ellipseList)
-                ellipse = ellipseList(eIdx);
-
-                if ~isfield(ellipse, 'center') || ~isfield(ellipse, 'semiMajor') || ...
-                   ~isfield(ellipse, 'semiMinor') || ~isfield(ellipse, 'rotation')
-                    continue;
-                end
-
-                cx = ellipse.center(1);
-                cy = ellipse.center(2);
-                a = ellipse.semiMajor;
-                b = ellipse.semiMinor;
-                theta = ellipse.rotation * pi / 180;
-
-                if a <= 0 || b <= 0
-                    continue;
-                end
-
-                if cx < 1 || cx > W || cy < 1 || cy > H
-                    continue;
-                end
-
-                guardCenterCount = guardCenterCount + 1;
-                guardCenters(guardCenterCount, :) = [cx, cy];
-
-                % Compute ellipse mask in ROI coordinates
-                xx_rot = (xx - cx) * cos(theta) + (yy - cy) * sin(theta);
-                yy_rot = -(xx - cx) * sin(theta) + (yy - cy) * cos(theta);
-
-                ellipseCoreMask = false(size(xx_rot));
-                if keepFraction > 0 && ellipseAxisScale > 0
-                    coreA = a * ellipseAxisScale;
-                    coreB = b * ellipseAxisScale;
-                    if coreA > 0 && coreB > 0
-                        ellipseCoreMask = (xx_rot .^ 2) / (coreA ^ 2) + (yy_rot .^ 2) / (coreB ^ 2) <= 1;
-                    end
-                end
-
-                % Map ROI mask back to full image coordinates
-                if isempty(maskProtected) || ~any(maskProtected(:))
-                    maskProtected = false(H, W);
-                end
-                if any(ellipseCoreMask(:))
-                    maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) = ...
-                        maskProtected(ellipseBBox.yMin:ellipseBBox.yMax, ellipseBBox.xMin:ellipseBBox.xMax) | ellipseCoreMask;
-                    ellipseProtectionActive = true;
-                end
-            end
-
-            maskProtected = maskProtected & maskPolygon;
-        end
-    end
-
-    if guardCenterCount > 0 && ellipseProtectionActive
-        guardCenters = guardCenters(1:guardCenterCount, :);
-        bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, damageCorners);
-        if ~isempty(bridgeMask)
-            maskProtected = maskProtected | bridgeMask;
-        end
-    end
-
-    minAllowedAreaPixels = [];
-    if ~hasEllipses && ~isempty(maxRemovalFraction)
-        coreGuardScale = 1 - maxRemovalFraction;
-        if coreGuardScale > 0
-            coreMask = build_core_guard_mask(damageCorners, H, W, coreGuardScale);
-            if ~isempty(coreMask)
-                maskProtected = maskProtected | (coreMask & maskPolygon);
-            end
-        end
-        minAllowedAreaPixels = originalArea * (1 - maxRemovalFraction);
-    end
-
-    maskEditable = maskPolygon & ~maskProtected;
-    hasProtectedRegions = any(maskProtected(:));
-
-    if sum(maskEditable(:)) == 0
-        maskEditable = false(size(maskProtected));
-        if ~isempty(savedRngState)
-            rng(savedRngState);
-        end
-        return;
-    end
-
-    % Phase 1: Base Warp & Shear
-
-    % 1.1 Projective jitter (all profiles)
-    imgCorners = [1, 1; W, 1; W, H; 1, H];  % TL, TR, BR, BL
-    jitterScale = 0.03;
-    rotJitter = 2.0 * pi / 180;
-
-    jitteredCorners = imgCorners;
-    for i = 1:4
-        % Translation jitter: +/- 3% of image dimensions
-        jitteredCorners(i, 1) = imgCorners(i, 1) + (rand() * 2 - 1) * jitterScale * W;
-        jitteredCorners(i, 2) = imgCorners(i, 2) + (rand() * 2 - 1) * jitterScale * H;
-
-        % Rotation jitter: +/- 2° around corner
-        angle = (rand() * 2 - 1) * rotJitter;
-        cx = imgCorners(i, 1);
-        cy = imgCorners(i, 2);
-        dx = jitteredCorners(i, 1) - cx;
-        dy = jitteredCorners(i, 2) - cy;
-        jitteredCorners(i, 1) = cx + dx * cos(angle) - dy * sin(angle);
-        jitteredCorners(i, 2) = cy + dx * sin(angle) + dy * cos(angle);
-    end
-
-    % Clamp to image bounds
-    jitteredCorners(:, 1) = max(1, min(W, jitteredCorners(:, 1)));
-    jitteredCorners(:, 2) = max(1, min(H, jitteredCorners(:, 2)));
-
-    try
-        tform = fitgeotrans(imgCorners, jitteredCorners, 'projective');
-        outputView = imref2d([H, W]);
-
-        damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
-                           'InterpolationMethod', 'linear', 'FillValues', 0);
-
-        alphaDouble = double(damagedAlpha);
-        warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
-                            'InterpolationMethod', 'linear', 'FillValues', 0);
-        damagedAlphaCand = warpedAlpha > 0.5;
-
-        if hasProtectedRegions
-            maskProtectedDouble = double(maskProtected);
-            warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
-                                    'InterpolationMethod', 'nearest', 'FillValues', 0);
-            maskProtected = warpedProtected > 0.5;
-            hasProtectedRegions = any(maskProtected(:));
-        end
-
-        if hasProtectedRegions
-            damagedAlpha = damagedAlphaCand | maskProtected;
-            maskEditable = damagedAlpha & ~maskProtected;
-        else
-            damagedAlpha = damagedAlphaCand;
-            maskEditable = damagedAlphaCand;
-        end
-        [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
-        maskPreCuts = damagedAlpha;
-    catch
-    end
-
-    % 1.2 Nonlinear edge bending (minimalWarp and sideCollapse only)
-    % Skip for small polygons where warp overhead exceeds benefit
-    minDim = min(H, W);
-    applyNonlinearWarp = minDim > 200;
-    
-    if applyNonlinearWarp && (strcmp(selectedProfile, 'minimalWarp') || strcmp(selectedProfile, 'sideCollapse'))
-        % Control points at edge midpoints
-        controlPoints = [
-            W/2, 1;      % Top edge midpoint
-            W, H/2;      % Right edge midpoint
-            W/2, H;      % Bottom edge midpoint
-            1, H/2       % Left edge midpoint
-        ];
-
-        % Add corners as fixed anchor points
-        movingPts = [controlPoints; [1, 1; W, 1; W, H; 1, H]];
-        fixedPts = movingPts;
-
-        % Offset edge midpoints perpendicular to edge
-        ampRange = damageCfg.edgeWaveAmplitudeRange * minDim;
-        for i = 1:4
-            offset = ampRange(1) + rand() * (ampRange(2) - ampRange(1));
-            offset = offset * (2 * (rand() > 0.5) - 1);  % Random sign
-
-            if i == 1  % Top edge
-                fixedPts(i, 2) = fixedPts(i, 2) + offset;
-            elseif i == 2  % Right edge
-                fixedPts(i, 1) = fixedPts(i, 1) + offset;
-            elseif i == 3  % Bottom edge
-                fixedPts(i, 2) = fixedPts(i, 2) + offset;
-            else  % Left edge
-                fixedPts(i, 1) = fixedPts(i, 1) + offset;
-            end
-        end
-
-        % Clamp to valid region
-        fixedPts(:, 1) = max(1, min(W, fixedPts(:, 1)));
-        fixedPts(:, 2) = max(1, min(H, fixedPts(:, 2)));
-
-        try
-            tform = fitgeotrans(movingPts, fixedPts, 'lwm', 8);
-            outputView = imref2d([H, W]);
-
-            damagedRGB = imwarp(damagedRGB, tform, 'OutputView', outputView, ...
-                               'InterpolationMethod', 'linear', 'FillValues', 0);
-
-            alphaDouble = double(damagedAlpha);
-            warpedAlpha = imwarp(alphaDouble, tform, 'OutputView', outputView, ...
-                                'InterpolationMethod', 'linear', 'FillValues', 0);
-            damagedAlphaCand = warpedAlpha > 0.5;
-
-            if hasProtectedRegions
-                maskProtectedDouble = double(maskProtected);
-                warpedProtected = imwarp(maskProtectedDouble, tform, 'OutputView', outputView, ...
-                                        'InterpolationMethod', 'nearest', 'FillValues', 0);
-                maskProtected = warpedProtected > 0.5;
-                hasProtectedRegions = any(maskProtected(:));
-            end
-
-            damagedAlpha = damagedAlphaCand;
-            if hasProtectedRegions
-                damagedAlpha = damagedAlpha | maskProtected;
-                maskEditable = damagedAlpha & ~maskProtected;
-            else
-                maskEditable = damagedAlpha;
-            end
-            [damageCorners(:,1), damageCorners(:,2)] = transformPointsForward(tform, damageCorners(:,1), damageCorners(:,2));
-            maskPreCuts = damagedAlpha;
-        catch
-        end
-    end
-
-    % Phase 2: Structural Cuts (Material Removal)
-    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
-        if strcmp(selectedProfile, 'cornerChew')
-            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
-            operationWeights = [0.35, 0.25, 0.25, 0.15];
-        else
-            operationPool = {'cornerClip', 'cornerTear', 'sideBite', 'taperedSide'};
-            operationWeights = [0.10, 0.10, 0.50, 0.30];
-        end
-
-        numOps = randi([1, damageCfg.maxOperations]);
-
-        prevOp = '';
-        for opIdx = 1:numOps
-            weights = operationWeights;
-            if ~isempty(prevOp)
-                weights(strcmp(operationPool, prevOp)) = 0;
-            end
-            if sum(weights) == 0
-                weights = operationWeights;
-            end
-            weights = weights / sum(weights);
-            cumWeights = cumsum(weights);
-            opType = operationPool{find(rand() <= cumWeights, 1, 'first')};
-
-            maskBeforeOp = maskEditable;
-            switch opType
-                case 'cornerClip'
-                    maskEditable = apply_corner_clip(maskEditable, damageCorners, damageCfg);
-                case 'cornerTear'
-                    maskEditable = apply_corner_tear(maskEditable, damageCorners, damageCfg);
-                case 'sideBite'
-                    maskEditable = apply_side_bite(maskEditable, damageCorners, damageCfg, maskProtected, hasProtectedRegions);
-                case 'taperedSide'
-                    maskEditable = apply_tapered_side(maskEditable, damageCorners, damageCfg);
-            end
-
-            currentArea = sum(maskEditable(:)) + sum(maskProtected(:));
-            if ~isempty(minAllowedAreaPixels) && currentArea < minAllowedAreaPixels
-                maskEditable = maskBeforeOp;
-                break;
-            end
-
-            prevOp = opType;
-        end
-
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    end
-
-    maskEditablePreWear = maskEditable;
-    damagedAlphaPreWear = damagedAlpha;
-    damagedRGBPreWear = damagedRGB;
-
-    % Phase 3: Edge Wear & Thickness Cues
-    if strcmp(selectedProfile, 'cornerChew') || strcmp(selectedProfile, 'sideCollapse')
-        maskEditable = apply_edge_wave_noise(maskEditable, damageCfg);
-
-        if rand() < 0.5
-            maskEditable = apply_edge_fray(maskEditable, maskProtected);
-        end
-
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        damagedRGB = apply_thickness_shadows(damagedRGB, damagedAlpha, maskPreCuts);
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    elseif strcmp(selectedProfile, 'minimalWarp')
-        damagedAlpha = maskEditable;
-        if hasProtectedRegions
-            damagedAlpha = damagedAlpha | maskProtected;
-        end
-
-        for c = 1:3
-            channel = damagedRGB(:,:,c);
-            channel(~damagedAlpha) = 0;
-            damagedRGB(:,:,c) = channel;
-        end
-    end
-
-    if ~isempty(minAllowedAreaPixels)
-        finalArea = sum(maskEditable(:)) + sum(maskProtected(:));
-        if finalArea < minAllowedAreaPixels
-            maskEditable = maskEditablePreWear;
-            damagedAlpha = damagedAlphaPreWear;
-            damagedRGB = damagedRGBPreWear;
-        end
-    end
-
-    if ~isempty(savedRngState)
-        rng(savedRngState);
-    end
-end
-
-function coreMask = build_core_guard_mask(quadCorners, height, width, scaleFactor)
-    % Construct a scaled version of the polygon that remains untouched
-    if isempty(quadCorners) || size(quadCorners, 2) ~= 2 || scaleFactor <= 0
-        coreMask = [];
-        return;
-    end
-
-    scaleFactor = min(scaleFactor, 1);
-
-    centroid = mean(quadCorners, 1, 'omitnan');
-    if any(isnan(centroid))
-        coreMask = [];
-        return;
-    end
-
-    scaledCorners = (quadCorners - centroid) * scaleFactor + centroid;
-    coreMask = poly2mask(scaledCorners(:, 1), scaledCorners(:, 2), height, width);
-end
-
-function ellipseBBox = compute_ellipse_bbox_union(ellipseList, width, height)
-    % Compute tight bounding box containing all ellipses for ROI-based processing
-    %
-    % INPUTS:
-    %   ellipseList - struct array with fields: center, semiMajor, semiMinor, rotation
-    %   width, height - image dimensions
-    %
-    % OUTPUT:
-    %   ellipseBBox - struct with xMin, xMax, yMin, yMax (empty if no valid ellipses)
-    
-    if isempty(ellipseList)
-        ellipseBBox = [];
-        return;
-    end
-    
-    % Collect all ellipse bounding boxes
-    numEllipses = numel(ellipseList);
-    xMins = zeros(numEllipses, 1);
-    xMaxs = zeros(numEllipses, 1);
-    yMins = zeros(numEllipses, 1);
-    yMaxs = zeros(numEllipses, 1);
-    validCount = 0;
-    
-    for i = 1:numEllipses
-        ellipse = ellipseList(i);
-        
-        if ~isfield(ellipse, 'center') || ~isfield(ellipse, 'semiMajor') || ...
-           ~isfield(ellipse, 'semiMinor') || ~isfield(ellipse, 'rotation')
-            continue;
-        end
-        
-        cx = ellipse.center(1);
-        cy = ellipse.center(2);
-        
-        if cx < 1 || cx > width || cy < 1 || cy > height
-            continue;
-        end
-        
-        % Compute axis-aligned bounding box for rotated ellipse
-        theta = ellipse.rotation * pi / 180;
-        a = ellipse.semiMajor;
-        b = ellipse.semiMinor;
-        if a <= 0 || b <= 0
-            continue;
-        end
-        dx = sqrt((a * cos(theta))^2 + (b * sin(theta))^2);
-        dy = sqrt((a * sin(theta))^2 + (b * cos(theta))^2);
-        
-        validCount = validCount + 1;
-        xMins(validCount) = cx - dx;
-        xMaxs(validCount) = cx + dx;
-        yMins(validCount) = cy - dy;
-        yMaxs(validCount) = cy + dy;
-    end
-    
-    if validCount == 0
-        ellipseBBox = [];
-        return;
-    end
-    
-    xMins = xMins(1:validCount);
-    xMaxs = xMaxs(1:validCount);
-    yMins = yMins(1:validCount);
-    yMaxs = yMaxs(1:validCount);
-    
-    ellipseBBox = struct();
-    ellipseBBox.xMin = max(1, floor(min(xMins)));
-    ellipseBBox.xMax = min(width, ceil(max(xMaxs)));
-    ellipseBBox.yMin = max(1, floor(min(yMins)));
-    ellipseBBox.yMax = min(height, ceil(max(yMaxs)));
-end
-
-function bridgeMask = build_guard_bridge_mask(maskPolygon, guardCenters, quadCorners)
-    % Add protected connectors so guarded ellipses remain attached to the strip
-
-    bridgeMask = false(size(maskPolygon));
-    if isempty(guardCenters)
-        return;
-    end
-
-    centroid = mean(quadCorners, 1, 'omitnan');
-    if any(~isfinite(centroid))
-        return;
-    end
-
-    [height, width] = size(maskPolygon);
-    centroid(1) = max(1, min(width, centroid(1)));
-    centroid(2) = max(1, min(height, centroid(2)));
-
-    valid = all(isfinite(guardCenters), 2);
-    guardCenters = guardCenters(valid, :);
-    if isempty(guardCenters)
-        return;
-    end
-
-    for idx = 1:size(guardCenters, 1)
-        startPt = guardCenters(idx, :);
-        delta = abs(startPt - centroid);
-        numSteps = max(delta);
-        numSteps = max(ceil(numSteps), 1);
-        xLine = round(linspace(startPt(1), centroid(1), numSteps));
-        yLine = round(linspace(startPt(2), centroid(2), numSteps));
-        keep = xLine >= 1 & xLine <= width & yLine >= 1 & yLine <= height;
-        xLine = xLine(keep);
-        yLine = yLine(keep);
-        ind = sub2ind([height, width], yLine, xLine);
-        bridgeMask(ind) = true;
-    end
-
-    se = strel('disk', 2, 0);
-    bridgeMask = imdilate(bridgeMask, se) & maskPolygon;
-end
-
-%% -------------------------------------------------------------------------
-%% Phase 2 Helper Functions (Structural Cuts)
-%% -------------------------------------------------------------------------
-
-function edgeInfo = get_polygon_edges(quadCorners)
-    % Extract edge geometry from polygon corners for edge-aware damage operations
-    %
-    % INPUTS:
-    %   quadCorners - [4 x 2] vertex coordinates in clockwise order [TL, TR, BR, BL]
-    %
-    % OUTPUTS:
-    %   edgeInfo - struct with fields:
-    %     .corners - [4 x 2] original corners
-    %     .edges - [4 x 2 x 2] array where edges(i,:,:) = [startPt; endPt]
-    %     .midpoints - [4 x 2] midpoint of each edge
-    %     .normals - [4 x 2] inward-pointing unit normals
-    %     .lengths - [4 x 1] edge lengths
-    %     .directions - [4 x 2] unit direction vectors along edges
-
-    edgeInfo = struct();
-    edgeInfo.corners = quadCorners;
-
-    % Compute edges (clockwise order: top, right, bottom, left)
-    edgeInfo.edges = zeros(4, 2, 2);
-    for i = 1:4
-        nextIdx = mod(i, 4) + 1;
-        edgeInfo.edges(i, :, :) = [quadCorners(i, :); quadCorners(nextIdx, :)];
-    end
-
-    % Compute edge midpoints, lengths, directions
-    edgeInfo.midpoints = zeros(4, 2);
-    edgeInfo.lengths = zeros(4, 1);
-    edgeInfo.directions = zeros(4, 2);
-    edgeInfo.normals = zeros(4, 2);
-
-    for i = 1:4
-        startPt = squeeze(edgeInfo.edges(i, 1, :))';
-        endPt = squeeze(edgeInfo.edges(i, 2, :))';
-
-        % Midpoint
-        edgeInfo.midpoints(i, :) = (startPt + endPt) / 2;
-
-        % Direction vector and length
-        edgeVec = endPt - startPt;
-        edgeInfo.lengths(i) = norm(edgeVec);
-        edgeInfo.directions(i, :) = edgeVec / edgeInfo.lengths(i);
-
-        % Inward normal (rotate direction 90 deg clockwise: [x,y] -> [y,-x])
-        edgeInfo.normals(i, :) = [edgeVec(2), -edgeVec(1)] / edgeInfo.lengths(i);
-    end
-
-    % Verify normals point inward (toward polygon centroid)
-    centroid = mean(quadCorners, 1);
-    for i = 1:4
-        toCenter = centroid - edgeInfo.midpoints(i, :);
-        if dot(edgeInfo.normals(i, :), toCenter) < 0
-            % Normal points outward, flip it
-            edgeInfo.normals(i, :) = -edgeInfo.normals(i, :);
-        end
-    end
-end
-
-%% -------------------------------------------------------------------------
-function mask = apply_corner_clip(mask, quadCorners, damageCfg)
-    % Remove triangular section from 1-3 corners with straight cuts
-    %
-    % ALGORITHM:
-    %   1. Sample number of corners (1-3, weighted 30/50/20)
-    %   2. For adjacent corners (70% of 2-corner clips), create trapezoid look
-    %   3. Compute clip depth from reference dimension (mean edge length)
-    %   4. Create triangle vertices using edge directions from polygon geometry
-    %   5. Rasterize and subtract from mask
-    %
-    % INPUTS:
-    %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
-    %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
-    %
-    % OUTPUT:
-    %   mask - [H×W] logical mask with clips subtracted
-    %
-    % Uses actual polygon corners for geometry-aware clipping
-
-    [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
-
-    % Reference dimension for depth calculation (use mean edge length)
-    refDim = mean(edgeInfo.lengths);
-
-    % Sample number of corners to clip (1-3, weighted toward 2)
-    % Sample corner count without Statistics Toolbox
-    cornerWeights = [0.3, 0.5, 0.2];
-    rVal = rand();
-    if rVal < cornerWeights(1)
-        numCorners = 1;
-    elseif rVal < cornerWeights(1) + cornerWeights(2)
-        numCorners = 2;
-    else
-        numCorners = 3;
-    end
-
-    % Sample which corners (prefer adjacent for trapezoid look)
-    if numCorners == 1
-        selectedCorners = randi([1, 4], 1);
-    elseif numCorners == 2
-        % 70% chance of adjacent corners
-        if rand() < 0.7
-            startCorner = randi([1, 4]);
-            selectedCorners = [startCorner, mod(startCorner, 4) + 1];
-        else
-            perm = randperm(4);
-            selectedCorners = perm(1:2);
-        end
-    else  % 3 corners
-        perm = randperm(4);
-        selectedCorners = perm(1:3);
-    end
-
-    % Apply clips using actual corner geometry
-    for i = 1:numel(selectedCorners)
-        cornerIdx = selectedCorners(i);
-        cornerPt = edgeInfo.corners(cornerIdx, :);
-
-        % Sample clip depth (fraction of reference dimension)
-        depthFrac = damageCfg.cornerClipRange(1) + ...
-                    rand() * (damageCfg.cornerClipRange(2) - damageCfg.cornerClipRange(1));
-        depth = depthFrac * refDim;
-
-        % Get edge directions for this corner
-        % Previous edge: from previous corner to this corner
-        prevCornerIdx = mod(cornerIdx - 2, 4) + 1;
-        prevDir = edgeInfo.directions(prevCornerIdx, :);  % Direction toward this corner
-
-        % Next edge: from this corner to next corner
-        nextDir = edgeInfo.directions(cornerIdx, :);  % Direction away from this corner
-
-        % Create triangle vertices for clip
-        pt1 = cornerPt - prevDir * depth;  % Point along incoming edge
-        pt2 = cornerPt;                    % Corner itself
-        pt3 = cornerPt + nextDir * depth;  % Point along outgoing edge
-
-        % Rasterize triangle and subtract from mask
-        triMask = poly2mask([pt1(1), pt2(1), pt3(1)], ...
-                           [pt1(2), pt2(2), pt3(2)], H, W);
-        mask = mask & ~triMask;
-    end
-end
-
-%% -------------------------------------------------------------------------
-function mask = apply_corner_tear(mask, quadCorners, damageCfg)
-    % Remove irregular jagged section from one corner
-    %
-    % ALGORITHM:
-    %   1. Select one corner randomly
-    %   2. Generate 4-6 vertices along adjacent edges with perpendicular jitter
-    %   3. Rasterize tear polygon using poly2mask
-    %   4. Optionally apply morphological dilation for roughness (50% chance)
-    %
-    % INPUTS:
-    %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
-    %   damageCfg.cornerClipRange - [2×1] depth fraction range [0.06, 0.22]
-    %
-    % OUTPUT:
-    %   mask - [H×W] logical mask with tear subtracted
-    %
-    % Uses actual polygon corners for geometry-aware tearing
-
-    [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
-
-    % Reference dimension for depth calculation
-    refDim = mean(edgeInfo.lengths);
-
-    % Select one corner randomly
-    cornerIdx = randi([1, 4]);
-    cornerPt = edgeInfo.corners(cornerIdx, :);
-
-    % Sample tear depth (similar range to clips)
-    depthFrac = damageCfg.cornerClipRange(1) + ...
-                rand() * (damageCfg.cornerClipRange(2) - damageCfg.cornerClipRange(1));
-    depth = depthFrac * refDim;
-
-    % Generate 4-6 vertices along edges with jitter
-    numVerts = randi([4, 6]);
-    tearVerts = zeros(numVerts, 2);
-
-    % Get edge directions for this corner
-    prevCornerIdx = mod(cornerIdx - 2, 4) + 1;
-    prevDir = edgeInfo.directions(prevCornerIdx, :);  % Incoming edge direction
-    nextDir = edgeInfo.directions(cornerIdx, :);      % Outgoing edge direction
-
-    % Place vertices along edges with random jitter
-    for i = 1:numVerts
-        t = (i - 1) / (numVerts - 1);  % 0 to 1
-        if t < 0.5
-            % Along incoming edge
-            dir = -prevDir;  % Direction away from corner
-            offset = t * 2 * depth;
-        else
-            % Along outgoing edge
-            dir = nextDir;   % Direction away from corner
-            offset = (t - 0.5) * 2 * depth;
-        end
-
-        % Add perpendicular jitter
-        perpDir = [-dir(2), dir(1)];  % 90° rotation
-        jitter = (rand() - 0.5) * depth * 0.3;
-
-        tearVerts(i, :) = cornerPt + dir * offset + perpDir * jitter;
-    end
-
-    % Rasterize tear polygon
-    tearMask = poly2mask(tearVerts(:, 1), tearVerts(:, 2), H, W);
-
-    % Add roughness via morphological operations
-    if rand() < 0.5
-        se = strel('disk', 2);
-        tearMask = imdilate(tearMask, se);
-    end
-
-    % Subtract from mask
-    mask = mask & ~tearMask;
-end
-
-%% -------------------------------------------------------------------------
-function mask = apply_side_bite(mask, quadCorners, damageCfg, maskProtected, hasProtectedRegions)
-    % Remove concave circular bite from one edge
-    %
-    % ALGORITHM:
-    %   1. Select random edge and position along edge (30-70% of length)
-    %   2. Compute bite radius from edge length (8-28% fraction)
-    %   3. Place circle center along inward normal direction
-    %   4. Rasterize circle and subtract from mask
-    %   5. Optionally add second bite (40% chance) with collision check
-    %
-    % INPUTS:
-    %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
-    %   damageCfg.sideBiteRange - [2×1] depth fraction range [0.08, 0.28]
-    %   maskProtected - [H×W] logical protected region mask
-    %   hasProtectedRegions - logical flag
-    %
-    % OUTPUT:
-    %   mask - [H×W] logical mask with bite(s) subtracted
-
-    [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
-
-    edgeIdx = randi([1, 4]);
-    edgePos = 0.3 + rand() * 0.4;
-    depthFrac = damageCfg.sideBiteRange(1) + ...
-                rand() * (damageCfg.sideBiteRange(2) - damageCfg.sideBiteRange(1));
-
-    edgeLength = edgeInfo.lengths(edgeIdx);
-    edgeMidpoint = edgeInfo.midpoints(edgeIdx, :);
-    edgeDirection = edgeInfo.directions(edgeIdx, :);
-    edgeNormal = edgeInfo.normals(edgeIdx, :);
-
-    tParam = (edgePos - 0.5) * 2;
-    biteCenterOnEdge = edgeMidpoint + tParam * edgeDirection * (edgeLength / 2);
-    radius = depthFrac * edgeLength;
-    circleCenter = biteCenterOnEdge + edgeNormal * radius;
-
-    [xx, yy] = meshgrid(1:W, 1:H);
-    biteMask = ((xx - circleCenter(1)).^2 + (yy - circleCenter(2)).^2) <= radius^2;
-
-    mask = mask & ~biteMask;
-
-    if rand() < 0.4
-        offsetSign = (rand() < 0.5) * 2 - 1;
-        edgePos2 = edgePos + offsetSign * (0.2 + rand() * 0.2);
-        edgePos2 = max(0.1, min(0.9, edgePos2));
-
-        tParam2 = (edgePos2 - 0.5) * 2;
-        biteCenterOnEdge2 = edgeMidpoint + tParam2 * edgeDirection * (edgeLength / 2);
-        
-        depthFrac2 = depthFrac * (0.5 + rand() * 0.2);
-        radius2 = depthFrac2 * edgeLength;
-        circleCenter2 = biteCenterOnEdge2 + edgeNormal * radius2;
-
-        centerDist = norm(circleCenter2 - circleCenter);
-        minSpacing = (radius + radius2) * 0.7;
-        
-        if centerDist >= minSpacing
-            biteMask2 = ((xx - circleCenter2(1)).^2 + (yy - circleCenter2(2)).^2) <= radius2^2;
-            
-            if hasProtectedRegions && any(biteMask2(:) & maskProtected(:))
-                return;
-            end
-            
-            mask = mask & ~biteMask2;
-        end
-    end
-end
-
-%% -------------------------------------------------------------------------
-function mask = apply_tapered_side(mask, quadCorners, damageCfg)
-    % Create diagonal cut making one side shorter
-    %
-    % ALGORITHM:
-    %   1. Select random edge
-    %   2. Compute taper strength (10-30% of edge length)
-    %   3. Create gradient mask: removal increases linearly from edge start (0%) to end (max%)
-    %   4. Use signed distance from edge line to create smooth taper
-    %
-    % INPUTS:
-    %   mask - [H×W] logical editable mask
-    %   quadCorners - [4×2] polygon vertices (TL, TR, BR, BL clockwise)
-    %   damageCfg.taperStrengthRange - [2×1] taper fraction range [0.10, 0.30]
-    %
-    % OUTPUT:
-    %   mask - [H×W] logical mask with tapered edge
-    %
-    % Uses actual polygon edges for geometry-aware tapering
-
-    [H, W] = size(mask);
-    edgeInfo = get_polygon_edges(quadCorners);
-
-    % Choose edge randomly
-    edgeIdx = randi([1, 4]);
-
-    % Sample taper strength (fraction of edge length to remove at max)
-    taperStrength = damageCfg.taperStrengthRange(1) + ...
-                    rand() * (damageCfg.taperStrengthRange(2) - damageCfg.taperStrengthRange(1));
-
-    % Get edge geometry
-    edgeStart = squeeze(edgeInfo.edges(edgeIdx, 1, :))';  % Start point
-    edgeEnd = squeeze(edgeInfo.edges(edgeIdx, 2, :))';    % End point
-    edgeNormal = edgeInfo.normals(edgeIdx, :);            % Inward normal
-    edgeLength = edgeInfo.lengths(edgeIdx);
-
-    % Create coordinate grid
-    [xx, yy] = meshgrid(1:W, 1:H);
-
-    % Compute signed distance from each pixel to the edge line
-    % Edge parameterized as: P(t) = edgeStart + t * (edgeEnd - edgeStart), t ∈ [0,1]
-    edgeVec = edgeEnd - edgeStart;
-
-    % For each pixel, find projection onto edge line
-    % Project vector from edgeStart to pixel onto edge direction
-    px = xx(:) - edgeStart(1);
-    py = yy(:) - edgeStart(2);
-    t = (px * edgeVec(1) + py * edgeVec(2)) / (edgeVec(1)^2 + edgeVec(2)^2);
-    t = reshape(t, H, W);
-    t = max(0, min(1, t));  % Clamp to [0,1]
-
-    % Compute taper threshold that varies linearly along edge
-    % At edge start (t=0): no removal, at edge end (t=1): maximum removal
-    taperDepth = taperStrength * edgeLength * t;
-
-    % Compute signed distance to edge (positive = inward, negative = outward)
-    % Distance = dot product of (pixel - pointOnEdge) with inward normal
-    pointOnEdgeX = edgeStart(1) + t * edgeVec(1);
-    pointOnEdgeY = edgeStart(2) + t * edgeVec(2);
-    signedDist = (xx - pointOnEdgeX) * edgeNormal(1) + (yy - pointOnEdgeY) * edgeNormal(2);
-
-    % Keep pixels where signed distance > -taperDepth
-    % (pixels removed if they're beyond the tapered boundary)
-    gradientMask = signedDist > -taperDepth;
-
-    % Apply taper
-    mask = mask & gradientMask;
-end
-
-%% -------------------------------------------------------------------------
-%% Phase 3 Helper Functions (Edge Wear & Thickness)
-%% -------------------------------------------------------------------------
-
-function mask = apply_edge_wave_noise(mask, damageCfg)
-    % Add sinusoidal wave pattern to edges to prevent straight lines
-    %
-    % ALGORITHM:
-    %   1. Compute approximate signed distance transform
-    %   2. Generate sinusoidal wave pattern + Gaussian noise
-    %   3. Modulate distance field and rethreshold to create wavy edges
-    %
-    % PERFORMANCE: Skips processing for small masks (<150px) where wave effect is negligible
-
-    [H, W] = size(mask);
-    minDim = min(H, W);
-    originalMask = mask;
-    
-    % Skip for small polygons where wave effect is negligible
-    if minDim < 150
-        return;
-    end
-
-    % Extract perimeter
-    perim = bwperim(mask);
-    if ~any(perim(:))
-        return;
-    end
-
-    % Compute approximate signed distance (faster than full bwdist for small distances)
-    maxWaveDist = damageCfg.edgeWaveAmplitudeRange(2) * minDim * 2;
-    signedDist = fast_signed_distance(mask, ceil(maxWaveDist));
-
-    % Sample wave frequency from config
-    freq = damageCfg.edgeWaveFrequencyRange(1) + ...
-           rand() * (damageCfg.edgeWaveFrequencyRange(2) - damageCfg.edgeWaveFrequencyRange(1));
-
-    % Sample wave amplitude from config
-    amp = damageCfg.edgeWaveAmplitudeRange(1) + ...
-          rand() * (damageCfg.edgeWaveAmplitudeRange(2) - damageCfg.edgeWaveAmplitudeRange(1));
-    amp = amp * minDim;
-
-    % Create coordinate grid for wave pattern
-    [xx, yy] = meshgrid(1:W, 1:H);
-
-    % Compute angle from image center for sinusoidal modulation
-    cx = W / 2;
-    cy = H / 2;
-    theta = atan2(yy - cy, xx - cx);
-
-    % Sinusoidal wave + low-frequency Gaussian noise
-    wavePattern = amp * sin(freq * theta);
-
-    % Add low-pass filtered Gaussian noise
-    noiseAmp = amp * 0.3;
-    noise = randn(H, W) * noiseAmp;
-    noise = imgaussfilt(noise, 3);
-
-    % Combined modulation
-    modulation = wavePattern + noise;
-
-    % Apply wave modulation to signed distance
-    modulatedDist = signedDist + modulation;
-
-    % New mask: pixels with non-negative signed distance remain, but never add material
-    mask = (modulatedDist >= 0) & originalMask;
-end
-
-function signedDist = fast_signed_distance(mask, maxDist)
-    % Fast approximate signed distance transform for small distances
-    %
-    % ALGORITHM:
-    %   Uses morphological erosion/dilation instead of Euclidean distance.
-    %   Much faster for maxDist < 20 pixels (typical for edge wave noise).
-    %
-    % INPUTS:
-    %   mask - [H×W] logical binary mask
-    %   maxDist - maximum distance to compute (pixels)
-    %
-    % OUTPUT:
-    %   signedDist - [H×W] approximate signed distance (positive inside, negative outside)
-    
-    if maxDist > 20
-        % Fall back to accurate method for large distances
-        D_out = bwdist(~mask);
-        D_in = bwdist(mask);
-        signedDist = D_out - D_in;
-        return;
-    end
-    
-    % Approximate using iterative erosion/dilation
-    [H, W] = size(mask);
-    signedDist = zeros(H, W);
-    
-    % Compute distance inside mask (positive)
-    se = strel('disk', 1, 0);
-    tempMask = mask;
-    for d = 1:maxDist
-        tempMask = imerode(tempMask, se);
-        if ~any(tempMask(:))
-            break;
-        end
-        signedDist = signedDist + double(tempMask);
-    end
-    
-    % Compute distance outside mask (negative)
-    tempMask = ~mask;
-    for d = 1:maxDist
-        tempMask = imerode(tempMask, se);
-        if ~any(tempMask(:))
-            break;
-        end
-        signedDist = signedDist - double(tempMask);
-    end
-end
-
-%% -------------------------------------------------------------------------
-function mask = apply_edge_fray(mask, maskProtected)
-    % Add micro-chipping along edges simulating paper fiber fraying
-    %
-    % ALGORITHM:
-    %   1. Extract perimeter pixels
-    %   2. Select 3-N fray points with minimum spacing (10px)
-    %   3. Create small circular blobs (radius 1-3px) at fray points
-    %   4. Subtract from mask while respecting protected regions
-    %
-    % INPUTS:
-    %   mask - [H×W] logical editable mask
-    %   maskProtected - [H×W] logical protected region mask
-    %
-    % OUTPUT:
-    %   mask - [H×W] logical mask with fray damage subtracted
-
-    [H, W] = size(mask);
-
-    perim = bwperim(mask);
-    [py, px] = find(perim);
-
-    if isempty(px)
-        return;
-    end
-
-    numPerimPixels = numel(px);
-    numFrayPoints = max(3, round(numPerimPixels / 100 * rand() * 3));
-
-    minSpacing = 10;
-    selectedPoints = zeros(numFrayPoints, 2);
-    pointCount = 0;
-    attempts = 0;
-    maxAttempts = numFrayPoints * 10;
-
-    while pointCount < numFrayPoints && attempts < maxAttempts
-        idx = randi(numPerimPixels);
-        candidate = [px(idx), py(idx)];
-
-        if pointCount == 0
-            pointCount = 1;
-            selectedPoints(pointCount, :) = candidate;
-        else
-            dists = sqrt(sum((selectedPoints(1:pointCount, :) - candidate).^2, 2));
-            if all(dists >= minSpacing)
-                pointCount = pointCount + 1;
-                selectedPoints(pointCount, :) = candidate;
-            end
-        end
-        attempts = attempts + 1;
-    end
-    selectedPoints = selectedPoints(1:pointCount, :);
-
-    frayMask = false(H, W);
-    [xx, yy] = meshgrid(1:W, 1:H);
-    for i = 1:size(selectedPoints, 1)
-        radius = randi([1, 3]);
-
-        distFromPoint = sqrt((xx - selectedPoints(i, 1)).^2 + (yy - selectedPoints(i, 2)).^2);
-        blob = distFromPoint <= radius;
-
-        blob = blob & ~maskProtected;
-        frayMask = frayMask | blob;
-    end
-
-    mask = mask & ~frayMask;
-end
-
-%% -------------------------------------------------------------------------
-function img = apply_thickness_shadows(img, damagedMask, originalMask)
-    % Darken edges where material was removed to create depth cues
-    %
-    % ALGORITHM:
-    %   1. Compute removed region (original minus damaged)
-    %   2. Calculate distance from removed boundary
-    %   3. Create shadow ramp (15% darkening at boundary, fading over 8px)
-    %   4. Apply multiplicative darkening to all channels
-    %
-    % INPUTS:
-    %   img - [H×W×3] uint8 RGB image
-    %   damagedMask - [H×W] logical mask after damage
-    %   originalMask - [H×W] logical mask before damage
-    %
-    % OUTPUT:
-    %   img - [H×W×3] uint8 RGB image with thickness shadows
-
-    % Compute removed region (original minus damaged)
-    removedRegion = originalMask & ~damagedMask;
-
-    if ~any(removedRegion(:))
-        return;  % No material removed, skip shadowing
-    end
-
-    % Compute distance from removed region
-    distFromRemoved = bwdist(removedRegion);
-
-    % Create shadow ramp (darken pixels near removed regions)
-    shadowWidth = 8;  % pixels
-    shadowRamp = max(0, 1 - distFromRemoved / shadowWidth);
-    shadowRamp = shadowRamp .* double(damagedMask);  % Only shadow remaining material
-
-    % Darken by 15% at removed boundary, fading over shadowWidth pixels
-    shadowStrength = 0.15;
-    darkening = 1 - shadowStrength * shadowRamp;
-
-    % Apply to all channels
-    for c = 1:3
-        channel = double(img(:,:,c));
-        channel = channel .* darkening;
-        img(:,:,c) = uint8(channel);
-    end
-end
+% NOTE: Motion blur and edge feathering functions (apply_motion_blur, feather_quad_edges)
+% have been moved to image_io.m. Access via cfg.imageIO.applyMotionBlur() and
+% cfg.imageIO.featherQuadEdges().
 

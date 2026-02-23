@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLOv11-pose Training Script for microPAD Quadrilateral Corner Detection
+YOLOv8-pose Training Script for microPAD Quadrilateral Corner Detection
 
 QUICK START:
     python train_yolo.py
@@ -17,11 +17,24 @@ PERFORMANCE TARGETS:
 - Inference < 100ms per image
 """
 
-import argparse
+# GPU Configuration (configured by /configure_training_gpus)
+# Selected: 2x RTX A6000 with NVLink (96GB combined VRAM)
+# PyTorch device mapping (differs from nvidia-smi due to PCI bus ordering):
+#   PyTorch cuda:0 -> NVIDIA RTX A6000 (48GB) [nvidia-smi GPU 0]
+#   PyTorch cuda:1 -> NVIDIA RTX A6000 (48GB) [nvidia-smi GPU 2] - NVLinked
+#   PyTorch cuda:2 -> NVIDIA RTX 3090 (24GB)  [nvidia-smi GPU 1]
+# MUST be set before importing torch/ultralytics
 import os
+# Only set if not already configured (allows external override)
+# Note: Uses PyTorch indices (0,1 = both A6000s), not nvidia-smi indices
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+import argparse
 import sys
+import traceback
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 import yaml
 
 try:
@@ -37,22 +50,55 @@ except ImportError:
 # ============================================================================
 #
 # ZERO-CONFIGURATION TRAINING:
-# These defaults are optimized for dual RTX A6000 workstation (96 GB VRAM total)
+# These defaults are optimized for dual RTX A6000 workstation with NVLink (96 GB VRAM total)
 # with large input images (~13MP: 4032x3024 → resized to 1280x1280).
 # Simply run: python train_yolo.py
 # No command-line arguments required for optimal performance!
 #
-# Batch size is conservative (24) to handle large input images safely.
+# Batch size is set to 16 (8 per GPU) to handle large input images safely.
 # To customize: Override any parameter via CLI flags (see --help)
 # ============================================================================
 
-# Model configuration
-DEFAULT_MODEL = 'yolo11s-pose.pt'
-DEFAULT_IMAGE_SIZE = 1280
+# ============================================================================
+# 3-TIER PRESET SYSTEM (YOLOv8)
+# ============================================================================
+# Presets simplify training configuration. Each preset optimizes model size,
+# resolution, and batch size for specific use cases.
+#
+# | Preset    | Model          | Resolution | Batch | Use Case                |
+# |-----------|----------------|------------|-------|-------------------------|
+# | medium    | yolov8m-pose   | 640px      | 32    | DEFAULT - High accuracy |
+# | small     | yolov8s-pose   | 640px      | 48    | Balanced speed/accuracy |
+# | nano      | yolov8n-pose   | 640px      | 64    | Fast training/inference |
+# ============================================================================
 
-# Training hyperparameters (optimized for dual A6000 workstation)
+# Medium preset (DEFAULT) - high accuracy for production
+PRESET_MEDIUM_MODEL = 'yolov8m-pose.pt'
+PRESET_MEDIUM_IMGSZ = 640
+PRESET_MEDIUM_BATCH = 32       # 16 per GPU
+
+# Small preset - balanced speed and accuracy
+PRESET_SMALL_MODEL = 'yolov8s-pose.pt'
+PRESET_SMALL_IMGSZ = 640
+PRESET_SMALL_BATCH = 48        # 24 per GPU
+
+# Nano preset - fast training/inference
+PRESET_NANO_MODEL = 'yolov8n-pose.pt'
+PRESET_NANO_IMGSZ = 640
+PRESET_NANO_BATCH = 64         # 32 per GPU
+
+# Default experiment names for each preset
+DEFAULT_NAME_MEDIUM = 'yolov8m_pose_640'
+DEFAULT_NAME_SMALL = 'yolov8s_pose_640'
+DEFAULT_NAME_NANO = 'yolov8n_pose_640'
+
+# Legacy defaults (for backward compatibility in class methods)
+DEFAULT_MODEL = PRESET_MEDIUM_MODEL
+DEFAULT_IMAGE_SIZE = PRESET_MEDIUM_IMGSZ
+
+# Training hyperparameters (optimized for dual A6000 with NVLink)
 # NOTE: Batch size conservative due to large input images (~13MP: 4032x3024)
-DEFAULT_BATCH_SIZE = 32              # 16 per GPU - safe for large images at 1280 resolution
+DEFAULT_BATCH_SIZE = PRESET_MEDIUM_BATCH  # 16 per GPU - safe for large images at 640 resolution
 DEFAULT_EPOCHS_STAGE1 = 200          # Extended training for better convergence
 DEFAULT_EPOCHS_STAGE2 = 150          # Extended fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
@@ -61,25 +107,32 @@ DEFAULT_LEARNING_RATE_STAGE1 = 0.001 # Learning rate for AdamW optimizer (stage 
 DEFAULT_LEARNING_RATE_STAGE2 = 0.0005 # Lower LR for fine-tuning
 DEFAULT_OPTIMIZER = 'AdamW'          # AdamW optimizer for pose estimation
 
-# Hardware configuration (optimized for 64-core CPU + dual RTX A6000)
-# GPU device selection: Use CUDA_VISIBLE_DEVICES environment variable or default
-# Default '0,2' selects dual RTX A6000 GPUs (skips RTX 3090 for homogeneous pairing)
-DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,2')
-DEFAULT_NUM_WORKERS = 32             # Half of 64 CPU cores for data loading
+# Hardware configuration (optimized for dual RTX A6000 with NVLink)
+# GPU device selection: CUDA_VISIBLE_DEVICES is set at script top to "0,1"
+# Both GPUs are RTX A6000 (48GB each, 96GB total with NVLink interconnect)
+DEFAULT_GPU_DEVICES = os.getenv('CUDA_VISIBLE_DEVICES', '0,1')
+DEFAULT_NUM_WORKERS = 16             # Optimal for data loading
 DEFAULT_CACHE_ENABLED = 'disk'       # Disk cache for deterministic training
 
 # Checkpoint configuration
 CHECKPOINT_SAVE_PERIOD = 10          # Save checkpoint every N epochs
 
-# Augmentation configuration
+# Augmentation configuration (server/desktop)
 AUG_HSV_HUE = 0.015
 AUG_HSV_SATURATION = 0.7
 AUG_HSV_VALUE = 0.4
 AUG_TRANSLATE = 0.1
 AUG_SCALE = 0.5
 AUG_FLIP_LR = 0.5
-AUG_MOSAIC = 1.0
+AUG_MOSAIC = 0.8
 AUG_ROTATION = 0.0  # Disabled (already in synthetic data)
+AUG_ERASING = 0.4  # Random erasing for occlusion robustness
+AUG_MIXUP = 0.0  # Disabled by default, can enable via --mixup
+
+# Mobile augmentation (reduced for lower resolution - features are smaller)
+AUG_SCALE_MOBILE = 0.3
+AUG_TRANSLATE_MOBILE = 0.05
+AUG_MOSAIC_MOBILE = 0.8
 
 # Dataset configuration
 DEFAULT_STAGE1_DATA = 'micropad_synth.yaml'
@@ -87,16 +140,17 @@ DEFAULT_STAGE2_DATA = 'micropad_mixed.yaml'
 
 # ============================================================================
 
-# Verify Ultralytics version supports pose training
-def check_ultralytics_version():
-    """Check that Ultralytics version supports YOLOv11-pose."""
-    required_version = (8, 1, 0)
+# Verify Ultralytics version supports YOLOv8 pose training
+def check_ultralytics_version() -> None:
+    """Check that Ultralytics version supports YOLOv8-pose."""
+    required_version = (8, 0, 0)  # YOLOv8 requires ultralytics >= 8.0.0
     try:
         version_parts = tuple(int(x) for x in ultralytics_version.split('.')[:3])
         if version_parts < required_version:
-            print(f"WARNING: Ultralytics version {ultralytics_version} may not fully support YOLOv11-pose.")
-            print(f"         Recommended version: {'.'.join(map(str, required_version))} or higher")
-            print(f"         Update with: pip install --upgrade ultralytics")
+            print(f"ERROR: Ultralytics version {ultralytics_version} does not support YOLOv8-pose.")
+            print(f"       Required version: {'.'.join(map(str, required_version))} or higher")
+            print(f"       Update with: pip install --upgrade ultralytics")
+            sys.exit(1)
     except Exception:
         print(f"WARNING: Could not parse Ultralytics version: {ultralytics_version}")
 
@@ -104,7 +158,7 @@ check_ultralytics_version()
 
 
 class YOLOTrainer:
-    """YOLOv11 training pipeline for microPAD auto-detection."""
+    """YOLOv8 training pipeline for microPAD auto-detection."""
 
     def __init__(self, project_root: Optional[Path] = None):
         """Initialize trainer.
@@ -147,13 +201,13 @@ class YOLOTrainer:
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
         optimizer: str = DEFAULT_OPTIMIZER,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE1,
-        name: str = 'yolo11s_pose_1280',
+        name: str = 'yolov8m_pose_640',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 1: Synthetic data pretraining.
 
         Args:
-            model: YOLOv11 pretrained model for keypoint detection (default: yolo11s-pose.pt)
+            model: YOLO pretrained model for keypoint detection (default: yolov8m-pose.pt)
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
             imgsz: Input image size
@@ -173,6 +227,18 @@ class YOLOTrainer:
         print("\n" + "="*80)
         print("STAGE 1: SYNTHETIC DATA PRETRAINING")
         print("="*80)
+
+        # Verify label directories exist before training
+        print("\nVerifying label directories...")
+        try:
+            from prepare_yolo_dataset import verify_label_directories, discover_phone_directories
+            phone_dirs = discover_phone_directories()
+            if not verify_label_directories(phone_dirs):
+                print("  WARNING: Some label directories missing. Run prepare_yolo_dataset.py first.")
+        except ImportError:
+            print("  WARNING: prepare_yolo_dataset not found, skipping directory verification")
+        except Exception as e:
+            print(f"  WARNING: Failed to verify label directories: {e}")
 
         # Resolve data config path
         data_path = self.configs_dir / data
@@ -237,6 +303,8 @@ class YOLOTrainer:
             'fliplr': AUG_FLIP_LR,
             'mosaic': AUG_MOSAIC,
             'degrees': AUG_ROTATION,
+            'erasing': AUG_ERASING,
+            'mixup': AUG_MIXUP,
         }
 
         # Merge additional kwargs
@@ -270,7 +338,7 @@ class YOLOTrainer:
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
         optimizer: str = DEFAULT_OPTIMIZER,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
-        name: str = 'yolo11s_pose_1280_stage2',
+        name: str = 'yolov8m_pose_640_stage2',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 2: Fine-tuning with mixed data.
@@ -461,7 +529,7 @@ class YOLOTrainer:
     def export(
         self,
         weights: str,
-        formats: list = ['tflite'],
+        formats: Optional[List[str]] = None,
         imgsz: int = DEFAULT_IMAGE_SIZE,
         half: bool = True,
         int8: bool = False,
@@ -480,6 +548,9 @@ class YOLOTrainer:
         Returns:
             Dictionary mapping format to exported file path
         """
+        if formats is None:
+            formats = ['tflite']
+
         print("\n" + "="*80)
         print("MODEL EXPORT")
         print("="*80)
@@ -535,55 +606,61 @@ class YOLOTrainer:
         return exported_files
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='YOLOv11 Training Pipeline for microPAD Auto-Detection',
+        description='YOLOv8 Training Pipeline for microPAD Auto-Detection',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # ZERO-CONFIG TRAINING (recommended - uses optimized defaults)
+  # ZERO-CONFIG TRAINING (recommended - uses medium preset)
   python train_yolo.py
-  # Default: yolo11s-pose, 1280 resolution, batch=48, AdamW optimizer, dual A6000 GPUs
 
-  # Train Stage 1 (synthetic data pretraining) - explicit
-  python train_yolo.py --stage 1
+  # PRESET SELECTION (mutually exclusive)
+  python train_yolo.py --medium  # 640px, high accuracy (DEFAULT)
+  python train_yolo.py --small   # 640px, balanced speed/accuracy
+  python train_yolo.py --nano    # 640px, fast inference
 
-  # Train Stage 2 (fine-tuning with manual labels)
-  python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
+  # OVERRIDE RESOLUTION OR BATCH SIZE
+  python train_yolo.py --medium --batch 48
+  python train_yolo.py --small --batch 64
 
-  # Validate model
-  python train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt
+  # CUSTOM MODEL (auto-generates experiment name)
+  python train_yolo.py --model yolov8n-pose.pt --imgsz 640 --batch 48
 
-  # Export to TFLite for mobile deployment
-  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
+  # STAGE 2: Fine-tuning with manual labels
+  python train_yolo.py --stage 2 --weights training_runs/yolov8m_pose_640/weights/best.pt
+
+  # VALIDATE trained model
+  python train_yolo.py --validate --weights training_runs/yolov8m_pose_640/weights/best.pt
+
+  # EXPORT to TFLite for mobile deployment
+  python train_yolo.py --export --weights training_runs/yolov8n_pose_640/weights/best.pt --imgsz 640
 
   # Export with FP32 precision (instead of default FP16)
-  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --no-half
+  python train_yolo.py --export --weights training_runs/yolov8m_pose_640/weights/best.pt --no-half
 
   # Export with INT8 quantization
-  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --int8
+  python train_yolo.py --export --weights training_runs/yolov8m_pose_640/weights/best.pt --int8
 
-  # Override defaults (if needed)
-  python train_yolo.py --stage 1 --batch 64 --epochs 300 --lr0 0.0005
+3-Tier Preset System:
+  | Preset    | Model          | Resolution | Batch | Per GPU | Use Case                |
+  |-----------|----------------|------------|-------|---------|-------------------------|
+  | medium    | yolov8m-pose   | 640px      | 32    | 16      | DEFAULT - High accuracy |
+  | small     | yolov8s-pose   | 640px      | 48    | 24      | Balanced speed/accuracy |
+  | nano      | yolov8n-pose   | 640px      | 64    | 32      | Fast training/inference |
 
-  # Use different optimizer
-  python train_yolo.py --stage 1 --optimizer SGD --lr0 0.01
-
-Optimized Defaults (for dual RTX A6000 + large images):
-  Model: yolo11s-pose.pt
-  Resolution: 1280x1280
-  Batch size: 32 (16 per GPU) - safe for ~13MP input images
+Common Settings:
   Optimizer: AdamW
   Learning rate: 0.001 (stage 1), 0.0005 (stage 2)
   Cosine LR scheduler: Enabled
   Mixed precision (AMP): Enabled
   Pose loss weights: pose=12.0, kobj=2.0
-  GPUs: 0,2 (dual A6000, homogeneous pairing)
+  GPUs: 0,1 (dual A6000, NVLink interconnect)
 
-  To increase batch size (monitor GPU memory):
-    python train_yolo.py --batch 40  # moderate (20 per GPU)
-    python train_yolo.py --batch 48  # aggressive (24 per GPU)
+Override Examples:
+  python train_yolo.py --medium --batch 48   # medium with custom batch
+  python train_yolo.py --small --batch 64    # small model with custom batch
         """
     )
 
@@ -596,19 +673,32 @@ Optimized Defaults (for dual RTX A6000 + large images):
     mode_group.add_argument('--export', action='store_true',
                            help='Export model for deployment')
 
+    # Preset selection (mutually exclusive)
+    preset_group = parser.add_mutually_exclusive_group()
+    preset_group.add_argument('--medium', action='store_true',
+                       help='Medium preset: yolov8m @ 640px (DEFAULT)')
+    preset_group.add_argument('--small', action='store_true',
+                       help='Small preset: yolov8s @ 640px')
+    preset_group.add_argument('--nano', action='store_true',
+                       help='Nano preset: yolov8n @ 640px')
+
     # Common arguments
     parser.add_argument('--weights', type=str,
                        help='Path to model weights (required for stage 2, validate, export)')
+    parser.add_argument('--model', type=str, default=None,
+                       help=f'Base model to train (default: auto from preset)')
     parser.add_argument('--device', type=str, default=DEFAULT_GPU_DEVICES,
                        help=f'GPU device(s) (default: {DEFAULT_GPU_DEVICES})')
-    parser.add_argument('--imgsz', type=int, default=DEFAULT_IMAGE_SIZE,
-                       help=f'Input image size (default: {DEFAULT_IMAGE_SIZE})')
+    parser.add_argument('--imgsz', type=int, default=None,
+                       help=f'Input image size (default: auto from preset)')
+    parser.add_argument('--name', type=str,
+                       help='Experiment name for results directory (default: auto-generated based on preset)')
 
     # Training arguments
     parser.add_argument('--epochs', type=int,
                        help=f'Training epochs (default: {DEFAULT_EPOCHS_STAGE1} for stage 1, {DEFAULT_EPOCHS_STAGE2} for stage 2)')
-    parser.add_argument('--batch', type=int,
-                       help=f'Batch size (default: {DEFAULT_BATCH_SIZE}, distributed across GPUs)')
+    parser.add_argument('--batch', type=int, default=None,
+                       help='Batch size (default: auto from preset)')
     parser.add_argument('--patience', type=int,
                        help=f'Early stopping patience (default: {DEFAULT_PATIENCE_STAGE1} for stage 1, {DEFAULT_PATIENCE_STAGE2} for stage 2)')
     parser.add_argument('--lr0', type=float,
@@ -637,6 +727,10 @@ Optimized Defaults (for dual RTX A6000 + large images):
     parser.add_argument('--int8', action='store_true',
                        help='Use INT8 quantization for TFLite')
 
+    # Augmentation arguments
+    parser.add_argument('--mixup', type=float, default=AUG_MIXUP,
+                       help=f'MixUp augmentation probability (default: {AUG_MIXUP})')
+
     # Data arguments
     parser.add_argument('--data', type=str,
                        help='Dataset config (default: micropad_synth.yaml for stage 1, micropad_mixed.yaml for stage 2)')
@@ -650,11 +744,51 @@ Optimized Defaults (for dual RTX A6000 + large images):
         print(f"ERROR: {e}")
         sys.exit(1)
 
+    # Determine which preset to use (default: medium)
+    if args.small:
+        preset_name = 'small'
+        preset_model = PRESET_SMALL_MODEL
+        preset_imgsz = PRESET_SMALL_IMGSZ
+        preset_batch = PRESET_SMALL_BATCH
+        preset_default_name = DEFAULT_NAME_SMALL
+    elif args.nano:
+        preset_name = 'nano'
+        preset_model = PRESET_NANO_MODEL
+        preset_imgsz = PRESET_NANO_IMGSZ
+        preset_batch = PRESET_NANO_BATCH
+        preset_default_name = DEFAULT_NAME_NANO
+    else:
+        # Default: medium preset (includes explicit --medium)
+        preset_name = 'medium'
+        preset_model = PRESET_MEDIUM_MODEL
+        preset_imgsz = PRESET_MEDIUM_IMGSZ
+        preset_batch = PRESET_MEDIUM_BATCH
+        preset_default_name = DEFAULT_NAME_MEDIUM
+
+    # Apply preset defaults (user overrides take precedence)
+    if args.model is None:
+        args.model = preset_model
+    if args.imgsz is None:
+        args.imgsz = preset_imgsz
+    if args.batch is None:
+        args.batch = preset_batch
+    if args.name is None:
+        args.name = preset_default_name
+
+    # Print preset configuration
+    print(f"\n[{preset_name.upper()} Preset] Configuration:")
+    print(f"  Model: {args.model}" + (" (override)" if args.model != preset_model else ""))
+    print(f"  Image size: {args.imgsz}" + (" (override)" if args.imgsz != preset_imgsz else ""))
+    print(f"  Batch size: {args.batch}" + (" (override)" if args.batch != preset_batch else ""))
+    if preset_name == 'nano':
+        print(f"  Augmentation: scale={AUG_SCALE_MOBILE}, translate={AUG_TRANSLATE_MOBILE}, mosaic={AUG_MOSAIC_MOBILE}")
+
     # Execute requested mode
     try:
         if args.stage == 1:
             # Stage 1: Synthetic pretraining
             train_kwargs = {}
+            train_kwargs['model'] = args.model  # Pass model to trainer
             if args.epochs:
                 train_kwargs['epochs'] = args.epochs
             if args.batch:
@@ -665,6 +799,16 @@ Optimized Defaults (for dual RTX A6000 + large images):
                 train_kwargs['lr0'] = args.lr0
             if args.data:
                 train_kwargs['data'] = args.data
+
+            # Nano preset augmentation overrides (smaller features)
+            if preset_name == 'nano':
+                train_kwargs['scale'] = AUG_SCALE_MOBILE
+                train_kwargs['translate'] = AUG_TRANSLATE_MOBILE
+                train_kwargs['mosaic'] = AUG_MOSAIC_MOBILE
+
+            # MixUp augmentation (passed through to train_args)
+            if args.mixup > 0:
+                train_kwargs['mixup'] = args.mixup
 
             # Advanced options
             train_kwargs['workers'] = args.workers
@@ -684,6 +828,7 @@ Optimized Defaults (for dual RTX A6000 + large images):
             trainer.train_stage1(
                 device=args.device,
                 imgsz=args.imgsz,
+                name=args.name,
                 **train_kwargs
             )
 
@@ -691,7 +836,7 @@ Optimized Defaults (for dual RTX A6000 + large images):
             # Stage 2: Fine-tuning
             if not args.weights:
                 print("ERROR: --weights required for Stage 2 fine-tuning")
-                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
+                print(f"Example: --weights training_runs/yolov8m_pose_640/weights/best.pt")
                 sys.exit(1)
 
             train_kwargs = {}
@@ -705,6 +850,16 @@ Optimized Defaults (for dual RTX A6000 + large images):
                 train_kwargs['lr0'] = args.lr0
             if args.data:
                 train_kwargs['data'] = args.data
+
+            # Nano preset augmentation overrides
+            if preset_name == 'nano':
+                train_kwargs['scale'] = AUG_SCALE_MOBILE
+                train_kwargs['translate'] = AUG_TRANSLATE_MOBILE
+                train_kwargs['mosaic'] = AUG_MOSAIC_MOBILE
+
+            # MixUp augmentation (passed through to train_args)
+            if args.mixup > 0:
+                train_kwargs['mixup'] = args.mixup
 
             # Advanced options
             train_kwargs['workers'] = args.workers
@@ -721,10 +876,13 @@ Optimized Defaults (for dual RTX A6000 + large images):
             if not args.cos_lr:
                 train_kwargs['cos_lr'] = False
 
+            # Append _stage2 to name for fine-tuning runs
+            stage2_name = f"{args.name}_stage2" if not args.name.endswith('_stage2') else args.name
             trainer.train_stage2(
                 weights=args.weights,
                 device=args.device,
                 imgsz=args.imgsz,
+                name=stage2_name,
                 **train_kwargs
             )
 
@@ -732,7 +890,7 @@ Optimized Defaults (for dual RTX A6000 + large images):
             # Validation
             if not args.weights:
                 print("ERROR: --weights required for validation")
-                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
+                print(f"Example: --weights training_runs/yolov8m_pose_640/weights/best.pt")
                 sys.exit(1)
 
             trainer.validate(
@@ -746,7 +904,7 @@ Optimized Defaults (for dual RTX A6000 + large images):
             # Export
             if not args.weights:
                 print("ERROR: --weights required for export")
-                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
+                print(f"Example: --weights training_runs/yolov8m_pose_640/weights/best.pt")
                 sys.exit(1)
 
             trainer.export(
@@ -762,7 +920,6 @@ Optimized Defaults (for dual RTX A6000 + large images):
         sys.exit(1)
     except Exception as e:
         print(f"\nERROR: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
 

@@ -4,22 +4,22 @@ function extract_images_from_coordinates(varargin)
     %% Creation: 2025-08
     %
     % Reconstructs pipeline stage outputs from coordinate files and original
-    % images. Processes polygon regions and elliptical patches based on saved
+    % images. Processes quad regions and elliptical patches based on saved
     % coordinate data.
     %
     % Stages handled (in-order, with dependency checks):
     % - Step 1: 1_dataset -> 2_micropads
-    %   - Reads polygon coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
-    %   - Crops polygon regions from originals into concentration subfolders (con_0 ...).
+    %   - Reads quad coordinates: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+    %   - Crops quad regions from originals into concentration subfolders (con_0 ...).
     %   - Rotation column (10th field) is required in new pipeline format.
     %
     % - Step 2: 2_micropads -> 3_elliptical_regions
     %   - Reads elliptical coordinates: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
-    %   - Extracts elliptical patches from the concentration polygon images.
+    %   - Extracts elliptical patches from the concentration quad images.
     %
     % Parameters (name-value):
     % - inputFolder    : folder for originals (default '1_dataset')
-% - polygonFolder  : folder for polygon crops (default '2_micropads')
+% - quadFolder     : folder for quad crops (default '2_micropads')
 % - patchFolder    : folder for elliptical patches (default '3_elliptical_regions')
     % - concFolderPrefix: prefix for concentration folders (default 'con_')
     %
@@ -36,14 +36,14 @@ function extract_images_from_coordinates(varargin)
     % - Elliptical mask cache: Reuses binary masks for patches with identical
     %   dimensions and ellipse parameters. Cache hit rate typically >90% for datasets
     %   with repeated patch geometries. Masks larger than 1000×1000 pixels are not cached.
-    % - Polygon bounding box optimization: Creates masks only for polygon bbox region
+    % - Quad bounding box optimization: Creates masks only for quad bbox region
     %   rather than full image, reducing memory footprint by ~95% for typical cases.
     % - Cache invalidation: All caches persist for entire phone processing run and are
     %   never invalidated. If manual file changes occur mid-run, restart the function.
     %
     % Notes
     % - This script does not write coordinates.txt. It reads them to reconstruct images.
-    % - For Step 1 (polygon extraction), coordinates format:
+    % - For Step 1 (quad extraction), coordinates format:
     %     'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation'
     %   Rotation column (10th field) is required in the new 4-stage pipeline.
     % - If a required prior stage has neither coordinates nor images, the process errors for that folder.
@@ -66,21 +66,21 @@ function extract_images_from_coordinates(varargin)
     % ----------------------
     parser = inputParser;
     addParameter(parser, 'inputFolder', '1_dataset', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
-    addParameter(parser, 'polygonFolder', '2_micropads', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
+    addParameter(parser, 'quadFolder', '2_micropads', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     addParameter(parser, 'patchFolder', '3_elliptical_regions', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     addParameter(parser, 'concFolderPrefix', 'con_', @(s) ((ischar(s) || isstring(s)) && ~isempty(char(s))));
     parse(parser, varargin{:});
 
     % Create configuration using standard pattern
     cfg = createConfiguration(char(parser.Results.inputFolder), ...
-                              char(parser.Results.polygonFolder), char(parser.Results.patchFolder), ...
+                              char(parser.Results.quadFolder), char(parser.Results.patchFolder), ...
                               char(parser.Results.concFolderPrefix));
 
     % Validate base inputs folder
     validate_folder_exists(cfg.paths.input, 'extract:missing_input', 'Original images folder not found: %s', cfg.paths.input);
 
     % Ensure base output folders exist (we create only when needed)
-    ensure_folder(cfg.paths.polygon);
+    ensure_folder(cfg.paths.quad);
     ensure_folder(cfg.paths.patch);
 
     phones = list_immediate_subdirs(cfg.paths.input);
@@ -94,14 +94,14 @@ function extract_images_from_coordinates(varargin)
         fprintf('\n=== Processing %s ===\n', phoneName);
 
         originalsDir = fullfile(cfg.paths.input, phoneName);
-        polyBaseDir = fullfile(cfg.paths.polygon, phoneName);
+        quadBaseDir = fullfile(cfg.paths.quad, phoneName);
         patchBaseDir = fullfile(cfg.paths.patch, phoneName);
 
-        % Step 1: Polygon crops from coordinates (OPTIMIZED: combined check)
-        [conDirs, hasAnyPolyCoords] = find_concentration_dirs_with_coords(polyBaseDir, cfg.concFolderPrefix, cfg.coordinateFileName);
+        % Step 1: Quad crops from coordinates (OPTIMIZED: combined check)
+        [conDirs, hasAnyQuadCoords] = find_concentration_dirs_with_coords(quadBaseDir, cfg.concFolderPrefix, cfg.coordinateFileName);
 
-        if hasAnyPolyCoords
-            fprintf('Step 1: Reconstruct polygon crops from concentration folders\n');
+        if hasAnyQuadCoords
+            fprintf('Step 1: Reconstruct quad crops from concentration folders\n');
             for cd = 1:numel(conDirs)
                 if ~conDirs{cd}.hasCoords
                     continue;
@@ -109,16 +109,16 @@ function extract_images_from_coordinates(varargin)
                 coordPath = fullfile(conDirs{cd}.path, cfg.coordinateFileName);
                 ensure_folder(conDirs{cd}.path);
                 fprintf('  - Using %s\n', relpath(coordPath, cfg.projectRoot));
-                extract_polygon_crops_single(coordPath, originalsDir, conDirs{cd}.path, cfg);
+                extract_quad_crops_single(coordPath, originalsDir, conDirs{cd}.path, cfg);
             end
         else
-            phonePolyCoord = fullfile(polyBaseDir, cfg.coordinateFileName);
-            if isfile(phonePolyCoord)
-                fprintf('Step 1: Reconstruct polygon crops from phone-level coordinates\n');
-                ensure_folder(polyBaseDir);
-                extract_polygon_crops_all(phonePolyCoord, originalsDir, polyBaseDir, cfg);
+            phoneQuadCoord = fullfile(quadBaseDir, cfg.coordinateFileName);
+            if isfile(phoneQuadCoord)
+                fprintf('Step 1: Reconstruct quad crops from phone-level coordinates\n');
+                ensure_folder(quadBaseDir);
+                extract_quad_crops_all(phoneQuadCoord, originalsDir, quadBaseDir, cfg);
             else
-                fprintf('Step 1: No polygon coordinates found. Skipping.\n');
+                fprintf('Step 1: No quad coordinates found. Skipping.\n');
             end
         end
 
@@ -127,9 +127,9 @@ function extract_images_from_coordinates(varargin)
 
         if hasAnyEllipseCoords
             fprintf('Step 2: Reconstruct elliptical patches from concentration folders\n');
-            polyConDirs = find_concentration_dirs(polyBaseDir, cfg.concFolderPrefix);
-            if isempty(polyConDirs)
-                error('extract:polygon_required_for_ellipses', 'Polygon crops missing for %s.', phoneName);
+            quadConDirs = find_concentration_dirs(quadBaseDir, cfg.concFolderPrefix);
+            if isempty(quadConDirs)
+                error('extract:quad_required_for_ellipses', 'Quad crops missing for %s.', phoneName);
             end
             for cd = 1:numel(patchConDirs)
                 if ~patchConDirs{cd}.hasCoords
@@ -137,24 +137,24 @@ function extract_images_from_coordinates(varargin)
                 end
                 coordPath = fullfile(patchConDirs{cd}.path, cfg.coordinateFileName);
                 [~, conName] = fileparts(patchConDirs{cd}.path);
-                polyConDir = fullfile(polyBaseDir, conName);
-                if ~isfolder(polyConDir)
-                    error('extract:missing_polygon_con_folder', 'Missing polygon folder for ellipses: %s', relpath(polyConDir, cfg.projectRoot));
+                quadConDir = fullfile(quadBaseDir, conName);
+                if ~isfolder(quadConDir)
+                    error('extract:missing_quad_con_folder', 'Missing quad folder for ellipses: %s', relpath(quadConDir, cfg.projectRoot));
                 end
                 ensure_folder(patchConDirs{cd}.path);
                 fprintf('  - Using %s\n', relpath(coordPath, cfg.projectRoot));
-                extract_elliptical_patches(coordPath, polyConDir, patchConDirs{cd}.path, cfg);
+                extract_elliptical_patches(coordPath, quadConDir, patchConDirs{cd}.path, cfg);
             end
         else
             phoneEllipseCoord = fullfile(patchBaseDir, cfg.coordinateFileName);
             if isfile(phoneEllipseCoord)
                 fprintf('Step 2: Reconstruct elliptical patches from phone-level coordinates\n');
-                if ~folder_has_any_images(polyBaseDir, true)
-                    error('extract:polygon_required_for_ellipses', ['Polygon crops missing for %s. Expected con_* folders ' ...
-                           'with polygon images generated by cut_micropads.'], phoneName);
+                if ~folder_has_any_images(quadBaseDir, true)
+                    error('extract:quad_required_for_ellipses', ['Quad crops missing for %s. Expected con_* folders ' ...
+                           'with quad images generated by cut_micropads.'], phoneName);
                 end
                 ensure_folder(patchBaseDir);
-                extract_elliptical_patches(phoneEllipseCoord, polyBaseDir, patchBaseDir, cfg);
+                extract_elliptical_patches(phoneEllipseCoord, quadBaseDir, patchBaseDir, cfg);
             else
                 fprintf('Step 2: No elliptical coordinates found. Skipping.\n');
             end
@@ -164,30 +164,36 @@ function extract_images_from_coordinates(varargin)
     fprintf('\nReconstruction complete.\n');
 end
 
-function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, concFolderPrefix)
+function cfg = createConfiguration(inputFolder, quadFolder, patchFolder, concFolderPrefix)
     % Create configuration with validation and path resolution
 
     % Validate inputs
     validateattributes(inputFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'inputFolder');
-    validateattributes(polygonFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'polygonFolder');
+    validateattributes(quadFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'quadFolder');
     validateattributes(patchFolder, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'patchFolder');
     validateattributes(concFolderPrefix, {'char', 'string'}, {'nonempty'}, 'createConfiguration', 'concFolderPrefix');
 
-    repoRoot = findProjectRoot(char(inputFolder));
+    % Use canonical findProjectRoot from path_utils module
+    persistent pathUtilsModule
+    if isempty(pathUtilsModule)
+        pathUtilsModule = path_utils();
+    end
+    repoRoot = pathUtilsModule.findProjectRoot(char(inputFolder));
 
     % Resolve folder paths
     inputRoot = resolve_folder(repoRoot, char(inputFolder));
-    polyRoot = resolve_folder(repoRoot, char(polygonFolder));
+    quadRoot = resolve_folder(repoRoot, char(quadFolder));
     patchRoot = resolve_folder(repoRoot, char(patchFolder));
 
     % Create configuration structure
     cfg = struct();
     cfg.projectRoot = repoRoot;
-    cfg.paths = struct('input', inputRoot, 'polygon', polyRoot, 'patch', patchRoot);
+    cfg.paths = struct('input', inputRoot, 'quad', quadRoot, 'patch', patchRoot);
     cfg.output = struct('supportedFormats', {{'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}});
     cfg.allowedImageExtensions = {'*.jpg','*.jpeg','*.png','*.bmp','*.tif','*.tiff'};
     cfg.coordinateFileName = 'coordinates.txt';
     cfg.concFolderPrefix = char(concFolderPrefix);
+    cfg.coordIO = coordinate_io();
 
     % Image size limits
     cfg.limits = struct('maxJpegDimension', 65500);  % MATLAB JPEG writer maximum dimension
@@ -209,12 +215,12 @@ function cfg = createConfiguration(inputFolder, polygonFolder, patchFolder, conc
 end
 
 % ----------------------
-% Step 1: Polygon crops (directly from originals)
+% Step 1: Quad crops (directly from originals)
 % ----------------------
-function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
-    rows = read_polygon_coordinates(coordPath);
+function extract_quad_crops_single(coordPath, originalsDir, concDir, cfg)
+    rows = read_quad_coordinates(coordPath);
     if isempty(rows)
-        warning('extract:poly_empty', 'No valid polygon entries parsed from %s. Check file format.', coordPath);
+        warning('extract:quad_empty', 'No valid quad entries parsed from %s. Check file format.', coordPath);
         return;
     end
     ensure_folder(concDir);
@@ -222,7 +228,7 @@ function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
         row = rows(i);
 
         % Validate parsed row structure
-        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'polygon')
+        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'quad')
             warning('extract:invalid_row_struct', 'Skipping malformed coordinate entry %d', i);
             continue;
         end
@@ -232,31 +238,31 @@ function extract_polygon_crops_single(coordPath, originalsDir, concDir, cfg)
             warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
 
         % Rotation column is UI-only metadata (alignment hint)
         % Coordinates are already in original (unrotated) image frame
         % No image warp applied - coordinates already match original frame
 
-        cropped = crop_with_polygon(img, row.polygon);
+        cropped = crop_with_quad(img, row.quad);
         outExt = '.png';
         outPath = fullfile(concDir, sprintf('%s_%s%d%s', row.imageBase, cfg.concFolderPrefix, row.concentration, outExt));
         save_image_with_format(cropped, outPath, outExt, cfg);
     end
 end
 
-function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
-    rows = read_polygon_coordinates(coordPath);
+function extract_quad_crops_all(coordPath, originalsDir, quadGroupDir, cfg)
+    rows = read_quad_coordinates(coordPath);
     if isempty(rows)
-        warning('extract:poly_empty', 'No valid polygon entries parsed from %s. Check file format.', coordPath);
+        warning('extract:quad_empty', 'No valid quad entries parsed from %s. Check file format.', coordPath);
         return;
     end
-    ensure_folder(polyGroupDir);
+    ensure_folder(quadGroupDir);
     for i = 1:numel(rows)
         row = rows(i);
 
         % Validate parsed row structure
-        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'polygon')
+        if ~isfield(row, 'imageBase') || ~isfield(row, 'concentration') || ~isfield(row, 'quad')
             warning('extract:invalid_row_struct', 'Skipping malformed coordinate entry %d', i);
             continue;
         end
@@ -266,16 +272,16 @@ function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
             warning('extract:missing_original', 'Original image not found for %s in %s', row.imageBase, originalsDir);
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
 
         % Rotation column is UI-only metadata (alignment hint)
         % Coordinates are already in original (unrotated) image frame
         % No image warp applied - coordinates already match original frame
 
-        cropped = crop_with_polygon(img, row.polygon);
+        cropped = crop_with_quad(img, row.quad);
         outExt = '.png';
         % Mirror cut_micropads layout: con_* folders containing base_con_<idx>.ext
-        concFolder = fullfile(polyGroupDir, sprintf('%s%d', cfg.concFolderPrefix, row.concentration));
+        concFolder = fullfile(quadGroupDir, sprintf('%s%d', cfg.concFolderPrefix, row.concentration));
         ensure_folder(concFolder);
         outName = sprintf('%s_%s%d%s', row.imageBase, cfg.concFolderPrefix, row.concentration, outExt);
         outPath = fullfile(concFolder, outName);
@@ -283,108 +289,78 @@ function extract_polygon_crops_all(coordPath, originalsDir, polyGroupDir, cfg)
     end
 end
 
-function rows = read_polygon_coordinates(coordPath)
-    % Reads polygon coordinates saved by cut_micropads.m
-    % Header: 'image concentration x1 y1 ... xN yN rotation'
-    rows = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
+function rows = read_quad_coordinates(coordPath)
+    % Reads quad coordinates saved by cut_micropads.m
+    % Delegates parsing to coordinate_io.parseQuadCoordinateFile and maps field names.
+    %
+    % Returns struct array with fields: .imageBase, .concentration, .quad, .rotation
+    % (Maps from coordinate_io's .imageName/.vertices to .imageBase/.quad)
+
+    rows = struct('imageBase','', 'concentration',0, 'quad',[], 'rotation',0);
     rows = rows([]);
+
     if ~isfile(coordPath), return; end
-    fid = fopen(coordPath, 'rt');
-    if fid == -1, return; end
-    c = onCleanup(@() fclose(fid));
 
-    % Read entire file at once
-    allText = textscan(fid, '%s', 'Delimiter', '\n', 'WhiteSpace', '');
-    L = allText{1};
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseQuadCoordinateFile(coordPath);
 
-    if isempty(L), return; end
+    if isempty(rawEntries), return; end
 
-    firstTrim = strtrim(L{1});
-    isHeader = ~isempty(firstTrim) && strncmpi(firstTrim, 'image concentration', length('image concentration'));
+    % Map field names from coordinate_io format to extract_images format
+    numEntries = numel(rawEntries);
+    rows = struct('imageBase', cell(1, numEntries), ...
+                  'concentration', cell(1, numEntries), ...
+                  'quad', cell(1, numEntries), ...
+                  'rotation', cell(1, numEntries));
 
-    startIdx = 1;
-    if isHeader
-        startIdx = 2;
-    end
-
-    if startIdx > numel(L), return; end
-
-    nApprox = numel(L) - startIdx + 1;
-    % Pre-allocate struct array for parsed polygon entries
-    tmp(nApprox) = struct('imageBase','', 'concentration',0, 'polygon',[], 'rotation',0);
-    k = 0;
-
-    for i = startIdx:numel(L)
-        ln = strtrim(L{i});
-        if isempty(ln), continue; end
-        parts = strsplit(ln);
-        if numel(parts) < 4, continue; end
-        imageBase = strip_ext(parts{1});
-        concentration = str2double(parts{2});
-        nums = str2double(parts(3:end));
-        if numel(nums) < 8 || any(isnan(nums(1:8)))
-            warning('extract:invalid_polygon_entry', ...
-                    'Skipping malformed polygon entry on line %d: expected 8 polygon coordinates', i);
-            continue;
-        end
-        % Extract polygon (first 8 values) and rotation (9th value if present)
-        P = reshape(nums(1:8), 2, 4).';  % 4x2 polygon matrix
-        rotation = 0;
-        if numel(nums) >= 9 && ~isnan(nums(9))
-            rotation = nums(9);
-        end
-        k = k + 1;
-        tmp(k) = struct('imageBase', imageBase, 'concentration', concentration, ...
-                        'polygon', round(P), 'rotation', rotation);
-    end
-    if k == 0
-        rows = rows([]);
-    else
-        rows = tmp(1:k);
+    for i = 1:numEntries
+        rows(i).imageBase = rawEntries(i).imageName;  % Already stripped by coordinate_io
+        rows(i).concentration = rawEntries(i).concentration;
+        rows(i).quad = round(rawEntries(i).vertices);  % Map vertices -> quad
+        rows(i).rotation = rawEntries(i).rotation;
     end
 end
 
 % ----------------------
 % Step 3: Elliptical patches
 % ----------------------
-function extract_elliptical_patches(coordPath, polygonInputDir, patchOutputBase, cfg)
+function extract_elliptical_patches(coordPath, quadInputDir, patchOutputBase, cfg)
     % coordPath may be phone-level or per concentration folder. 'image' column refers
-    % to polygon-cropped image name (with extension) relative to polygonInputDir.
+    % to quad-cropped image name (with extension) relative to quadInputDir.
     rows = read_ellipse_coordinates(coordPath);
     if isempty(rows)
         warning('extract:ellipse_empty', 'No valid elliptical entries parsed from %s. Check file format.', coordPath);
         return;
     end
     ensure_folder(patchOutputBase);
-    polygonConDirs = find_concentration_dirs(polygonInputDir, cfg.concFolderPrefix);
+    quadConDirs = find_concentration_dirs(quadInputDir, cfg.concFolderPrefix);
+
+    % Load mask_utils for ellipse mask creation
+    maskUtils = mask_utils();
 
     for i = 1:numel(rows)
         row = rows(i);
-        srcPath = resolve_polygon_source(polygonInputDir, row, cfg, polygonConDirs);
+        srcPath = resolve_quad_source(quadInputDir, row, cfg, quadConDirs);
         if isempty(srcPath)
-            warning('extract:missing_polygon_img', 'Polygon image not found for %s (con %d) under %s', ...
-                row.imageName, row.concentration, relpath(polygonInputDir, cfg.projectRoot));
+            warning('extract:missing_quad_img', 'Quad image not found for %s (con %d) under %s', ...
+                row.imageName, row.concentration, relpath(quadInputDir, cfg.projectRoot));
             continue;
         end
-        img = imread_raw(srcPath);
+        img = imread(srcPath);
         xCenter = row.x; yCenter = row.y;
         a = row.semiMajorAxis; b = row.semiMinorAxis; theta = row.rotationAngle;
 
-        % Calculate rotated bounding box
-        theta_rad = deg2rad(theta);
-        ux = sqrt((a * cos(theta_rad))^2 + (b * sin(theta_rad))^2);
-        uy = sqrt((a * sin(theta_rad))^2 + (b * cos(theta_rad))^2);
-
-        x1 = max(1, floor(xCenter - ux)); y1 = max(1, floor(yCenter - uy));
-        x2 = min(size(img,2), ceil(xCenter + ux)); y2 = min(size(img,1), ceil(yCenter + uy));
+        % Calculate rotated bounding box (delegate to mask_utils for consistent
+        % rotation convention handling)
+        [x1, y1, x2, y2] = maskUtils.computeEllipseBoundingBox(xCenter, yCenter, a, b, theta, size(img,2), size(img,1));
         if x2 < x1, x2 = x1; end
         if y2 < y1, y2 = y1; end
         patchRegion = img(y1:y2, x1:x2, :);
         [h, w, ~] = size(patchRegion);
 
-        % OPTIMIZATION: Use cached elliptical masks
+        % OPTIMIZATION: Use cached elliptical masks (delegate to mask_utils)
         cx = xCenter - x1 + 1; cy = yCenter - y1 + 1;
-        mask = get_elliptical_mask(h, w, cx, cy, a, b, theta, cfg);
+        mask = maskUtils.createEllipseMaskCached([h, w], cx, cy, a, b, theta, cfg.ellipticalMaskCache);
 
         % OPTIMIZATION: Apply mask more efficiently
         if size(patchRegion,3) > 1
@@ -413,101 +389,49 @@ end
 
 function rows = read_ellipse_coordinates(coordPath)
     % Reads ellipse coordinates saved by cut_elliptical_regions.m
-    % Header: 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle'
+    % Delegates parsing to coordinate_io.parseEllipseCoordinateFile.
+    %
+    % Returns struct array with fields: .imageName, .x, .y, .semiMajorAxis,
+    %                                   .semiMinorAxis, .rotationAngle, .concentration, .replicate
+    % (Field names match coordinate_io format directly)
+
     rows = struct('imageName','', 'x',0, 'y',0, 'semiMajorAxis',0, 'semiMinorAxis',0, 'rotationAngle',0, 'concentration',0, 'replicate',0);
     rows = rows([]);
+
     if ~isfile(coordPath), return; end
-    fid = fopen(coordPath, 'rt');
-    if fid == -1, return; end
-    c = onCleanup(@() fclose(fid));
 
-    % Read first line to check for header
-    first = fgetl(fid);
-    if ~ischar(first), return; end
-    firstTrim = strtrim(first);
-    isHeader = ~isempty(firstTrim) && strncmpi(firstTrim, 'image concentration', length('image concentration'));
+    coordIO = coordinate_io();
+    rawEntries = coordIO.parseEllipseCoordinateFile(coordPath);
 
-    % Use textscan for vectorized reading (8 columns: image, conc, rep, x, y, a, b, theta)
-    data = textscan(fid, '%s %f %f %f %f %f %f %f', 'Delimiter',' ', 'MultipleDelimsAsOne', true);
+    if isempty(rawEntries), return; end
 
-    % Prepend first line if it was data (no header)
-    if ~isHeader && ~isempty(firstTrim)
-        % Parse the first line tokens into the data columns
-        parts = strsplit(firstTrim);
-        if numel(parts) >= 8
-            data = prepend_ellipse_row(data, parts);
-        end
-    end
-    if isempty(data) || numel(data) < 8
-        return;
-    end
-    names = data{1};
-    cons  = data{2};
-    reps  = data{3};
-    xs    = data{4};
-    ys    = data{5};
-    as    = data{6};
-    bs    = data{7};
-    thetas= data{8};
-    n = numel(names);
-    if n == 0, return; end
-
-    % Pre-allocate struct array for parsed elliptical coordinate entries
-    rows(1,n) = struct('imageName','', 'x',0, 'y',0, 'semiMajorAxis',0, 'semiMinorAxis',0, 'rotationAngle',0, 'concentration',0, 'replicate',0);
-    for i = 1:n
-        rows(i).imageName      = names{i};
-        rows(i).x              = xs(i);
-        rows(i).y              = ys(i);
-        rows(i).semiMajorAxis  = as(i);
-        rows(i).semiMinorAxis  = bs(i);
-        rows(i).rotationAngle  = thetas(i);
-        rows(i).concentration  = cons(i);
-        rows(i).replicate      = reps(i);
-    end
-end
-
-function dataOut = prepend_ellipse_row(data, parts)
-    % Helper to prepend one parsed row (as strings) to the textscan output
-    name = parts{1};
-    nums = str2double(parts(2:8));
-    if any(isnan(nums)) || numel(nums) ~= 7
-        dataOut = data; return;
-    end
-    % data: {names, conc, rep, x, y, a, b, theta}
-    dataOut = data;
-    if isempty(data)
-        dataOut = { {name}, nums(1), nums(2), nums(3), nums(4), nums(5), nums(6), nums(7) };
-        return;
-    end
-    dataOut{1} = [{name}; data{1}];
-    for k = 2:8
-        dataOut{k} = [nums(k-1); data{k}];
-    end
+    % coordinate_io returns fields that match our expected format directly
+    rows = rawEntries;
 end
 
 % ----------------------
 % Helpers: imaging and I/O
 % ----------------------
-function cropped = crop_with_polygon(img, polygon)
+function cropped = crop_with_quad(img, quad)
     % OPTIMIZED: Compute bbox first, then create mask only for bbox region
     [h, w, c] = size(img);
 
-    % Pre-compute bounding box from polygon vertices (avoid full-image mask)
-    minx = max(1, floor(min(polygon(:,1))));
-    maxx = min(w, ceil(max(polygon(:,1))));
-    miny = max(1, floor(min(polygon(:,2))));
-    maxy = min(h, ceil(max(polygon(:,2))));
+    % Pre-compute bounding box from quad vertices (avoid full-image mask)
+    minx = max(1, floor(min(quad(:,1))));
+    maxx = min(w, ceil(max(quad(:,1))));
+    miny = max(1, floor(min(quad(:,2))));
+    maxy = min(h, ceil(max(quad(:,2))));
 
     bboxW = maxx - minx + 1;
     bboxH = maxy - miny + 1;
 
-    % Adjust polygon coordinates to bbox-relative
-    polyRelative = polygon;
-    polyRelative(:,1) = polyRelative(:,1) - minx + 1;
-    polyRelative(:,2) = polyRelative(:,2) - miny + 1;
+    % Adjust quad coordinates to bbox-relative
+    quadRelative = quad;
+    quadRelative(:,1) = quadRelative(:,1) - minx + 1;
+    quadRelative(:,2) = quadRelative(:,2) - miny + 1;
 
     % Create mask only for bbox region (much smaller memory footprint)
-    mask = poly2mask(polyRelative(:,1), polyRelative(:,2), bboxH, bboxW);
+    mask = poly2mask(quadRelative(:,1), quadRelative(:,2), bboxH, bboxW);
 
     % Extract and mask the bbox region
     if c > 1
@@ -522,41 +446,9 @@ function cropped = crop_with_polygon(img, polygon)
     end
 end
 
-function mask = get_elliptical_mask(h, w, cx, cy, a, b, theta, cfg)
-    % OPTIMIZATION: Cache elliptical masks by dimensions, center, and ellipse parameters
-    % Most patches have identical dimensions, so this saves significant computation
-    cacheKey = sprintf('%d_%d_%.4f_%.4f_%.4f_%.4f_%.4f', h, w, cx, cy, a, b, theta);
-
-    if isKey(cfg.ellipticalMaskCache, cacheKey)
-        mask = cfg.ellipticalMaskCache(cacheKey);
-        return;
-    end
-
-    % Generate new elliptical mask with rotation
-    [X, Y] = meshgrid(1:w, 1:h);
-    theta_rad = deg2rad(theta);
-
-    % Translate to center
-    dx = X - cx;
-    dy = Y - cy;
-
-    % Rotate coordinates to ellipse's principal axes frame
-    x_rot =  dx * cos(theta_rad) + dy * sin(theta_rad);
-    y_rot = -dx * sin(theta_rad) + dy * cos(theta_rad);
-
-    % Apply ellipse equation: (x_rot/a)^2 + (y_rot/b)^2 <= 1
-    mask = (x_rot ./ a).^2 + (y_rot ./ b).^2 <= 1;
-
-    % Cache for reuse (cache masks up to ~1000x1000 pixels)
-    if h * w < 1e6
-        cfg.ellipticalMaskCache(cacheKey) = mask;
-    end
-end
-
-function save_image_with_format(img, outPath, outExt, cfg)
-    % Save image honoring requested extension and JPEG size limits.
+function save_image_with_format(img, outPath, ~, ~)
+    % Save image (format determined from outPath extension by imwrite).
     ensure_folder(fileparts(outPath));
-    ext = lower(outExt);
     try
         imwrite(img, outPath);
     catch ME
@@ -663,30 +555,6 @@ function [conDirs, hasAnyCoords] = find_concentration_dirs_with_coords(baseDir, 
     end
 end
 
-function projectRoot = findProjectRoot(inputFolder)
-    % Find project root by searching upward from current directory
-    currentDir = pwd;
-    searchDir = currentDir;
-    maxLevels = 5;
-
-    for level = 1:maxLevels
-        [parentDir, ~] = fileparts(searchDir);
-
-        if exist(fullfile(searchDir, inputFolder), 'dir')
-            projectRoot = searchDir;
-            return;
-        end
-
-        if strcmp(searchDir, parentDir)
-            break;
-        end
-
-        searchDir = parentDir;
-    end
-
-    projectRoot = currentDir;
-end
-
 function absPath = resolve_folder(repoRoot, requested)
     % If requested exists relative to repoRoot, return that; else return requested as-is
     p = fullfile(repoRoot, requested);
@@ -770,14 +638,14 @@ function imagePath = find_image_file(folder, baseName, cfg)
     end
 end
 
-function srcPath = resolve_polygon_source(baseDir, row, cfg, polyConDirs)
-    % OPTIMIZED: Locate polygon image with streamlined search order
+function srcPath = resolve_quad_source(baseDir, row, cfg, quadConDirs)
+    % OPTIMIZED: Locate quad image with streamlined search order
     if nargin < 4
-        polyConDirs = {};
+        quadConDirs = {};
     end
 
     srcPath = '';
-    baseName = strip_ext(row.imageName);
+    baseName = cfg.coordIO.strip_image_extension(row.imageName);
 
     % Priority 1: Direct path in base directory
     candidate = fullfile(baseDir, row.imageName);
@@ -817,33 +685,21 @@ function srcPath = resolve_polygon_source(baseDir, row, cfg, polyConDirs)
     end
 
     % Priority 5: Search all concentration directories (last resort)
-    if isempty(polyConDirs)
-        polyConDirs = find_concentration_dirs(baseDir, cfg.concFolderPrefix);
+    if isempty(quadConDirs)
+        quadConDirs = find_concentration_dirs(baseDir, cfg.concFolderPrefix);
     end
-    for idx = 1:numel(polyConDirs)
-        candidate = fullfile(polyConDirs{idx}, row.imageName);
+    for idx = 1:numel(quadConDirs)
+        candidate = fullfile(quadConDirs{idx}, row.imageName);
         if isfile(candidate)
             srcPath = candidate;
             return;
         end
-        alt = find_image_file_cached(polyConDirs{idx}, baseName, cfg);
+        alt = find_image_file_cached(quadConDirs{idx}, baseName, cfg);
         if ~isempty(alt)
             srcPath = alt;
             return;
         end
     end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
-end
-
-function s = strip_ext(nameOrPath)
-    [~, s, ~] = fileparts(nameOrPath);
 end
 
 function r = relpath(pathStr, root)
@@ -871,4 +727,3 @@ function r = relpath(pathStr, root)
         r = char(pathStr);
     end
 end
-

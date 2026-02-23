@@ -8,9 +8,9 @@ color: blue
 
 # Plan Writer Agent
 
-Create high-order strategic implementation plans in markdown format with progress tracking via checkboxes. Plans are **strategic roadmaps**, not detailed implementation guides. They specify WHAT, WHERE, WHY, and HOW TO VERIFY - but leave the actual coding to Claude.
+Create high-order strategic implementation plans in markdown format with progress tracking via checkboxes. Plans are **strategic roadmaps**, not detailed implementation guides. They specify WHAT, WHERE, WHY, and HOW TO VERIFY - but leave the actual coding to specialized coder agents or Claude directly for simple tasks.
 
-**Orchestration Context**: This agent is invoked by the orchestration workflow defined in CLAUDE.md when complex multi-phase tasks require structured planning. After creating plans, you return control - you do not implement code directly. Claude handles all implementation based on the plan objectives.
+**Orchestration Context**: This agent is invoked by the orchestration workflow defined in CLAUDE.md when complex multi-phase tasks require structured planning. After creating plans, you return control - you do not implement code directly. The `matlab-coder` and `python-coder` agents handle complex implementations, while Claude handles simple tasks directly.
 
 ## Core Principles
 
@@ -20,7 +20,7 @@ Create high-order strategic implementation plans in markdown format with progres
 
 **Actionable Granularity**: Each checkbox represents a concrete, verifiable task objective
 
-**Clear Specifications Without Implementation**: Describe task goals, file locations, and integration points - leave coding to Claude
+**Clear Specifications Without Implementation**: Describe task goals, file locations, and integration points - leave coding to coder agents or Claude
 
 **Self-Contained**: Plan should be understandable without external context
 
@@ -66,7 +66,7 @@ Create high-order strategic implementation plans in markdown format with progres
 
 **When to ask user vs. infer:**
 - **ASK:** Business requirements (which stages to cache, performance targets, feature priorities)
-- **DEFER TO CODER AGENTS:** Technical implementation details (which library to use, specific algorithms, code structure)
+- **DEFER TO CODER AGENTS:** Technical implementation details (which library to use, specific algorithms, code structure) - `matlab-coder` for MATLAB, `python-coder` for Python
 - **PROVIDE IN PLAN:** Task objectives, integration points, success criteria
 
 ## Plan Template Structure
@@ -124,7 +124,7 @@ Each phase should follow this pattern:
 [Same structure...]
 ```
 
-**Note:** Plans do NOT include detailed code implementations. Claude handles all coding based on the objectives and requirements specified above.
+**Note:** Plans do NOT include detailed code implementations. The coder agents (`matlab-coder`, `python-coder`) or Claude handle all coding based on the objectives and requirements specified above.
 
 ### 3. Test Cases Section
 For critical features:
@@ -572,7 +572,7 @@ Ensure plans have:
 - Progress tracking section
 - Clear rationales explaining "why"
 - No time estimates (structure by phases, not timeline)
-- No detailed code implementations (Claude handles implementation)
+- No detailed code implementations (coder agents or Claude handle implementation)
 - Specific details for current phase (ask questions if unclear)
 
 ## Common Mistakes to Avoid
@@ -884,7 +884,7 @@ git commit -m "Complete Phase 1.3: Export corner labels
 - Specify file locations and integration points
 - List requirements (what the code must do)
 - Provide success criteria (objective, measurable)
-- Leave all coding details to Claude
+- Leave all coding details to coder agents (`matlab-coder`, `python-coder`) or Claude
 
 **If you encounter ANY of these situations, STOP and ASK USER:**
 - Multiple valid approaches with different trade-offs
@@ -906,4 +906,4 @@ git commit -m "Complete Phase 1.3: Export corner labels
 
 **These are red flags - you're guessing requirements instead of asking for clarification.**
 
-The quality of the plan depends on clear objectives and requirements. Implementation quality depends on Claude following those objectives.
+The quality of the plan depends on clear objectives and requirements. Implementation quality depends on coder agents and Claude following those objectives.

@@ -9,10 +9,10 @@ This script restructures the augmented dataset for YOLO training:
 5. Selects validation phones using formula: ceil(num_phones / 5) when num_phones >= 3
 6. Creates train.txt and val.txt with absolute paths (val.txt omitted if < 3 phones)
 
-MATLAB scripts (augment_dataset.m) generate images and polygon coordinates.
+MATLAB scripts (augment_dataset.m) generate images and quad coordinates.
 This Python script converts coordinates to YOLO pose keypoint format and restructures directories.
 
-Label Format (YOLOv11-pose - DEFAULT):
+Label Format (YOLOv8-pose - DEFAULT):
     class_id x_center y_center width height x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4
     - Bounding box: axis-aligned bbox around keypoints (normalized [0,1])
     - Keypoints: 4 corners ordered clockwise from top-left (TL, TR, BR, BL)
@@ -270,7 +270,7 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
     """Generate YOLO labels from MATLAB coordinates.
 
     Reads polygon coordinates from augmented_2_micropads/[phone]/coordinates.txt
-    and creates YOLOv11 labels in augmented_1_dataset/[phone]/labels/.
+    and creates YOLOv8 labels in augmented_1_dataset/[phone]/labels/.
 
     Label formats:
         - 'pose': class_id x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2 (keypoint format, default)
@@ -283,17 +283,17 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
         label_format: Label format to generate ('pose' or 'seg')
 
     Returns:
-        Tuple of (total_labels_created, total_polygons_processed)
+        Tuple of (total_labels_created, total_quads_processed)
     """
     total_labels = 0
-    total_polygons = 0
+    total_quads = 0
 
     micropads_dir = PROJECT_ROOT / "augmented_2_micropads"
 
     for phone in phone_dirs:
         coord_file = micropads_dir / phone / "coordinates.txt"
         if not coord_file.exists():
-            print(f"⚠️  Warning: coordinates.txt not found for {phone}")
+            print(f"WARNING: coordinates.txt not found for {phone}")
             continue
 
         labels_dir = AUGMENTED_DATASET / phone / "labels"
@@ -307,12 +307,12 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
         if lines and lines[0].strip().lower().startswith('image'):
             lines = lines[1:]
 
-        # Group polygons by image
-        image_polygons = {}
+        # Group quads by image
+        image_quads = {}
         for line in lines:
             parts = line.strip().split()
             if len(parts) < 10:
-                print(f"⚠️  Warning: malformed coordinate line (expected 10 fields, got {len(parts)}): {line.strip()[:80]}")
+                print(f"WARNING: malformed coordinate line (expected 10 fields, got {len(parts)}): {line.strip()[:80]}")
                 continue
 
             img_name = parts[0]
@@ -326,17 +326,17 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
                 # Fallback: no _con_ suffix (shouldn't happen but safe)
                 base_name = img_name
 
-            # Extract polygon vertices (columns 2-9: x1 y1 x2 y2 x3 y3 x4 y4)
+            # Extract quad vertices (columns 2-9: x1 y1 x2 y2 x3 y3 x4 y4)
             vertices = [float(parts[i]) for i in range(2, 10)]
-            polygon = [(vertices[i], vertices[i+1]) for i in range(0, 8, 2)]
+            quad = [(vertices[i], vertices[i+1]) for i in range(0, 8, 2)]
 
-            if base_name not in image_polygons:
-                image_polygons[base_name] = []
-            image_polygons[base_name].append(polygon)
+            if base_name not in image_quads:
+                image_quads[base_name] = []
+            image_quads[base_name].append(quad)
 
         # Get image dimensions and create labels
         images_dir = AUGMENTED_DATASET / phone / "images"
-        for base_name, polygons in image_polygons.items():
+        for base_name, quads in image_quads.items():
             # Find corresponding image file
             img_path = None
             for ext in ['.png']:
@@ -346,34 +346,34 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
                     break
 
             if img_path is None:
-                print(f"⚠️  Warning: image not found for {base_name}")
+                print(f"WARNING: image not found for {base_name}")
                 continue
 
             # Get image dimensions
             img = cv2.imread(str(img_path))
             if img is None:
-                print(f"⚠️  Warning: failed to read {img_path}")
+                print(f"WARNING: failed to read {img_path}")
                 continue
             height, width = img.shape[:2]
 
             # Validate coordinates are within image bounds
-            valid_polygons = []
-            for polygon in polygons:
-                if all(0 <= x < width and 0 <= y < height for x, y in polygon):
-                    valid_polygons.append(polygon)
+            valid_quads = []
+            for quad in quads:
+                if all(0 <= x < width and 0 <= y < height for x, y in quad):
+                    valid_quads.append(quad)
                 else:
-                    print(f"⚠️  Warning: polygon outside image bounds in {base_name} (image: {width}x{height})")
+                    print(f"WARNING: quad outside image bounds in {base_name} (image: {width}x{height})")
 
-            if not valid_polygons:
-                print(f"⚠️  Warning: no valid polygons for {base_name}, skipping")
+            if not valid_quads:
+                print(f"WARNING: no valid quads for {base_name}, skipping")
                 continue
 
-            # Write label file with only valid polygons
+            # Write label file with only valid quads
             label_path = labels_dir / f"{base_name}.txt"
             with open(label_path, 'w') as f:
-                for polygon in valid_polygons:
+                for quad in valid_quads:
                     # Convert to numpy array for ordering
-                    vertices = np.array(polygon, dtype=np.float64)
+                    vertices = np.array(quad, dtype=np.float64)
 
                     # Order vertices clockwise from top-left
                     ordered_vertices = order_keypoints_clockwise(vertices)
@@ -385,7 +385,7 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
 
                     # Verify ordering is correct
                     if not validate_clockwise_order(ordered_vertices):
-                        print(f"⚠️  Warning: failed to establish clockwise ordering for polygon in {base_name}")
+                        print(f"WARNING: failed to establish clockwise ordering for quad in {base_name}")
                         continue
 
                     # Write label based on format
@@ -410,12 +410,12 @@ def generate_yolo_labels(phone_dirs: List[str], label_format: str = 'pose') -> T
                         coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_vertices])
                         f.write(f"0 {coords_str}\n")
 
-                    total_polygons += 1
+                    total_quads += 1
 
             total_labels += 1
 
-    print(f"✅ Generated {total_labels} label files ({total_polygons} polygons)")
-    return total_labels, total_polygons
+    print(f"[OK]Generated {total_labels} label files ({total_quads} quads)")
+    return total_labels, total_quads
 
 
 def create_train_val_txt(
@@ -437,7 +437,7 @@ def create_train_val_txt(
         try:
             train_images.extend(collect_image_paths(phone))
         except (FileNotFoundError, ValueError) as e:
-            print(f"⚠️  Warning: Skipping {phone}: {e}")
+            print(f"WARNING: Skipping {phone}: {e}")
             continue
 
     # Write train.txt
@@ -446,7 +446,7 @@ def create_train_val_txt(
         for img_path in train_images:
             f.write(f"{img_path}\n")
 
-    print(f"✅ Created {train_txt}")
+    print(f"[OK]Created {train_txt}")
     print(f"   - Train images: {len(train_images)} (phones: {', '.join(train_phones)})")
 
     # Handle validation split
@@ -458,7 +458,7 @@ def create_train_val_txt(
             try:
                 val_images.extend(collect_image_paths(phone))
             except (FileNotFoundError, ValueError) as e:
-                print(f"⚠️  Warning: Skipping {phone}: {e}")
+                print(f"WARNING: Skipping {phone}: {e}")
                 continue
 
         # Write val.txt
@@ -468,7 +468,7 @@ def create_train_val_txt(
                 f.write(f"{img_path}\n")
 
         num_val_images = len(val_images)
-        print(f"✅ Created {val_txt}")
+        print(f"[OK]Created {val_txt}")
         print(f"   - Val images: {num_val_images} (phones: {', '.join(val_phones)})")
     else:
         # No validation split
@@ -515,7 +515,7 @@ def create_yolo_config(
         f.write(f"# Generated by prepare_yolo_dataset.py\n\n")
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
-    print(f"✅ Created {config_path}")
+    print(f"[OK]Created {config_path}")
     return config_path
 
 
@@ -525,7 +525,7 @@ def print_summary(
     train_count: int,
     val_count: int,
     label_count: int,
-    polygon_count: int
+    quad_count: int
 ) -> None:
     """Print dataset summary with dynamic phone assignments.
 
@@ -535,7 +535,7 @@ def print_summary(
         train_count: Number of training images
         val_count: Number of validation images
         label_count: Number of label files created
-        polygon_count: Total number of polygons labeled
+        quad_count: Total number of quads labeled
     """
     num_phones = len(train_phones) + len(val_phones)
     num_val_phones = len(val_phones)
@@ -555,7 +555,7 @@ def print_summary(
     print(f"Val images: {val_count}")
     print(f"Total images: {train_count + val_count}")
     print(f"YOLO labels: {label_count} files")
-    print(f"Total polygons: {polygon_count}")
+    print(f"Total quads: {quad_count}")
     print(f"Classes: 1 (concentration_zone)")
     print(f"Config directory: {CONFIGS_DIR}")
     print("="*60)
@@ -567,6 +567,49 @@ def print_summary(
     print("   Or customize resolution:")
     print("   python python_scripts/train_yolo.py --stage 1 --imgsz 1280 --batch 32")
     print("="*60)
+
+
+def verify_label_directories(phone_dirs: List[str]) -> bool:
+    """Verify that label directories exist for all phone directories.
+
+    YOLO expects labels in a directory named 'labels/' directly (no symlinks).
+    This function verifies the directories exist before training.
+
+    Args:
+        phone_dirs: List of phone directory names
+
+    Returns:
+        True if all label directories exist, False otherwise
+    """
+    missing_dirs = []
+
+    for phone in phone_dirs:
+        phone_path = AUGMENTED_DATASET / phone
+        labels_dir = phone_path / "labels"
+
+        if not labels_dir.exists():
+            missing_dirs.append(str(labels_dir))
+
+    if missing_dirs:
+        print(f"WARNING: Missing label directories:")
+        for d in missing_dirs[:5]:  # Show first 5
+            print(f"  - {d}")
+        if len(missing_dirs) > 5:
+            print(f"  ... and {len(missing_dirs) - 5} more")
+        return False
+
+    print(f"[OK] Label directories verified for {len(phone_dirs)} phone(s)")
+    return True
+
+
+# Keep old name as alias for backward compatibility
+def setup_label_symlinks(phone_dirs: List[str], format_type: str = 'pose') -> None:
+    """Deprecated: Use verify_label_directories instead.
+
+    This function is kept for backward compatibility but just calls
+    verify_label_directories. The format_type parameter is ignored.
+    """
+    verify_label_directories(phone_dirs)
 
 
 def verify_labels(phone_dirs: List[str]) -> bool:
@@ -592,19 +635,23 @@ def verify_labels(phone_dirs: List[str]) -> bool:
                 missing_labels.append(str(label_path))
 
     if missing_labels:
-        print(f"⚠️  Warning: {len(missing_labels)} label files missing:")
+        print(f"WARNING: {len(missing_labels)} label files missing:")
         for label in missing_labels[:5]:
             print(f"   - {label}")
         if len(missing_labels) > 5:
             print(f"   ... and {len(missing_labels) - 5} more")
         return False
     else:
-        print(f"✅ All label files verified")
+        print(f"[OK]All label files verified")
         return True
 
 
-def parse_args():
-    """Parse command line arguments."""
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments.
+
+    Returns:
+        Parsed command line arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Prepare YOLO dataset for microPAD detection training"
     )
@@ -613,7 +660,7 @@ def parse_args():
         type=str,
         choices=['pose', 'seg'],
         default='pose',
-        help="Label format: 'pose' for YOLOv11-pose (default), 'seg' for segmentation (deprecated)"
+        help="Label format: 'pose' for YOLOv8-pose (default), 'seg' for segmentation (deprecated)"
     )
     parser.add_argument(
         "--seed",
@@ -638,14 +685,14 @@ def main() -> None:
     print("="*60)
     print(f"Label format: {args.format.upper()}")
     if args.format == 'seg':
-        print("⚠️  Warning: Segmentation format is deprecated. Pose format recommended.")
+        print("WARNING: Segmentation format is deprecated. Pose format recommended.")
     print()
 
     # Task 1.1: Dynamic phone discovery
     print("Discovering phone directories...")
     phone_dirs = discover_phone_directories()
     num_phones = len(phone_dirs)
-    print(f"✅ Found {num_phones} phone directories: {', '.join(phone_dirs)}\n")
+    print(f"[OK]Found {num_phones} phone directories: {', '.join(phone_dirs)}\n")
 
     # Task 1.2: Validation phone selection
     print("Selecting validation phones...")
@@ -653,30 +700,30 @@ def main() -> None:
     print(f"   Random seed: {args.seed}")
     train_phones, val_phones = select_validation_phones(phone_dirs, seed=args.seed)
     if val_phones:
-        print(f"✅ Train phones ({len(train_phones)}): {', '.join(train_phones)}")
-        print(f"✅ Validation phones ({len(val_phones)}): {', '.join(val_phones)}\n")
+        print(f"[OK]Train phones ({len(train_phones)}): {', '.join(train_phones)}")
+        print(f"[OK]Validation phones ({len(val_phones)}): {', '.join(val_phones)}\n")
     else:
         print(f"⚠️  No validation split (< 3 phones available)")
-        print(f"✅ All phones will be used for training: {', '.join(train_phones)}\n")
+        print(f"[OK]All phones will be used for training: {', '.join(train_phones)}\n")
 
     print("Restructuring dataset for YOLO...")
     moved_count = restructure_for_yolo(phone_dirs)
     if moved_count > 0:
-        print(f"✅ Restructured: moved {moved_count} images to images/ subdirectories")
+        print(f"[OK]Restructured: moved {moved_count} images to images/ subdirectories")
     else:
-        print(f"✅ Already restructured: images already in images/ subdirectories")
+        print(f"[OK]Already restructured: images already in images/ subdirectories")
     print()
 
     cache_files = list(AUGMENTED_DATASET.glob("*.cache"))
     if cache_files:
         for cache_file in cache_files:
             cache_file.unlink()
-        print(f"✅ Deleted {len(cache_files)} cache files")
+        print(f"[OK]Deleted {len(cache_files)} cache files")
         print()
 
     # Generate YOLO labels from MATLAB coordinates
     print("Generating YOLO labels from MATLAB coordinates...")
-    label_count, polygon_count = generate_yolo_labels(phone_dirs, label_format=args.format)
+    label_count, quad_count = generate_yolo_labels(phone_dirs, label_format=args.format)
     print()
 
     verify_labels(phone_dirs)
@@ -699,7 +746,7 @@ def main() -> None:
     )
 
     # Task 1.4: Print summary with dynamic phone assignments
-    print_summary(train_phones, val_phones, train_count, val_count, label_count, polygon_count)
+    print_summary(train_phones, val_phones, train_count, val_count, label_count, quad_count)
 
 
 if __name__ == "__main__":

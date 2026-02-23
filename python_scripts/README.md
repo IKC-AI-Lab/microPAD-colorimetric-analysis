@@ -1,6 +1,6 @@
 # microPAD Python Scripts
 
-Python scripts for YOLOv11 training and inference for microPAD quadrilateral auto-detection.
+Python scripts for YOLOv8 training and inference for microPAD quadrilateral auto-detection.
 
 ## Pipeline Overview
 
@@ -25,7 +25,7 @@ augmented_2_micropads (transformed polygons)
 augmented_3_elliptical_regions (transformed ellipses)
 ```
 
-**YOLOv11 training uses:** `augmented_1_dataset` for synthetic training data generation.
+**YOLOv8 training uses:** `augmented_1_dataset` for synthetic training data generation.
 
 ## Environment Setup
 
@@ -81,7 +81,7 @@ This script:
 
 ## Training
 
-### Phase 3.3: Train YOLOv11s-pose
+### Phase 3.3: Train YOLOv8s-pose
 
 **On workstation with dual A6000 GPUs:**
 
@@ -97,13 +97,13 @@ cd python_scripts
 python train_yolo.py
 
 # Stage 2: Fine-tune with manual labels (when available)
-python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
+python train_yolo.py --stage 2 --weights training_runs/yolov8m_pose_640/weights/best.pt
 
 # Validate trained model
-python train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt
+python train_yolo.py --validate --weights training_runs/yolov8m_pose_640/weights/best.pt
 
 # Export to TFLite
-python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
+python train_yolo.py --export --weights training_runs/yolov8m_pose_640/weights/best.pt
 ```
 
 **Custom training parameters:**
@@ -125,19 +125,19 @@ conda activate microPAD-python-env
 
 # Stage 1: Train on synthetic data
 yolo pose train \
-    model=yolo11s-pose.pt \
+    model=yolov8m-pose.pt \
     data=python_scripts/configs/micropad_synth.yaml \
     epochs=200 \
     imgsz=1280 \
     batch=32 \
     device=0,2 \
     project=training_runs \
-    name=yolo11s_pose_1280 \
+    name=yolov8m_pose_640 \
     patience=20
 ```
 
 **Training parameters explained:**
-- `model=yolo11s-pose.pt`: YOLOv11-small pose (keypoint detection, balanced speed/accuracy)
+- `model=yolov8m-pose.pt`: YOLOv8-small pose (keypoint detection, balanced speed/accuracy)
 - `epochs=200`: Maximum training epochs (Stage 1), 150 (Stage 2)
 - `imgsz=1280`: Input image size (1280x1280 optimized for high-res smartphone photos)
 - `batch=32`: Batch size optimized for 1280 resolution on dual A6000 GPUs
@@ -156,10 +156,10 @@ yolo pose train \
 
 ```bash
 # TensorBoard (if installed)
-tensorboard --logdir training_runs/yolo11s_pose_1280
+tensorboard --logdir training_runs/yolov8m_pose_640
 
 # Or view results in:
-# training_runs/yolo11s_pose_1280/results.png
+# training_runs/yolov8m_pose_640/results.png
 ```
 
 ## Export Models
@@ -170,7 +170,7 @@ tensorboard --logdir training_runs/yolo11s_pose_1280
 
 ```bash
 # Export to TFLite (Android) with one command
-python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
+python train_yolo.py --export --weights training_runs/yolov8m_pose_640/weights/best.pt
 
 # Export TFLite with INT8 quantization (if FP16 > 50ms)
 python train_yolo.py --export --weights best.pt --formats tflite --int8
@@ -181,14 +181,14 @@ python train_yolo.py --export --weights best.pt --formats tflite --int8
 ```bash
 # 1. TFLite for Android (FP16)
 yolo export \
-    model=training_runs/yolo11s_pose_1280/weights/best.pt \
+    model=training_runs/yolov8m_pose_640/weights/best.pt \
     format=tflite \
     imgsz=1280 \
     half=True
 
 # 2. INT8 quantization (if FP16 inference > 50ms)
 yolo export \
-    model=training_runs/yolo11s_pose_1280/weights/best.pt \
+    model=training_runs/yolov8m_pose_640/weights/best.pt \
     format=tflite \
     imgsz=1280 \
     int8=True
@@ -271,6 +271,6 @@ head -1 augmented_1_dataset/iphone_11/labels/IMG_0957_aug_001.txt
 
 ## References
 
-- [Ultralytics YOLOv11 Docs](https://docs.ultralytics.com/)
+- [Ultralytics YOLOv8 Docs](https://docs.ultralytics.com/)
 - [AI_DETECTION_PLAN.md](../documents/plans/AI_DETECTION_PLAN.md)
 - [CLAUDE.md](../CLAUDE.md)

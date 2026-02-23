@@ -1,0 +1,466 @@
+
+
+
+\documentclass[conference, a4paper]{IEEEtran}
+%\documentclass[conference, onecolumn]{IEEEtran}
+
+
+\IEEEoverridecommandlockouts
+%\usepackage{graphicx}
+	% Turkce karakterler icin.
+ % Turkce karakterler icin.
+	\usepackage[english]{babel}
+	\usepackage[utf8]{inputenc} % Kullanılan encodinge göre utf8 yerine latin5 de yazılabilir.
+	\usepackage[T1]{fontenc}
+	\usepackage[table]{xcolor}
+\usepackage{cite}
+\ifCLASSINFOpdf
+\usepackage[pdftex]{graphicx}
+\else
+\fi
+% *** MATH PACKAGES ***
+\DeclareRobustCommand{\hlcyan}[1]{{\sethlcolor{cyan}\hl{#1}}}
+\usepackage[cmex10]{amsmath}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage[lofdepth,lotdepth]{subfig}
+\usepackage{xcolor}
+\usepackage{color}
+\usepackage{soul}
+\usepackage{tikz}
+\definecolor{LightCyan}{rgb}{0.88,1,1}
+\graphicspath{ {./figures/} }
+% correct bad hyphenation here
+\hyphenation{op-tical net-works semi-conduc-tor}
+% 
+\usepackage{wrapfig}
+\usepackage{tabularx,booktabs}
+\setlength{\extrarowheight}{1pt}
+\usepackage{lipsum}
+\usepackage{makecell}%To keep the spacing of text in tables
+\setcellgapes{4pt}
+\usepackage{amsfonts}
+\usepackage{makecell}
+\setlength{\textfloatsep}{5pt}
+\newcommand{\etal}{\textit{et al. }}
+%\renewcommand{\tablename}{TABLO}
+
+\AtBeginDocument{%
+  \renewcommand\abstractname{Abstract}
+}
+\AtBeginDocument{%
+  \renewcommand\tablename{Table}
+}
+\begin{document}
+
+\IEEEpubid{\makebox[\columnwidth]{978-1-6654-3649-6/21/\$31.00 ©2021 IEEE\hfill}
+\hspace{\columnsep}\makebox[\columnwidth]{}}
+
+\title{ 
+
+
+ Fusion of High-Level Visual Attributes for Image Captioning
+
+}
+
+\author{Murat Kılcı, Özkan Çaylı, Volkan Kılıç
+\IEEEauthorblockA{\\Department of Electrical and Electronics Engineering, \\
+Izmir Katip Celebi University, Izmir, Turkey \\ 190403023@ogr.ikc.edu.tr, ozkan.cayli@ikcu.edu.tr,  volkan.kilic@ikcu.edu.tr
+}}
+
+% Make the title area
+\maketitle
+
+
+%Abstact English
+\begin{abstract} 
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+11\\
+12\\
+13\\
+14\\
+15\\
+16
+\end{abstract}
+
+%Abstact keywords English
+\begin{IEEEkeywords}
+Attribute Vector, Visual Attributes, Image Caption, Android Application.
+\end{IEEEkeywords}
+
+% Özet
+% \begin{ozet}
+% 1\\
+% 2\\
+% 3\\
+% 4\\
+% 5\\
+% 6\\
+% 7\\
+% 8\\
+% 9\\
+% 10\\
+% 11\\
+% 12\\
+% 13\\
+% 14\\
+% 15\\
+% 16
+% \end{ozet}
+
+%Özet Keywords
+% \begin{IEEEkeywords}
+% Özellik Vektörü, Görüntü Özellikleri, Görüntü Altyazılama, Android Uygulama.
+% \end{IEEEkeywords}
+
+\IEEEpeerreviewmaketitle
+
+\IEEEpubidadjcol
+
+%I. INTRODUCTION
+\section{Introduction} 
+\label{sec:introduction}
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6
+%II. METHOD
+\section{Method}
+\label{sec:proposed_methods}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\subsection{The Proposed Approach}
+\label{subsec: encoder-decoder}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\begin{equation} \label{eq:gru}
+\begin{aligned}
+r_g &= \sigma (W_{ir}x_t + b_{ir} + W_{hr}h_{t-1} + b_{hr}) \\
+u_g &= \sigma (W_{iu}x_t + b_{iu} + W_{hu}h_{t-1} + b_{hu}) \\
+n_g &= \tanh (W_{in}x_t + b_{in} + r_t \odot(W_{hn}h_{t-1} + b_{hn})) \\
+h_s &= (1 - z_t)\odot n_t + z_t \odot (h_{s-1})
+\end{aligned}
+\end{equation}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\input{table_performance_metric.tex}  % Table I
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\input{table_captions.tex}  % Table II
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+
+\subsection{Visual Attributes Extraction Methods}  
+\label{ssec:ImageAttributessExtractionMethods}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\subsection{Android Application: \textit{NObstacle}}  
+\label{ssec:interface_application}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\begin{figure}[t]
+\centering
+\begin{minipage}[]{\linewidth}
+\centering
+\centerline{\includegraphics[width=\linewidth]{./figures/telefonImage}}
+\vspace{0.1cm}
+\end{minipage}
+\caption{
+\normalsize {The startup screen is shown in (a) which displays the application logo and the home screen is given in (b). Captions in English are visible on the main screen in (c) while various language options are provided in (d). The Gallery can be accessible as in (e), and (f) presents the main screen and illustrates image captions in the language that was chosen.}
+} 
+\label{fig:NObstacle} 
+\end{figure} 
+
+%III. EXPERIMENTAL EVALUATIONS
+\section{Experimental Evaluations} 
+\label{sec:experimental_evaluations}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\subsection{Dataset and Performance Metrics}
+\label{ssec:DatasetandPerformanceMetrics}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\subsection{Results and Discussion} 
+\label{ssec:results}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+%IV. CONCLUSION
+\section{Conclusion} 
+\label{sec:conclusion}
+
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+1\\
+2\\
+3\\
+4\\
+5\\
+6\\
+7\\
+8\\
+9\\
+10\\
+
+\section*{ACKNOWLEDGEMENTS}
+This research was supported by the Scientific and Technological Research Council of Turkey (TUBITAK) British Council (The Newton Katip Celebi Fund Institutional Links, Turkey UK project: 120N995) and by the scientific research projects coordination unit of Izmir Katip Celebi University (project no: 2021-ÖDL-MÜMF-0006, \& 2022-TYL-FEBE-0012).
+
+\bibliographystyle{IEEEtran}
+\bibliography{my_reference.bib}
+
+\end{document}

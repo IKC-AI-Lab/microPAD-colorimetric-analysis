@@ -1,17 +1,16 @@
 function preview_augmented_overlays(varargin)
 %PREVIEW_AUGMENTED_OVERLAYS Visual integrity check for augmented overlays.
 %   Displays augmented scenes from augmented_1_dataset with concentration
-%   polygons from augmented_2_micropads and ellipse fits
+%   quads from augmented_2_micropads and ellipse fits
 %   from augmented_3_elliptical_regions overlaid on top.
 %
-%   This viewer aggregates all polygons and ellipses per base scene image,
+%   This viewer aggregates all quads and ellipses per base scene image,
 %   matching the workflow of preview_overlays.m but for augmented data.
 %
 %   COORDINATE FORMATS:
-%   - Stage 2 (augmented_2_micropads): 10 columns without rotation
-%     Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4
-%     Note: Differs from regular pipeline coordinates.txt which includes
-%           rotation as 11th column. Augmented data omits rotation.
+%   - Stage 2 (augmented_2_micropads): 11 columns with rotation
+%     Format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation
+%     Note: Matches standard pipeline coordinates.txt format.
 %   - Stage 3 (augmented_3_elliptical_regions): 8 columns
 %     Format: image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle
 %
@@ -30,8 +29,8 @@ ELLIPSE_RENDER_POINTS = 72;
 OVERLAY_COLOR_RGB = [0.48, 0.99, 0.00];  % Fluorescent green
 SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'};
 
-% Coordinate column name constants
-STAGE2_COORD_COLUMNS = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4'};
+% Coordinate column name constants (11 columns for stage 2, matching standard pipeline format)
+STAGE2_COORD_COLUMNS = {'image','concentration','x1','y1','x2','y2','x3','y3','x4','y4','rotation'};
 STAGE3_COORD_COLUMNS = {'image','concentration','replicate','x','y','semiMajorAxis','semiMinorAxis','rotationAngle'};
 
 parser = inputParser;
@@ -173,7 +172,7 @@ draw_current();
                 draw_augmented_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
                 hold(st.ax, 'off');
             else
-                img = imread_raw(entry.imagePath);
+                img = imread(entry.imagePath);
                 imshow(img, 'Parent', st.ax);
                 hold(st.ax, 'on');
                 draw_augmented_overlays(st.ax, entry, st.ellipseRenderPoints, st.overlayColor);
@@ -205,10 +204,10 @@ end
 %% Helper functions
 
 function plan = build_augmented_plan(stage1Root, stage2Root, stage3Root, phoneDirs, maxSamples, supportedExts, stage2Cols, stage3Cols)
-% Build preview plan aggregating all polygons and ellipses per base scene
+% Build preview plan aggregating all quads and ellipses per base scene
 
 plan = struct('phoneName', {}, 'imageName', {}, 'imagePath', {}, ...
-    'imageMissing', {}, 'polygons', {}, 'ellipses', {});
+    'imageMissing', {}, 'quads', {}, 'ellipses', {});
 
 entryCount = 0;
 imageMap = containers.Map('KeyType', 'char', 'ValueType', 'int32');
@@ -221,7 +220,7 @@ for pIdx = 1:numel(phoneDirs)
     phone = phoneDirs(pIdx);
     phoneStr = char(phone);
 
-    % Read stage-2 polygon coordinates
+    % Read stage-2 quad coordinates
     s2CoordPath = fullfile(stage2Root, phoneStr, 'coordinates.txt');
     if ~isfile(s2CoordPath)
         warning('preview_augmented_overlays:missingS2Coords', ...
@@ -229,7 +228,7 @@ for pIdx = 1:numel(phoneDirs)
         continue;
     end
 
-    s2Table = read_polygon_table(s2CoordPath, stage2Cols);
+    s2Table = read_quad_table(s2CoordPath, stage2Cols);
     if isempty(s2Table)
         continue;
     end
@@ -246,7 +245,7 @@ for pIdx = 1:numel(phoneDirs)
         end
     end
 
-    % Group polygons by base scene name
+    % Group quads by base scene name
     for rowIdx = 1:height(s2Table)
         if entryCount >= maxSamples
             break;
@@ -257,16 +256,14 @@ for pIdx = 1:numel(phoneDirs)
         imageChar = char(imageName);
 
         % Extract base scene name (strip _con_X suffix)
-        % Stage-2 crops have _con_X suffix: IMG_0957_aug_001_con_0.jpeg
-        % Stage-1 originals have no suffix: IMG_0957_aug_001.jpg
-        % Note: augment_dataset.m may write different extensions for stage 1 vs 2
-        % (e.g., .jpg -> .jpeg), so we must search for stage-1 file by basename only
-        [~, baseName, ~] = fileparts(imageChar);  % Remove extension first
-        conIdx = strfind(baseName, '_con_');
+        % Stage-2 crops have _con_X suffix: IMG_0957_aug_001_con_0
+        % Stage-1 originals have no suffix: IMG_0957_aug_001
+        % Note: coordinate_io now strips extensions, so imageChar is already a base name
+        conIdx = strfind(imageChar, '_con_');
         if ~isempty(conIdx)
-            baseNameNoConc = baseName(1:conIdx(1)-1);
+            baseNameNoConc = imageChar(1:conIdx(1)-1);
         else
-            baseNameNoConc = baseName;
+            baseNameNoConc = imageChar;
         end
 
         % Create or retrieve plan entry for this base scene
@@ -293,20 +290,20 @@ for pIdx = 1:numel(phoneDirs)
             plan(idx).imageName = [baseNameNoConc, ext];
             plan(idx).imagePath = scenePath;
             plan(idx).imageMissing = ~isfile(scenePath);
-            plan(idx).polygons = {};
+            plan(idx).quads = {};
             plan(idx).ellipses = {};
         end
 
-        % Add polygon to this entry
-        polygon = [
+        % Add quad to this entry
+        quad = [
             s2Table.x1(rowIdx), s2Table.y1(rowIdx);
             s2Table.x2(rowIdx), s2Table.y2(rowIdx);
             s2Table.x3(rowIdx), s2Table.y3(rowIdx);
             s2Table.x4(rowIdx), s2Table.y4(rowIdx);
         ];
-        plan(idx).polygons{end+1} = polygon;
+        plan(idx).quads{end+1} = quad;
 
-        % Find matching ellipses for this concentration polygon
+        % Find matching ellipses for this concentration quad
         if ~isempty(s3Table)
             % Match by the full stage-2 filename (with extension)
             nameMask = strcmpi(s3Table.image, string(imageChar));
@@ -314,8 +311,8 @@ for pIdx = 1:numel(phoneDirs)
             ellipseRows = s3Table(nameMask & concMask, :);
 
             if ~isempty(ellipseRows)
-                % Transform ellipse coordinates from polygon-crop space to scene space
-                minXY = [min(polygon(:,1)), min(polygon(:,2))];
+                % Transform ellipse coordinates from quad-crop space to scene space
+                minXY = [min(quad(:,1)), min(quad(:,2))];
                 for eIdx = 1:height(ellipseRows)
                     ellipse = struct();
                     ellipse.center = [ellipseRows.x(eIdx), ellipseRows.y(eIdx)] + minXY;
@@ -338,41 +335,28 @@ if ~isempty(plan)
 end
 end
 
-function imgPath = find_image_file(phoneDir, baseName, supportedExts)
+function imgPath = find_image_file(phoneDir, baseName, ~)
 % Search for image file matching baseName with any supported extension
-imgPath = '';
-if ~isfolder(phoneDir)
-    return;
+%
+% Delegates to image_io.findImageFile for consistent file discovery
+% across all scripts. Uses persistent cache for performance.
+%
+% Note: Third argument (supportedExts) is ignored - image_io uses its
+% built-in list of supported extensions for consistency.
+%
+% See also: image_io.findImageFile
+
+persistent imageIO cache
+if isempty(imageIO)
+    imageIO = image_io();
+    cache = imageIO.createCaches();
 end
 
-% Try each extension
-for i = 1:length(supportedExts)
-    candidate = fullfile(phoneDir, [baseName, supportedExts{i}]);
-    if isfile(candidate)
-        imgPath = candidate;
-        return;
-    end
-end
-
-% Fallback: case-insensitive search
-dirInfo = dir(phoneDir);
-files = dirInfo(~[dirInfo.isdir]);
-for i = 1:length(files)
-    [~, fbase, fext] = fileparts(files(i).name);
-    if strcmpi(fbase, baseName)
-        % Check if extension is supported
-        for j = 1:length(supportedExts)
-            if strcmpi(fext, supportedExts{j})
-                imgPath = fullfile(phoneDir, files(i).name);
-                return;
-            end
-        end
-    end
-end
+imgPath = imageIO.findImageFile(phoneDir, baseName, cache);
 end
 
 function draw_augmented_overlays(ax, entry, ellipseRenderPoints, overlayColor)
-% Draw all concentration polygons and ellipses for this augmented scene
+% Draw all concentration quads and ellipses for this augmented scene
 
 persistent theta cosTheta sinTheta lastRenderPoints
 
@@ -384,10 +368,10 @@ if isempty(lastRenderPoints) || lastRenderPoints ~= ellipseRenderPoints
     lastRenderPoints = ellipseRenderPoints;
 end
 
-% Draw all concentration polygons
-numPolygons = numel(entry.polygons);
-for i = 1:numPolygons
-    P = entry.polygons{i};
+% Draw all concentration quads
+numQuads = numel(entry.quads);
+for i = 1:numQuads
+    P = entry.quads{i};
     plot(ax, [P(:,1); P(1,1)], [P(:,2); P(1,2)], '-', ...
         'Color', overlayColor, 'LineWidth', 0.5);
 end
@@ -400,7 +384,9 @@ if numEllipses > 0
         center = ellipse.center;
         a = ellipse.semiMajorAxis;
         b = ellipse.semiMinorAxis;
-        theta_rad = deg2rad(ellipse.rotationAngle);
+        % Convert from user convention (from vertical) to math convention (from horizontal)
+        % for parametric equations: math_angle = 90° - user_angle
+        theta_rad = deg2rad(90 - ellipse.rotationAngle);
 
         % Parametric ellipse with rotation
         ellipseX = center(1) + a * cosTheta * cos(theta_rad) - b * sinTheta * sin(theta_rad);
@@ -445,92 +431,40 @@ isPhone = [entries.isdir] & ~ismember({entries.name}, {'.', '..'});
 names = string({entries(isPhone).name});
 end
 
-function tbl = read_polygon_table(coordPath, expectedColumns)
-% Read concentration polygon coordinate table (robust to missing header)
-if ~isfile(coordPath)
-    tbl = table();
-    return;
+function tbl = read_quad_table(coordPath, ~)
+% Read concentration quad coordinate table using coordinate_io
+%
+% Delegates to coordinate_io.parseQuadCoordinateFileAsTable for consistent
+% parsing across all scripts. See coordinate_io.m for authoritative format docs.
+%
+% Note: Second argument (expectedColumns) is ignored - coordinate_io uses
+% standardized column names for consistency.
+%
+% See also: coordinate_io.parseQuadCoordinateFileAsTable
+
+persistent coordIO
+if isempty(coordIO)
+    coordIO = coordinate_io();
 end
 
-% Detect header by peeking first non-empty line
-fid = fopen(coordPath, 'rt');
-if fid == -1
-    tbl = table();
-    return;
+tbl = coordIO.parseQuadCoordinateFileAsTable(coordPath);
 end
 
-% Initialize firstLine to default header in case file is empty
-firstLine = strjoin(expectedColumns, ' ');
-while true
-    line = fgetl(fid);
-    if ~ischar(line)
-        % EOF reached - firstLine retains default header
-        break;
-    end
-    if ~isempty(strtrim(line))
-        firstLine = line;
-        break;
-    end
-end
-fclose(fid);
+function tbl = read_ellipse_table(coordPath, ~)
+% Read ellipse metadata table using coordinate_io
+%
+% Delegates to coordinate_io.parseEllipseCoordinateFileAsTable for consistent
+% parsing across all scripts. See coordinate_io.m for authoritative format docs.
+%
+% Note: Second argument (expectedColumns) is ignored - coordinate_io uses
+% standardized column names for consistency.
+%
+% See also: coordinate_io.parseEllipseCoordinateFileAsTable
 
-lowerFirst = lower(string(strtrim(firstLine)));
-hasHeader = contains(lowerFirst, "image") && contains(lowerFirst, "concentration");
-
-tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
-    'TextType', 'string', 'ReadVariableNames', hasHeader);
-
-% Assign standard variable names when header is missing
-if ~hasHeader
-    n = min(numel(expectedColumns), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
-end
+persistent coordIO
+if isempty(coordIO)
+    coordIO = coordinate_io();
 end
 
-function tbl = read_ellipse_table(coordPath, expectedColumns)
-% Read ellipse metadata table (robust to missing header)
-if ~isfile(coordPath)
-    tbl = table();
-    return;
-end
-
-fid = fopen(coordPath, 'rt');
-if fid == -1
-    tbl = table();
-    return;
-end
-
-% Initialize firstLine to default header in case file is empty
-firstLine = strjoin(expectedColumns, ' ');
-while true
-    line = fgetl(fid);
-    if ~ischar(line)
-        % EOF reached - firstLine retains default header
-        break;
-    end
-    if ~isempty(strtrim(line))
-        firstLine = line;
-        break;
-    end
-end
-fclose(fid);
-
-lowerFirst = lower(string(strtrim(firstLine)));
-hasHeader = contains(lowerFirst, "image") && contains(lowerFirst, "concentration");
-
-tbl = readtable(coordPath, 'Delimiter', ' ', 'MultipleDelimsAsOne', true, ...
-    'TextType', 'string', 'ReadVariableNames', hasHeader);
-
-if ~hasHeader
-    n = min(numel(expectedColumns), width(tbl));
-    tbl.Properties.VariableNames(1:n) = expectedColumns(1:n);
-end
-end
-
-function I = imread_raw(fname)
-% Read image pixels in their recorded layout without applying EXIF orientation
-% metadata. Any user-requested rotation is stored in coordinates.txt and applied
-% during downstream processing rather than via image metadata.
-
-    I = imread(fname);
+tbl = coordIO.parseEllipseCoordinateFileAsTable(coordPath);
 end
