@@ -1483,17 +1483,31 @@ function quadOut = transform_quad(vertices, tform)
     quadOut = [x, y];
 end
 
-function augImg = transform_quad_content(content, origVerts, augVerts, bbox)
-    % Warp quad image content to match target geometry
+function [augImg, augAlpha] = transform_quad_content(content, origVerts, augVerts, bbox)
+    % Warp quad image content to match target geometry with alpha mask
+    %
+    % This function transforms the quad content and creates a corresponding
+    % alpha mask for proper pre-multiplied alpha compositing. The transformed
+    % RGB is effectively pre-multiplied (edges blend with black fill), so
+    % the returned alpha should be used with: result = F + B * (1 - alpha)
+    %
+    % The alpha mask is derived from actual content pixels (where RGB > 0) rather
+    % than from a separate poly2mask call. This guarantees perfect alignment
+    % between RGB and alpha, avoiding black edge artifacts that occur when
+    % poly2mask boundary decisions differ between extraction and compositing.
+    %
+    % NOTE: True black [0,0,0] pixels inside the quad will be treated as
+    % transparent. For microPAD paper (light-colored), this is not an issue.
     %
     % Inputs:
-    %   content: image patch containing the quad
+    %   content: image patch containing the quad (masked, black outside)
     %   origVerts: 4x2 original quad vertices
     %   augVerts: 4x2 target quad vertices
     %   bbox: [x, y, width, height] bounding box of content in original image
     %
-    % Output:
-    %   augImg: warped image content
+    % Outputs:
+    %   augImg: warped image content (pre-multiplied at edges due to black fill)
+    %   augAlpha: warped alpha mask (single, 0-1 range) for compositing
 
     % Convert vertices to bbox-relative coordinates
     origVertsRel = origVerts - [bbox(1) - 1, bbox(2) - 1];
@@ -1501,7 +1515,8 @@ function augImg = transform_quad_content(content, origVerts, augVerts, bbox)
     minY = min(augVerts(:,2));
     augVertsRel = augVerts - [minX, minY];
 
-    % Compute projective transformation
+    % Compute projective transformation using original vertices
+    % This ensures consistency with ellipse annotation transforms
     tform = fitgeotrans(origVertsRel, augVertsRel, 'projective');
 
     % Determine output dimensions
@@ -1509,9 +1524,21 @@ function augImg = transform_quad_content(content, origVerts, augVerts, bbox)
     outHeight = ceil(max(augVertsRel(:,2)) - min(augVertsRel(:,2)) + 1);
     outRef = imref2d([outHeight, outWidth]);
 
-    % Apply transformation
+    % Apply transformation to RGB content
     augImg = imwarp(content, tform, 'OutputView', outRef, ...
                     'InterpolationMethod', 'linear', 'FillValues', 0);
+
+    % Derive alpha mask from actual content pixels (not from poly2mask)
+    % This guarantees perfect alignment: alpha=1 exactly where RGB has content
+    % The previous approach used poly2mask separately, which could produce
+    % 1-pixel boundary mismatches due to scan-line algorithm edge cases,
+    % resulting in black edges where alpha=1 but RGB=0
+    alphaMask = single(any(content > 0, 3));
+
+    % Transform alpha with same linear interpolation for consistent edge blending
+    % This produces fractional values (0.0-1.0) at edges that match RGB interpolation
+    augAlpha = imwarp(alphaMask, tform, 'OutputView', outRef, ...
+                      'InterpolationMethod', 'linear', 'FillValues', 0);
 end
 
 %% =========================================================================
@@ -1555,7 +1582,7 @@ function ellipseOut = transform_ellipse(ellipseIn, tform)
 end
 
 function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, concentration, ...
-                                                     origVertices, contentBbox, augVertices, ...
+                                                     origVertices, ~, augVertices, ...
                                                      minXCrop, minYCrop, tformPersp, tformRot, ...
                                                      tformIndepRot, totalAppliedRotation)
     % Transform ellipse annotations through multiple sequential transformations
@@ -1564,11 +1591,12 @@ function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, con
     % validates constraints, and maps to augmented crop coordinates.
     %
     % Inputs:
-    %   ellipseList: array of ellipse structs with replicate, center, semiMajor, semiMinor, rotation
+    %   ellipseList: array of ellipse structs with replicate, center (IMAGE-SPACE coordinates
+    %                relative to original 1_dataset image), semiMajor, semiMinor, rotation
     %   paperBase: base name for logging
     %   concentration: concentration index for logging
     %   origVertices: 4x2 original quad vertices
-    %   contentBbox: [x, y, w, h] bounding box of content
+    %   ~: (unused) contentBbox - kept for API compatibility
     %   augVertices: 4x2 augmented quad vertices
     %   minXCrop, minYCrop: crop offset for coordinate conversion
     %   tformPersp: perspective transformation
@@ -1595,8 +1623,15 @@ function ellipseCropList = transform_region_ellipses(ellipseList, paperBase, con
     for idx = 1:numel(ellipseList)
         ellipseIn = ellipseList(idx);
 
-        % Map ellipse from crop space to original image coordinates
-        ellipseInImageSpace = map_ellipse_crop_to_image(ellipseIn, contentBbox);
+        % Ellipses from Stage-3 are already in image-space (see coordinate_io.m:26)
+        % No conversion needed - use directly with type normalization
+        ellipseInImageSpace = struct( ...
+            'center', double(ellipseIn.center), ...
+            'semiMajor', double(ellipseIn.semiMajor), ...
+            'semiMinor', double(ellipseIn.semiMinor), ...
+            'rotation', double(ellipseIn.rotation), ...
+            'replicate', ellipseIn.replicate, ...
+            'valid', true);
 
         % Validate ellipse lies inside the original quad before augmentations
         if ~inpolygon(ellipseInImageSpace.center(1), ellipseInImageSpace.center(2), ...

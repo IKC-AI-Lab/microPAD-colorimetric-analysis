@@ -79,6 +79,24 @@ MATLAB-based colorimetric analysis pipeline for microPAD analysis. Processes raw
 
 **Augmentation:** `augment_dataset.m` creates synthetic training data with YOLO labels.
 
+### Augmentation Architecture
+
+The augmentation pipeline uses a two-stage approach:
+
+**MATLAB (augment_dataset.m) - Synthetic Data Generation:**
+- Geometric: perspective transforms, rotation, random placement, variable scaling
+- Background: 5 procedural surface types, artifacts, adaptive shadows (all backgrounds)
+- Unique photometric: gamma correction, color temperature, sensor noise, JPEG artifacts
+- Physical: paper damage, occlusions (lines/blobs/fingers), stains, specular highlights, edge feathering (50% hard/soft edges)
+
+**YOLO (train_yolo.py) - Runtime Augmentation:**
+- HSV: hue ±1.5%, saturation ±70%, value ±40%
+- Mosaic: 80% (4 images combined)
+- Scale: ±50%, Translate: ±10%
+- Horizontal flip: 50%, Random erasing: 40%
+
+This separation avoids redundancy: MATLAB handles unique augmentations (noise profiles, JPEG artifacts, geometric transforms), while YOLO handles HSV jitter at runtime.
+
 ### Helper Scripts (`matlab_scripts/helper_scripts/`)
 
 Modular utility functions organized by functionality. Each returns a struct of function handles.
@@ -87,9 +105,10 @@ Modular utility functions organized by functionality. Each returns a struct of f
 |--------|---------|---------|
 | `geometry_transform.m` | Geometry + homography operations (quad/ellipse transforms, projective math) | cut_micropads, augment_dataset |
 | `feature_pipeline.m` | Feature registry + output (definitions, presets, Excel export, train/test split) | extract_features |
-| `augmentation_synthesis.m` | Synthetic data generation (backgrounds, distractors, artifacts) | augment_dataset |
+| `augmentation_synthesis.m` | Synthetic data generation (backgrounds, distractors, artifacts, shadows, stains, specular highlights) | augment_dataset |
+| `occlusion_utils.m` | Occlusion generation (lines, blobs, fingers) for augmentation | augment_dataset |
 | `coordinate_io.m` | **Authoritative source** for coordinate file I/O (parsing, atomic writes, format validation) | all scripts handling coordinates |
-| `image_io.m` | Image loading with EXIF handling | cut_micropads, augment_dataset, extract_features |
+| `image_io.m` | Image loading with EXIF handling, motion blur, edge feathering | cut_micropads, augment_dataset, extract_features |
 | `mask_utils.m` | Quad/ellipse mask creation with caching | cut_micropads, extract_features |
 | `path_utils.m` | Path resolution and folder operations | all main scripts |
 | `color_analysis.m` | Color space conversions, paper detection | extract_features |
@@ -106,7 +125,7 @@ Modular utility functions organized by functionality. Each returns a struct of f
 - **Stage Independence:** Read from `N_*`, write to `(N+1)_*`
 - **Phone-based Organization:** Subdirectories per phone model
 - **Consolidated Coordinates:** Phone-level `coordinates.txt` files
-- **AI Detection:** YOLOv11 pose keypoint detection for test zones
+- **AI Detection:** YOLOv8 pose keypoint detection for test zones
 
 ## File Formats
 
@@ -123,26 +142,47 @@ Modular utility functions organized by functionality. Each returns a struct of f
 
 ### Model Training (`python_scripts/train_yolo.py`)
 
-Two model configurations available:
+Three-tier preset system:
 
-| Mode | Model | Resolution | Command |
-|------|-------|------------|---------|
-| Desktop | yolo11s-pose | 1280x1280 | `python train_yolo.py` |
-| Mobile | yolo11n-pose | 640x640 | `python train_yolo.py --mobile` |
+| Preset | Model | Resolution | Batch | Use Case |
+|--------|-------|------------|-------|----------|
+| **Medium** | yolov8m-pose | 640px | 32 | **DEFAULT** - High accuracy for production |
+| **Small** | yolov8s-pose | 640px | 48 | Balanced speed/accuracy |
+| **Nano** | yolov8n-pose | 640px | 64 | Fast training/inference |
+
+**Training commands:**
+```bash
+# Zero-config training (uses medium preset)
+python train_yolo.py
+
+# Explicit preset selection
+python train_yolo.py --medium  # High accuracy (DEFAULT)
+python train_yolo.py --small   # Balanced speed/accuracy
+python train_yolo.py --nano    # Fast inference
+
+# Override batch size
+python train_yolo.py --medium --batch 48
+python train_yolo.py --small --batch 64
+```
 
 **Key flags:**
-- `--mobile`: Use mobile-optimized settings (nano model, 640px, reduced augmentation)
+- `--medium/--small/--nano`: Select preset (mutually exclusive)
 - `--name`: Custom experiment name (auto-generated if omitted)
 - `--validate`: Validate trained model
 - `--export`: Export to TFLite for deployment
+- `--optimizer`: Choose optimizer (AdamW default)
 
 **MATLAB inference:**
 ```matlab
-% Mobile model (default)
+% Default (medium model - auto-detects inference size from filename)
 cut_micropads('useAIDetection', true)
 
-% Desktop model
-cut_micropads('useAIDetection', true, 'useMobileModel', false)
+% Small or nano model
+cut_micropads('useAIDetection', true, 'detectionModel', 'models/yolov8s-micropad-pose-640.pt')
+cut_micropads('useAIDetection', true, 'detectionModel', 'models/yolov8n-micropad-pose-640.pt')
+
+% Custom model with explicit inference size
+cut_micropads('useAIDetection', true, 'detectionModel', 'path/to/model.pt', 'inferenceSize', 640)
 ```
 
 ## Critical Patterns

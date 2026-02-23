@@ -66,10 +66,10 @@ The pipeline processes images through **4 sequential stages**. Each stage reads 
 
 ![Stage 1 to 2](demo_images/stage2_micropad.jpeg)
 
-Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered quad detection (YOLOv11 pose keypoints) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
+Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered quad detection (YOLOv8 pose keypoints) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
 
 **Key Features:**
-- AI-based auto-detection of test zones (YOLOv11s pose keypoints)
+- AI-based auto-detection of test zones (YOLOv8s pose keypoints)
 - Graceful fallback to manual quad selection if auto-detection fails
 - Interactive rotation control with cumulative rotation memory
 - Saves 10-column coordinate format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation`
@@ -207,7 +207,7 @@ extract_features('preset', 'custom', 'features', customFeatures, 'useDialog', fa
 The extracted features are designed for training AI models that will:
 1. **Predict biomarker concentrations** from smartphone images
 2. **Run on Android smartphones** via embedded TensorFlow Lite models
-3. **Auto-detect test zones** using YOLOv11 segmentation (already integrated in MATLAB pipeline)
+3. **Auto-detect test zones** using YOLOv8 segmentation (already integrated in MATLAB pipeline)
 
 **Typical ML workflow:**
 ```matlab
@@ -496,9 +496,9 @@ augment_dataset('numAugmentations', 5)
 # 2. Prepare YOLO dataset with Python (reads MATLAB coordinates, creates labels)
 python python_scripts/prepare_yolo_dataset.py
 
-# 3. Train model (desktop: yolo11s @ 1280px, mobile: yolo11n @ 640px)
+# 3. Train model (desktop: yolov8m @ 640px, mobile: yolov8n @ 640px)
 python python_scripts/train_yolo.py           # Desktop model
-python python_scripts/train_yolo.py --mobile  # Mobile model
+python python_scripts/train_yolo.py --small  # Mobile model
 ```
 
 **For Concentration Prediction (Regression Models)**
@@ -671,7 +671,7 @@ Sample rows from `4_extract_features/robust_lactate_features.xlsx` (showing subs
 This MATLAB pipeline serves as the **data preparation and training infrastructure** for an Android smartphone application that will:
 
 1. **Capture microPAD photos** using the smartphone camera
-2. **Auto-detect test zones** using quad detection AI (YOLOv11 pose keypoints - already integrated in MATLAB)
+2. **Auto-detect test zones** using quad detection AI (YOLOv8 pose keypoints - already integrated in MATLAB)
 3. **Predict biomarker concentrations** (urea, creatinine, lactate) using regression models (trained on features from `4_extract_features/`)
 4. **Display results** to the user in real-time
 
@@ -680,7 +680,7 @@ This MATLAB pipeline serves as the **data preparation and training infrastructur
 ```
 MATLAB Pipeline (this repository)
     ↓
-augmented_1_dataset/ → Train quad detector (YOLOv11s pose keypoints)
+augmented_1_dataset/ → Train quad detector (YOLOv8s pose keypoints)
     ↓
 4_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
     ↓
@@ -691,7 +691,7 @@ Android Application (separate repository, coming soon)
 
 ### **Key Features of Android App**
 
-- **Real-time detection** - Auto-locate test zones in live camera feed (using YOLOv11s-pose model)
+- **Real-time detection** - Auto-locate test zones in live camera feed (using YOLOv8s-pose model)
 - **Lighting compensation** - White reference strategy (same as MATLAB pipeline)
 - **Multi-biomarker support** - Separate models for urea, creatinine, lactate
 - **Offline inference** - Embedded TensorFlow Lite models (no internet required)
@@ -700,7 +700,7 @@ Android Application (separate repository, coming soon)
 ### **Current Status**
 
 ✅ **Completed**: MATLAB data preparation pipeline (4-stage pipeline)
-✅ **Completed**: AI quad detection training (YOLOv11s-pose)
+✅ **Completed**: AI quad detection training (YOLOv8s-pose)
 ✅ **Completed**: MATLAB integration with graceful fallback to manual selection
 📋 **Planned**: Android application development with TFLite deployment
 

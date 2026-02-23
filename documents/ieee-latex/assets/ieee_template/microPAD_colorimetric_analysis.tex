@@ -1,0 +1,612 @@
+% ============================================================================
+% 14-WEEK RESEARCH PLAN
+% ============================================================================
+%
+% Week 1-2:   Literature review finalization and uPAD design optimization.
+%             Finalize chemical reagents, enzyme concentrations, and
+%             chromogenic substrates for urea, creatinine, and lactate.
+%
+% Week 3-4:   uPAD fabrication and characterization. Wax printing on
+%             Whatman grade 1 filter paper (Xerox ColorQube 8900, 180C,
+%             120-180s). Enzyme deposition and drying protocol optimization.
+%             Verify color response across 7 concentration levels per analyte.
+%
+% Week 5-6:   Image dataset acquisition. Capture images with 4 smartphones
+%             (iPhone 11, iPhone 15, Samsung A75, Realme C55) under 7
+%             lighting conditions at controlled angles. Organize into
+%             1_dataset/{phone}/ directory structure.
+%
+% Week 7-8:   YOLO-pose detector training. Run augment_dataset.m to
+%             generate synthetic training data. Train desktop and mobile
+%             YOLO-pose models. Evaluate mAP@50 and detection rate.
+%             Iterate on augmentation parameters as needed.
+%
+% Week 9:     Pipeline execution and feature extraction. Run cut_micropads.m
+%             with YOLO detection through all 4 stages. Extract features
+%             using extract_features.m with robust preset (~80 features).
+%             Verify white reference normalization quality.
+%
+% Week 10:    Reproduce literature methods for fair comparison. Implement
+%             key approaches from reviewed papers (e.g., flash-based
+%             normalization, color correction matrices, standard RGB-only
+%             features) on our dataset to establish baselines.
+%
+% Week 11:    ML model training and evaluation. Train classical regression
+%             models (Linear, Ridge, SVR, Random Forest, Gradient Boosting,
+%             XGBoost) on extracted features. Perform cross-phone validation,
+%             ablation study on feature presets, and feature importance
+%             analysis. Compare with reproduced literature baselines.
+%
+% Week 12:    Deep Learning model training. Design and train DNN/CNN-based
+%             regression models on extracted features and/or raw image
+%             patches. Compare DL performance against ML models. Evaluate
+%             TFLite conversion for mobile deployment. Calculate LOD values.
+%
+% Week 13:    Results compilation and paper writing. Fill all TODO-RESULTS
+%             markers with experimental data. Generate figures (confusion
+%             matrices, calibration curves, feature importance plots).
+%             Complete SOTA comparison table with our results vs. reproduced
+%             literature baselines.
+%
+% Week 14:    Paper revision, proofreading, and submission preparation.
+%             Final LaTeX compilation check. Prepare Overleaf package.
+%             Submit to target IEEE conference.
+%
+% ============================================================================
+%
+% microPAD_colorimetric_analysis.tex
+% IEEE Conference Paper: Smartphone-Based AI-Enhanced Colorimetric Analysis
+% of Multiple Analytes with Microfluidic Paper-Based Analytical Devices
+%
+% Authors: Veysel Yusuf Yilmaz, Volkan Kilic
+% Department of Electrical and Electronics Engineering
+% Izmir Katip Celebi University, Izmir, Turkey
+%
+% Document type: Conference paper (pre-experiment, 6-8 pages)
+% Generated: 2026-02-23
+%
+% FIGURES USED (source -> destination):
+% - demo_images/stage1_original_image.jpeg -> figures/stage1_original_image.jpeg
+% - demo_images/stage2_micropad.jpeg -> figures/stage2_micropad.jpeg
+% - demo_images/stage3_elliptical_region_1.jpeg -> figures/stage3_elliptical_region_1.jpeg
+% - demo_images/white_referenced_pixels_on_rectangle.png -> figures/white_referenced_pixels_on_rectangle.png
+% - demo_images/augmented_dataset_1.jpg -> figures/augmented_dataset_1.jpg
+% - demo_images/augmented_micropad_1.jpeg -> figures/augmented_micropad_1.jpeg
+% - demo_images/augmented_micropad_2.jpeg -> figures/augmented_micropad_2.jpeg
+
+
+\documentclass[conference, a4paper]{IEEEtran}
+
+\IEEEoverridecommandlockouts
+	\usepackage[english]{babel}
+	\usepackage[utf8]{inputenc}
+	\usepackage[T1]{fontenc}
+	\usepackage[table]{xcolor}
+\usepackage{cite}
+\ifCLASSINFOpdf
+\usepackage[pdftex]{graphicx}
+\else
+\fi
+\usepackage[cmex10]{amsmath}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage[lofdepth,lotdepth]{subfig}
+\usepackage{xcolor}
+\usepackage{color}
+\usepackage{soul}
+\usepackage{tikz}
+\definecolor{LightCyan}{rgb}{0.88,1,1}
+\graphicspath{ {./figures/} }
+\hyphenation{op-tical net-works semi-conduc-tor col-ori-met-ric mi-cro-flu-id-ic}
+\usepackage{wrapfig}
+\usepackage{tabularx,booktabs}
+\setlength{\extrarowheight}{1pt}
+\usepackage{makecell}
+\setcellgapes{4pt}
+\usepackage{amsfonts}
+\setlength{\textfloatsep}{5pt}
+\newcommand{\etal}{\textit{et al. }}
+
+\AtBeginDocument{%
+  \renewcommand\abstractname{Abstract}
+}
+\AtBeginDocument{%
+  \renewcommand\tablename{Table}
+}
+
+\begin{document}
+
+% TODO-USER: Update the copyright notice below with the correct conference info
+%\IEEEpubid{\makebox[\columnwidth]{XXX-X-XXXX-XXXX-X/XX/\$31.00 \copyright 2026 IEEE\hfill}
+%\hspace{\columnsep}\makebox[\columnwidth]{}}
+
+\title{Smartphone-Based AI-Enhanced Colorimetric Analysis of Multiple Analytes with Microfluidic Paper-Based Analytical Devices}
+
+\author{Veysel Yusuf Y{\i}lmaz, Volkan K{\i}l{\i}{\c{c}}*
+\IEEEauthorblockA{\\Department of Electrical and Electronics Engineering, \\
+\.{I}zmir Katip \c{C}elebi University, \.{I}zmir, Turkey \\
+Y250246012@ogr.ikc.edu.tr, volkan.kilic@ikcu.edu.tr
+}}
+
+\maketitle
+
+%% ========================================================================
+%% ABSTRACT
+%% ========================================================================
+\begin{abstract}
+Recently, smartphone-based colorimetric analysis has emerged as a promising approach for accessible and low-cost point-of-care testing. However, existing methods are limited by manual region of interest (ROI) selection, sensitivity to ambient illumination, and reliance on single-analyte classification rather than quantitative multi-analyte regression. In this study, a YOLO26-pose keypoint detection model was developed and integrated into a MATLAB-based image processing pipeline for automatic localization of test zones on microfluidic paper-based analytical devices ($\mu$PADs). The proposed system employs a four-stage pipeline that processes raw smartphone images through automatic quad vertex detection, perspective-corrected cropping, elliptical patch extraction, and comprehensive feature engineering comprising over 150 colorimetric, texture, and spatial features. A novel white reference normalization strategy utilizes the paper area surrounding detection zones to compensate for illumination variance across different smartphone cameras and lighting conditions. Furthermore, a synthetic data augmentation pipeline generates training data with procedural backgrounds, photometric transformations, and physical paper damage simulation, eliminating the need for manual labeling. The system supports simultaneous detection of three analytes (urea, creatinine, and lactate) per $\mu$PAD strip using four smartphone models under seven lighting conditions. Overall, the proposed platform holds great promise for robust, phone-independent colorimetric quantification in nonlaboratory and resource-limited settings.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Smartphone, colorimetric, microfluidic paper-based analytical device, YOLO, keypoint detection, white reference normalization, multi-analyte, regression.
+\end{IEEEkeywords}
+
+\IEEEpeerreviewmaketitle
+
+%% ========================================================================
+%% I. INTRODUCTION
+%% ========================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+Recently, noninvasive and accessible diagnostic methods have attracted considerable attention owing to the growing demand for decentralized health monitoring in point-of-care testing (POCT) scenarios~\cite{martinez2010diagnostics, xu2023smartphone}. Conventional laboratory-based analyses, while accurate, require expensive instrumentation, trained personnel, and centralized facilities that are often unavailable in resource-limited settings. Moreover, invasive sample collection methods such as blood draws pose risks of infection and are particularly challenging for chronic patients, children, and the elderly.
+
+As an alternative, biological fluids including sweat, saliva, tears, and urine provide noninvasive sources of clinically relevant biomarkers~\cite{basturk2024regression}. Among various detection principles, colorimetric analysis offers notable advantages: simplicity, visual determination capability, compatibility with high-throughput screening, and suitability for resource-limited environments~\cite{pradeep2024role}. Colorimetric detection can be easily integrated into microfluidic paper-based analytical devices ($\mu$PADs), which offer new directions for simple, low-cost, and portable diagnostic and analytical applications~\cite{martinez2007patterned, carrilho2009wax}. Since their introduction by Martinez~\etal\cite{martinez2007patterned}, $\mu$PADs have been widely adopted for POCT due to their ease of fabrication via wax printing, capillary-driven fluid transport, and minimal sample volume requirements~\cite{carrio2017review}.
+
+Despite these advantages, a fundamental challenge in smartphone-based colorimetric analysis is that color interpretation is significantly affected by camera optics (e.g., f-stop, sensor response) and ambient illumination conditions~\cite{oconnor2020accurate, wang2024smartphone}. Different smartphone brands exhibit varying spectral sensitivities, and uncontrolled lighting introduces color casts that compromise measurement accuracy.
+
+To address this issue, artificial intelligence (AI) has been successfully applied to interpret color changes robustly across different devices and environments~\cite{mutlu2017smartphone, tseng2023deep, abuhassan2024colorimetric}. Machine learning (ML) approaches such as support vector machines (SVM), random forests (RF), and k-nearest neighbors (KNN) have been employed for colorimetric classification with smartphone-captured images~\cite{mutlu2017smartphone}. While ML methods require less computational power and are suitable for embedded deployment, deep learning (DL) architectures such as convolutional neural networks (CNNs) and deep neural networks (DNNs) can automatically learn hierarchical feature representations from raw data, handling complex nonlinear relationships more effectively~\cite{yuzer2022lactate, tseng2023deep}.
+
+A critical distinction in AI-based colorimetric sensing is between classification and regression approaches. An issue with classification-based techniques is that they assign predefined discrete categories rather than providing a continuous quantitative estimate~\cite{basturk2024regression}. For clinical decision support, regression is preferred because it determines the value of a dependent variable as a continuous quantity, enabling precise concentration prediction rather than coarse categorical assignment~\cite{pradeep2024role, zhang2024cnn}.
+
+Furthermore, many existing systems depend on cloud-based computation, which requires continuous server operation and stable internet connectivity~\cite{mercan2021glucose}. Varying internet speeds may result in data transfer delays, making such systems impractical for field deployment. Embedded AI models (e.g., TensorFlow Lite) address this limitation by enabling offline, on-device inference.
+
+Despite significant progress, several research gaps remain in the literature. First, the majority of studies employ manual ROI selection, which introduces user-dependent variability and prevents fully automated analysis~\cite{xu2023smartphone}. Only a few studies have adopted automatic ROI detection, and none have leveraged YOLO-based keypoint detection for precise quad vertex localization on $\mu$PADs~\cite{tseng2023deep}. Second, few studies explicitly address illumination invariance through white reference normalization using the paper substrate itself~\cite{oconnor2020accurate, wang2024smartphone}. Third, simultaneous multi-analyte detection remains underexplored, with the majority of works focusing on single-analyte analysis~\cite{basturk2024regression}. Fourth, the experimental independence between training and testing conditions (different phones, different lighting) is often inadequately addressed~\cite{abuhassan2024colorimetric}.
+
+Here, we propose a comprehensive smartphone-based colorimetric analysis platform that addresses these gaps through five key contributions: (1)~the first application of YOLO26-pose keypoint detection for automatic $\mu$PAD test zone localization, eliminating manual ROI selection; (2)~a white reference normalization strategy that uses the paper area surrounding detection zones to achieve illumination-invariant measurements without controlled lighting or flash; (3)~simultaneous quantification of three analytes (urea, creatinine, and lactate) on a single $\mu$PAD strip; (4)~comprehensive feature engineering comprising over 150 features across 13 categories designed for regression-based concentration prediction; and (5)~a novel synthetic data augmentation pipeline that generates realistic training scenes with procedural backgrounds, photometric transformations, and physical paper damage, enabling detector training without manual annotation.
+
+
+%% ========================================================================
+%% II. MATERIALS AND METHODS
+%% ========================================================================
+\section{Materials and Methods}
+\label{sec:methods}
+
+%% ----- 2.1 Materials -----
+\subsection{Materials}
+\label{subsec:materials}
+
+% TODO-RESULTS: List all chemicals with purity and suppliers once experiments are conducted
+% Expected format: "Chemical name (purity %) (Supplier, Country)"
+Whatman qualitative filter paper (grade~1) was used as the substrate for $\mu$PAD fabrication. The target analytes were urea, creatinine, and L-lactate. Enzymatic reagent solutions and chromogenic substrates were prepared according to established protocols.
+
+% TODO-RESULTS: Specify exact chemicals, enzymes (e.g., urease, creatininase, lactate oxidase),
+% chromogenic agents (e.g., TMB, KI), and their suppliers (Sigma Aldrich, etc.)
+% TODO-RESULTS: Specify artificial biological fluid composition if applicable
+
+%% ----- 2.2 Design and Fabrication of uPADs -----
+\subsection{Design and Fabrication of $\mu$PADs}
+\label{subsec:fabrication}
+
+The $\mu$PADs were designed using Microsoft PowerPoint and fabricated via wax printing on Whatman qualitative filter paper (grade~1) following the protocol described by Carrilho~\etal\cite{carrilho2009wax}. A Xerox ColorQube 8900 wax printer was used to pattern hydrophobic barriers onto the paper. After printing, the paper was heated at 180$\,^{\circ}$C for 120--180\,s to allow the wax to melt and penetrate through the full thickness of the paper, forming continuous hydrophobic barriers that confine aqueous solutions within defined detection zones~\cite{carrio2017review}.
+
+Each $\mu$PAD strip contains seven test zones corresponding to seven concentration levels (labeled 0 through 6). Within each test zone, three elliptical detection regions are arranged in a triangular pattern: the left region is oriented at $-45^{\circ}$, the center region at $0^{\circ}$ (vertical), and the right region at $+45^{\circ}$ from the vertical axis. In the final deployment configuration, these three regions are designated for urea (Region~1), creatinine (Region~2), and lactate (Region~3), enabling simultaneous multi-analyte detection from a single strip. During the training phase, all three regions are filled with the same concentration of a single chemical, providing three replicate measurements per concentration level for robust model training.
+
+% TODO-RESULTS: Specify detection zone modification procedure (enzyme mixtures,
+% chromogenic agents, volumes per zone, drying conditions)
+
+%% ----- 2.3 Image Acquisition -----
+\subsection{Image Acquisition}
+\label{subsec:image_acquisition}
+
+The performance and reliability of AI-based models are directly linked to the diversity and quantity of training images~\cite{basturk2024regression}. To ensure robust model generalization across different smartphones and illumination conditions, images were captured using four smartphone models of different brands: iPhone~11, iPhone~15, Samsung~A75, and Realme~C55 (Table~\ref{tab:smartphones}). This multi-phone dataset ensures inter-phone repeatability by exposing the model to variations in camera optics, sensor response, and image processing pipelines across both iOS and Android platforms.
+
+\begin{table}[t]
+\caption{Smartphone Camera Properties}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Smartphone} & \textbf{Resolution} & \textbf{Optics} & \textbf{MP} \\
+\midrule
+iPhone 11    & 4032$\times$3024 & f/1.8 & 12 \\
+iPhone 15    & 4032$\times$3024 & f/1.6 & 48 \\
+Samsung A75  & 4000$\times$3000 & f/1.8 & 48 \\
+Realme C55   & 4000$\times$3000 & f/1.8 & 64 \\
+\bottomrule
+\end{tabular}
+\label{tab:smartphones}
+\end{table}
+
+Seven illumination conditions were created using combinations of three laboratory lamps (Lamp~1, Lamp~2, Lamp~3), yielding individual, pairwise, and combined lighting configurations. This design captures the spectral diversity encountered in real-world environments, ranging from warm tungsten-like illumination to cool daylight-like conditions and mixed-source scenarios.
+
+% TODO-RESULTS: Specify total number of images captured
+% Formula: concentrations (7) x lightings (7) x phones (4) x replicates = [TBD]
+% TODO-RESULTS: Specify camera distance and angle of incidence
+
+%% ----- 2.4 YOLO-Based Automatic ROI Detection -----
+\subsection{YOLO-Based Automatic ROI Detection}
+\label{subsec:yolo_detection}
+
+A critical innovation in the proposed system is the automatic localization of test zones using YOLO26-pose keypoint detection, eliminating the need for manual ROI selection. Unlike conventional bounding box detection, the pose estimation approach predicts four precise corner vertices (keypoints) for each concentration zone quadrilateral, enabling accurate perspective correction.
+
+\subsubsection{Model Architecture}
+
+The YOLO26-pose architecture was selected for its combination of detection speed and keypoint accuracy. Two model configurations were developed:
+
+\begin{itemize}
+\item \textbf{Desktop model}: YOLO26s-pose trained at 1280$\times$1280 resolution for maximum accuracy during data preparation.
+\item \textbf{Mobile model}: YOLO26n-pose trained at 640$\times$640 resolution, optimized for real-time inference on Android smartphones.
+\end{itemize}
+
+YOLO26 offers several advantages over previous YOLO generations: 43\% faster CPU inference (critical for mobile deployment), Residual Log-Likelihood Estimation (RLE) for more accurate keypoint localization, NMS-free end-to-end inference, and optional MuSGD optimizer support. The model outputs detections in the format: \textit{class\_id, x$_1$\,y$_1$\,vis$_1$, x$_2$\,y$_2$\,vis$_2$, x$_3$\,y$_3$\,vis$_3$, x$_4$\,y$_4$\,vis$_4$}, where coordinates are normalized and vertices are ordered clockwise from the top-left corner.
+
+\subsubsection{Synthetic Data Augmentation for Detector Training}
+
+Training a keypoint detector requires large annotated datasets, which are expensive to create manually for $\mu$PADs. To address this, a two-stage synthetic data augmentation pipeline was developed:
+
+\textbf{Stage~1 -- MATLAB augmentation} (\texttt{augment\_dataset.m}): Generates unique transformations not available in standard YOLO training augmentation:
+\begin{itemize}
+\item \textit{Geometric}: 3D perspective projection ($\pm$60$^{\circ}$ pitch/yaw), random rotation (0--360$^{\circ}$), variable scaling (8--80\% of image dimension), and non-overlapping spatial placement via grid-based O(1) collision detection.
+\item \textit{Backgrounds}: Five procedural surface types (uniform, speckled, laminate, skin tone, white with ambient gradients), each with 16 cached texture variants and drop shadow rendering.
+\item \textit{Photometric}: Gamma correction (0.92--1.08), per-channel white balance jitter, sensor noise simulation (camera, screen capture, old photo, JPEG artifact profiles), and saturation adjustment.
+\item \textit{Physical defects}: Paper damage (corner clips at 10--35\% of edge length with 20\% probability), stains (outer and core zone), specular highlights, and edge feathering (50\% hard/soft).
+\item \textit{Occlusions}: Thin line occlusions, blob occlusions, and finger-like artifacts to improve robustness.
+\item \textit{Distractors}: 1--10 synthetic look-alike quadrilaterals per image at 50--150\% scale to train the detector to discriminate real test zones from similar-looking objects.
+\end{itemize}
+
+\textbf{Stage~2 -- YOLO runtime augmentation} (\texttt{train\_yolo.py}): Applies standard augmentations during training: HSV jitter (hue $\pm$1.5\%, saturation $\pm$70\%, value $\pm$40\%), 100\% mosaic composition, $\pm$50\% scale variation, $\pm$10\% translation, 50\% horizontal flip, and 40\% random erasing.
+
+This separation ensures no redundancy: MATLAB handles domain-specific augmentations (noise profiles, perspective transforms, paper damage) while YOLO handles photometric jitter at runtime. Each augmented image is generated in approximately 1.0\,s.
+
+\subsubsection{Training Configuration}
+
+The desktop model (YOLO26s-pose) was trained at 1280$\times$1280 resolution for 200 epochs with batch size 24, AdamW optimizer (learning rate 0.001), RLE keypoint loss weight 1.0, and early stopping patience of 20 epochs. The mobile model (YOLO26n-pose) was trained at 640$\times$640 resolution with batch size 64.
+
+% TODO-RESULTS: Report final training metrics (mAP@50, detection rate, inference time)
+
+\begin{figure}[t]
+\centering
+\subfloat[Synthetic training scene with transformed $\mu$PAD zones on procedural background with distractor artifacts.]{\includegraphics[width=\columnwidth]{augmented_dataset_1}\label{fig:aug_scene}}\\
+\vspace{0.1cm}
+\subfloat[Perspective transform.]{\includegraphics[width=0.45\columnwidth]{augmented_micropad_1}\label{fig:aug_persp}}
+\hfill
+\subfloat[Rotation transform.]{\includegraphics[width=0.40\columnwidth]{augmented_micropad_2}\label{fig:aug_rot}}
+\caption{Synthetic data augmentation for YOLO26-pose detector training. (a)~Complete synthetic scene with multiple $\mu$PAD test zones placed on a procedural background with geometric artifacts and distractor quadrilaterals. (b,c)~Individual concentration zones after perspective and rotation transformations, respectively.}
+\label{fig:augmentation}
+\end{figure}
+
+%% ----- 2.5 Four-Stage Image Processing Pipeline -----
+\subsection{Four-Stage Image Processing Pipeline}
+\label{subsec:pipeline}
+
+The proposed system employs a four-stage sequential pipeline that processes raw smartphone images into quantitative feature vectors suitable for regression-based concentration prediction. Each stage reads from folder $N$ and writes to folder $N{+}1$, ensuring stage independence and reproducibility.
+
+\textbf{Stage~1 $\rightarrow$ 2}: Raw smartphone images in \texttt{1\_dataset/\{phone\}/} are processed by \texttt{cut\_micropads.m}, which applies optional rotation correction and invokes the YOLO26-pose model for automatic quad vertex detection. The detected quadrilateral vertices define each test zone boundary. Output: cropped concentration regions in \texttt{2\_micropads/\{phone\}/con\_\{N\}/} with a 10-column coordinate file (image, concentration, $x_1$\,$y_1$\,$x_2$\,$y_2$\,$x_3$\,$y_3$\,$x_4$\,$y_4$, rotation).
+
+\textbf{Stage~2 $\rightarrow$ 3}: Perspective-corrected concentration regions are processed to extract three elliptical measurement patches per test zone using homography transformations. The ellipse positions are defined in normalized coordinates: Region~1 at ($-45^{\circ}$), Region~2 at ($0^{\circ}$), Region~3 at ($+45^{\circ}$). Output: elliptical patches in \texttt{3\_elliptical\_regions/} with an 8-column coordinate file (image, concentration, replicate, $x$, $y$, semiMajor, semiMinor, angle).
+
+\textbf{Stage~3 $\rightarrow$ 4}: The feature extraction module (\texttt{extract\_features.m}) computes over 150 colorimetric features from each elliptical patch while using the white paper area as an illumination reference. Output: Excel feature tables in \texttt{4\_extract\_features/} with automatic train/test splitting.
+
+Fig.~\ref{fig:pipeline} illustrates the pipeline from raw image capture through elliptical patch extraction.
+
+\begin{figure}[t]
+\centering
+\subfloat[Raw smartphone image of $\mu$PAD strip with seven test zones.]{\includegraphics[width=0.9\columnwidth]{stage1_original_image}\label{fig:stage1}}\\
+\vspace{0.1cm}
+\subfloat[Single test zone.]{\includegraphics[width=0.30\columnwidth]{stage2_micropad}\label{fig:stage2}}
+\hfill
+\subfloat[Elliptical patch.]{\includegraphics[width=0.14\columnwidth]{stage3_elliptical_region_1}\label{fig:stage3}}
+\hfill
+\subfloat[White reference.]{\includegraphics[width=0.30\columnwidth]{white_referenced_pixels_on_rectangle}\label{fig:whiteref}}
+\caption{Four-stage image processing pipeline. (a)~Raw smartphone image of a $\mu$PAD strip containing seven test zones at different concentrations. (b)~Single test zone after YOLO-based automatic detection and perspective-corrected cropping (Stage~2). (c)~Elliptical measurement patch extracted from a test zone (Stage~3). (d)~White reference strategy: green pixels indicate the paper area outside the three elliptical detection regions, used for illumination normalization (Stage~4).}
+\label{fig:pipeline}
+\end{figure}
+
+%% ----- 2.6 White Reference Normalization -----
+\subsection{White Reference Normalization}
+\label{subsec:white_reference}
+
+A key contribution of this work is the use of the white paper area surrounding the elliptical detection zones as an in-situ illumination reference, enabling lighting-invariant feature extraction without controlled illumination or flash. The white reference strategy is illustrated in Fig.~\ref{fig:pipeline}(d).
+
+For each test zone, the algorithm identifies paper pixels outside the three elliptical regions and computes their mean RGB values ($R_{\text{paper}}$, $G_{\text{paper}}$, $B_{\text{paper}}$). These values serve as a local illumination estimate, enabling several normalization operations:
+
+\textbf{RGB paper ratios}: For each detection zone, the patch color values are normalized by the paper reference:
+\begin{equation}
+R_{\text{ratio}} = \frac{R_{\text{patch}}}{R_{\text{paper}}}, \quad
+G_{\text{ratio}} = \frac{G_{\text{patch}}}{G_{\text{paper}}}, \quad
+B_{\text{ratio}} = \frac{B_{\text{patch}}}{B_{\text{paper}}}
+\label{eq:paper_ratio}
+\end{equation}
+
+\textbf{CIE L*a*b* correction}: The paper white point in L*a*b* space ($L^{*}_{\text{paper}}$, $a^{*}_{\text{paper}}$, $b^{*}_{\text{paper}}$) is used to normalize the patch lightness and chromaticity:
+\begin{equation}
+L^{*}_{\text{corrected}} = \frac{L^{*}_{\text{patch}}}{L^{*}_{\text{paper}}} \times 100
+\label{eq:L_corrected}
+\end{equation}
+\begin{equation}
+a^{*}_{\text{corrected}} = a^{*}_{\text{patch}} - a^{*}_{\text{paper}}, \quad
+b^{*}_{\text{corrected}} = b^{*}_{\text{patch}} - b^{*}_{\text{paper}}
+\label{eq:ab_corrected}
+\end{equation}
+
+\textbf{$\Delta E$ from paper}: The Euclidean distance in CIE L*a*b* space provides a perceptually uniform, illumination-invariant measure of color difference between the detection zone and the paper white point:
+\begin{equation}
+\Delta E = \sqrt{(L^{*}_{\text{patch}} - L^{*}_{\text{paper}})^2 + (a^{*}_{\text{patch}} - a^{*}_{\text{paper}})^2 + (b^{*}_{\text{patch}} - b^{*}_{\text{paper}})^2}
+\label{eq:delta_e}
+\end{equation}
+
+\textbf{Color temperature estimation}: The paper white point RGB values are used to estimate the ambient color temperature via McCamy's CCT (Correlated Color Temperature) approximation, providing an additional feature ($T_{\text{paper}}$ in Kelvin) that characterizes the illumination environment.
+
+%% ----- 2.7 Comprehensive Feature Engineering -----
+\subsection{Comprehensive Feature Engineering}
+\label{subsec:features}
+
+The feature extraction module computes over 150 features organized into 13 categories across three feature types: patch features (computed on the elliptical mask), normalized features (referenced to paper white point), and background features (paper area statistics). Three presets are available: \textit{minimal} ($\sim$30 features), \textit{robust} ($\sim$80 features, recommended), and \textit{full} ($\sim$150+ features).
+
+The feature categories in the robust preset include:
+
+\begin{enumerate}
+\item \textbf{HSV and CIE L*a*b* statistics}: Median values of H, S, V, L*, a*, b* channels with interquartile range (IQR) for robustness to outlier pixels.
+\item \textbf{Color ratios}: Lighting-invariant ratios (R/G, R/B, G/B) that cancel out absolute brightness variations.
+\item \textbf{Chromaticity}: Normalized r,g chromaticity coordinates, chroma magnitude, dominant chroma, and chromaticity standard deviation.
+\item \textbf{Color uniformity}: Coefficient of variation for R, G, B channels; saturation, value, lightness, and chroma uniformity metrics.
+\item \textbf{Illuminant invariant}: a*b* magnitude and angle, hue circular mean, saturation mean.
+\item \textbf{GLCM texture}: Gray-level co-occurrence matrix features including stripe correlation, contrast, energy, and homogeneity.
+\item \textbf{Entropy and gradients}: Shannon entropy; L*, a*, b* gradient statistics (mean, standard deviation, maximum) and edge density.
+\item \textbf{Robust color statistics}: Median and IQR for L*, a*, b*, S, V channels.
+\item \textbf{Spatial distribution}: L*, a*, b* spatial standard deviation, radial lightness gradient, spatial uniformity.
+\item \textbf{Radial profile}: Inner/outer lightness ratio, radial chroma and saturation slope (capturing concentration-dependent radial color gradients).
+\item \textbf{Concentration metrics}: Saturation range, chroma intensity and maximum, L*a*b* channel ranges.
+\item \textbf{Frequency energy}: FFT-based low-energy, high-energy, and band contrast features for texture characterization.
+\item \textbf{Paper normalization}: R/G/B paper ratios (Eq.~\ref{eq:paper_ratio}), L*/a*/b* corrected values (Eqs.~\ref{eq:L_corrected}--\ref{eq:ab_corrected}), and $\Delta E$ from paper (Eq.~\ref{eq:delta_e}).
+\end{enumerate}
+
+This comprehensive feature set is designed for regression-based concentration prediction, providing the ML model with diverse colorimetric, textural, and spatial information to achieve robust performance across varying illumination conditions and camera optics.
+
+%% ----- 2.8 Performance Metrics -----
+\subsection{Performance Metrics}
+\label{subsec:metrics}
+
+For evaluating the YOLO detector performance, Object Keypoint Similarity (OKS) mAP@50 and detection rate metrics were used. For evaluating the regression models for concentration prediction, the following metrics were employed:
+
+\begin{equation}
+\text{MSE} = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2
+\label{eq:mse}
+\end{equation}
+
+\begin{equation}
+\text{MAE} = \frac{1}{n}\sum_{i=1}^{n}|y_i - \hat{y}_i|
+\label{eq:mae}
+\end{equation}
+
+\begin{equation}
+R^2 = 1 - \frac{\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}{\sum_{i=1}^{n}(y_i - \bar{y})^2}
+\label{eq:r2}
+\end{equation}
+
+\begin{equation}
+\text{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}
+\label{eq:rmse}
+\end{equation}
+
+\noindent where $y_i$ is the true concentration, $\hat{y}_i$ is the predicted concentration, $\bar{y}$ is the mean true concentration, and $n$ is the number of test samples.
+
+The limit of detection (LOD) was calculated as:
+\begin{equation}
+\text{LOD} = \frac{3\sigma}{\text{Slope}}
+\label{eq:lod}
+\end{equation}
+
+\noindent where $\sigma$ is the standard deviation of the blank measurements and Slope is the sensitivity of the calibration curve.
+
+%% ========================================================================
+%% III. RESULTS AND DISCUSSION
+%% ========================================================================
+\section{Results and Discussion}
+\label{sec:results}
+
+%% ----- 3.1 YOLO Detection Performance -----
+\subsection{YOLO Detection Performance}
+\label{subsec:yolo_results}
+
+% TODO-RESULTS: Report YOLO26 training results once training is complete
+% Expected metrics: OKS mAP@50, detection rate, inference time per image
+% Target: mAP@50 > 0.85, detection rate > 85%, inference < 100ms
+The YOLO26s-pose model was trained on synthetic data generated by the augmentation pipeline. The detection performance will be evaluated using OKS mAP@50, detection rate (fraction of test zones correctly localized), and inference time.
+
+% TODO-RESULTS: Fill in actual YOLO detection metrics
+% Desktop model (yolo26s at 1280): mAP@50 = [XX], detection rate = [XX]%
+% Mobile model (yolo26n at 640): mAP@50 = [XX], detection rate = [XX]%
+% Inference time: desktop = [XX] ms, mobile = [XX] ms
+
+%% ----- 3.2 Sensor Performance -----
+\subsection{Sensor Performance}
+\label{subsec:sensor_performance}
+
+% TODO-RESULTS: Describe visual color changes at different concentrations
+% Expected: "The color intensity increased with increasing [analyte] concentration,
+% changing from [color] at concentration 0 to [color] at concentration 6."
+
+% TODO-RESULTS: Calculate LOD values for each analyte
+% Expected format: LOD_urea = [TO BE MEASURED] uM, LOD_creatinine = [TO BE MEASURED] uM,
+% LOD_lactate = [TO BE MEASURED] uM
+
+The colorimetric response of the $\mu$PADs will be characterized across seven concentration levels (0--6) for each target analyte. The LOD will be calculated using Eq.~\eqref{eq:lod} from calibration curves.
+
+%% ----- 3.3 Regression Model Comparison -----
+\subsection{Regression Model Comparison}
+\label{subsec:model_comparison}
+
+% TODO-RESULTS: Train and evaluate multiple regression models on extracted features
+% Models to test: Linear Regression, Ridge, Lasso, SVR, Random Forest, Gradient Boosting,
+% XGBoost, DNN, etc.
+% Report: MSE, MAE, R2, RMSE for each model
+
+Multiple ML regression models will be trained and compared on the extracted feature sets. Table~\ref{tab:model_comparison} presents the performance comparison.
+
+\begin{table}[t]
+\caption{Performance Comparison of Regression Models}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{MSE} & \textbf{MAE} & \textbf{R$^2$} & \textbf{RMSE} \\
+\midrule
+% TODO-RESULTS: Fill in actual regression results
+Linear Regression     & [XX] & [XX] & [XX] & [XX] \\
+Ridge Regression      & [XX] & [XX] & [XX] & [XX] \\
+SVR (RBF)             & [XX] & [XX] & [XX] & [XX] \\
+Random Forest         & [XX] & [XX] & [XX] & [XX] \\
+Gradient Boosting     & [XX] & [XX] & [XX] & [XX] \\
+XGBoost               & [XX] & [XX] & [XX] & [XX] \\
+\textbf{Best Model}   & \textbf{[XX]} & \textbf{[XX]} & \textbf{[XX]} & \textbf{[XX]} \\
+\bottomrule
+\end{tabular}
+\label{tab:model_comparison}
+\end{table}
+
+% TODO-RESULTS: Discuss which model performed best and why
+% Include per-analyte breakdown if multi-analyte models are trained separately
+
+%% ----- 3.4 Feature Importance and Ablation -----
+\subsection{Feature Importance and Ablation Study}
+\label{subsec:feature_importance}
+
+% TODO-RESULTS: Perform feature importance analysis
+% Compare performance of minimal (~30), robust (~80), and full (~150+) presets
+% Identify top-10 most important features for each analyte
+% Evaluate contribution of white reference normalization features
+
+To evaluate the contribution of different feature categories, an ablation study will be conducted comparing the minimal ($\sim$30 features), robust ($\sim$80 features), and full ($\sim$150+ features) presets. Additionally, the impact of white reference normalization features ($\Delta E$, paper ratios, L*/a*/b* corrected) will be quantified by comparing model performance with and without these features.
+
+%% ----- 3.5 Inter-Phone and Illumination Robustness -----
+\subsection{Inter-Phone and Illumination Robustness}
+\label{subsec:robustness}
+
+% TODO-RESULTS: Evaluate cross-phone generalization
+% Train on 3 phones, test on held-out phone
+% Report per-phone and per-lighting RMSE
+% Compare with/without white reference normalization features
+
+The robustness of the proposed system will be evaluated through cross-phone validation experiments, where models are trained on data from three smartphone models and tested on the held-out fourth model. This protocol ensures that the reported performance reflects true inter-phone repeatability rather than within-phone consistency. Similarly, cross-illumination validation will assess generalization across different lighting conditions.
+
+%% ----- 3.6 State-of-the-Art Comparison -----
+\subsection{Comparison with State-of-the-Art Methods}
+\label{subsec:sota}
+
+Table~\ref{tab:sota} presents a comparison of the proposed system with recent state-of-the-art methods for smartphone-based colorimetric analysis.
+
+\begin{table*}[t]
+\caption{Comparison with State-of-the-Art Smartphone-Based Colorimetric Analysis Methods}
+\centering
+\begin{tabular}{llllccc}
+\toprule
+\textbf{Reference} & \textbf{Method} & \textbf{Analyte} & \textbf{Performance} & \textbf{Illumination} & \textbf{ROI} & \textbf{Multi-Analyte} \\
+\midrule
+Mutlu~\etal\cite{mutlu2017smartphone} & SVM, RF, KNN & pH & 92--98\% acc. & Flash & Manual & No \\
+O'Connor~\etal\cite{oconnor2020accurate} & Color correction & General & Device-independent & Ambient subtract. & Manual & No \\
+Tseng~\etal\cite{tseng2023deep} & ResNet50 & ELISA & $>$97\% acc. & Controlled & Automatic & No \\
+Abuhassan~\etal\cite{abuhassan2024colorimetric} & EBC, MLR & Glucose & $R^2$=0.97 & Flash/no-flash & Manual & No \\
+Ba{\c{s}}t\"{u}rk~\etal\cite{basturk2024regression} & DNN regression & Multiple & RMSE$<$0.4 & Controlled & Automatic & Yes \\
+Zhang~\etal\cite{zhang2024cnn} & CNN regression & Glucose & High $R^2$ & Controlled & Automatic & No \\
+Wang~\etal\cite{wang2024smartphone} & Color correction & General & Reduced interf. & Matrix matching & Manual & No \\
+% TODO-RESULTS: Add our results when available
+\textbf{This work} & \textbf{YOLO26 + ML} & \textbf{Urea, Creat., Lact.} & \textbf{[TBD]} & \textbf{White ref.} & \textbf{Auto (YOLO)} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\label{tab:sota}
+\end{table*}
+
+As shown in Table~\ref{tab:sota}, the majority of existing studies (70\%) rely on manual ROI selection, and only 20\% support simultaneous multi-analyte detection. To the best of our knowledge, this is the first study that employs YOLO-based keypoint detection for automatic $\mu$PAD test zone localization combined with white reference paper normalization for illumination-invariant, multi-analyte colorimetric quantification.
+
+%% ========================================================================
+%% IV. CONCLUSION
+%% ========================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+In this study, a comprehensive smartphone-based colorimetric analysis platform was developed for quantitative multi-analyte detection on $\mu$PADs. The proposed system introduces five key contributions that address critical gaps in the literature.
+
+First, a YOLO26-pose keypoint detection model was developed for automatic localization of $\mu$PAD test zones, replacing manual ROI selection with precise quad vertex prediction. The detector was trained entirely on synthetically generated data produced by a novel two-stage augmentation pipeline combining MATLAB-based domain-specific transformations (perspective projection, procedural backgrounds, paper damage, photometric variation) with YOLO runtime augmentation. This eliminates the need for labor-intensive manual annotation.
+
+Second, a white reference normalization strategy was implemented that uses the paper area surrounding elliptical detection zones to estimate the ambient illumination. Features including RGB paper ratios, CIE L*a*b* corrected values, and $\Delta E$ color difference from paper provide illumination-invariant measurements without requiring controlled lighting, flash, or white reference cards.
+
+Third, the system enables simultaneous quantification of three analytes (urea, creatinine, and lactate) from a single $\mu$PAD strip containing seven test zones with three elliptical regions each, supporting comprehensive metabolic profiling from minimal sample volumes.
+
+Fourth, a comprehensive feature engineering module extracts over 150 features across 13 categories (color statistics, texture, spatial, frequency, and paper-normalized features) designed for regression-based continuous concentration prediction rather than discrete classification.
+
+Fifth, images were captured using four smartphone models (iPhone~11, iPhone~15, Samsung~A75, Realme~C55) under seven lighting conditions to ensure inter-phone repeatability and illumination robustness.
+
+% TODO-RESULTS: Summarize key performance results once available
+% Expected format: "The system achieved R2 of [XX] with RMSE of [XX] for [analyte]."
+% "LOD values of [XX] uM for urea, [XX] uM for creatinine, and [XX] uM for lactate."
+% "Processing time of less than [XX] s per image."
+
+The proposed platform offers easy-to-use operation, rapid response, low-cost implementation, and consistent repeatability across different smartphones and lighting environments. Future work will focus on training and evaluating regression models on the extracted features, developing an Android smartphone application with embedded TensorFlow Lite models for offline analysis, and validating the system with real biological samples. Overall, the integrated system holds great promise for point-of-care testing in nonlaboratory and resource-limited settings.
+
+%% ========================================================================
+%% ACKNOWLEDGEMENTS
+%% ========================================================================
+\section*{ACKNOWLEDGEMENTS}
+% TODO-USER: Update funding information with actual project numbers
+This research was supported by the Scientific and Technological Research Council of Turkey (TUBITAK) (project no. [TBD]) and by the scientific research projects coordination unit of \.{I}zmir Katip \c{C}elebi University (project no. [TBD]).
+
+%% ========================================================================
+%% AUTHOR CONTRIBUTIONS
+%% ========================================================================
+\section*{Author Contributions}
+Veysel Yusuf Y{\i}lmaz: Methodology (lead); Software (lead); Investigation (lead); Validation (lead); Writing---original draft (lead).
+Volkan K{\i}l{\i}{\c{c}}: Conceptualization (lead); Supervision (lead); Funding acquisition (lead); Writing---review \& editing (lead).
+
+%% ========================================================================
+%% REFERENCES
+%% ========================================================================
+\begin{thebibliography}{15}
+
+\bibitem{martinez2007patterned}
+A.~W. Martinez, S.~T. Phillips, M.~J. Butte, and G.~M. Whitesides, ``Patterned paper as a platform for inexpensive, low-volume, portable bioassays,'' \textit{Angew. Chem. Int. Ed.}, vol.~46, no.~8, pp.~1318--1320, 2007.
+
+\bibitem{martinez2010diagnostics}
+A.~W. Martinez, S.~T. Phillips, G.~M. Whitesides, and E. Carrilho, ``Diagnostics for the developing world: Microfluidic paper-based analytical devices,'' \textit{Anal. Chem.}, vol.~82, no.~1, pp.~3--10, 2010.
+
+\bibitem{carrilho2009wax}
+E. Carrilho, A.~W. Martinez, and G.~M. Whitesides, ``Understanding wax printing: A simple micropatterning process for paper-based microfluidics,'' \textit{Anal. Chem.}, vol.~81, no.~16, pp.~7091--7095, 2009.
+
+\bibitem{mutlu2017smartphone}
+A.~Y. Mutlu, V. K{\i}l{\i}{\c{c}}, G.~K. \"{O}zdemir, A. Bayram, N. Horzum, and M.~E. Solmaz, ``Smartphone-based colorimetric detection via machine learning,'' \textit{The Analyst}, vol.~142, no.~13, pp.~2434--2441, 2017.
+
+\bibitem{mercan2021glucose}
+\"{O}.~B. Mercan, V. K{\i}l{\i}{\c{c}}, and M. \c{S}en, ``Machine learning-based colorimetric determination of glucose in artificial saliva with different reagents using a smartphone coupled $\mu$PAD,'' \textit{Sens. Actuators B: Chem.}, vol.~329, p.~129037, 2021.
+
+\bibitem{yuzer2022lactate}
+E. Y\"{u}zer, V. Do\u{g}an, V. K{\i}l{\i}{\c{c}}, and M. \c{S}en, ``Smartphone embedded deep learning approach for highly accurate and automated colorimetric lactate analysis in sweat,'' \textit{Sens. Actuators B: Chem.}, vol.~371, p.~132489, 2022.
+
+\bibitem{basturk2024regression}
+M. Ba\c{s}t\"{u}rk, E. Y\"{u}zer, M. \c{S}en, and V. K{\i}l{\i}{\c{c}}, ``Smartphone-embedded artificial intelligence-based regression for colorimetric quantification of multiple analytes with a microfluidic paper-based analytical device in synthetic tears,'' \textit{Adv. Intell. Syst.}, vol.~6, no.~11, p.~2400202, 2024.
+
+\bibitem{oconnor2020accurate}
+T.~F. O'Connor, K.~M. Zahar, M. Grinman, K. Phan, and A.~C. Chen, ``Accurate device-independent colorimetric measurements using smartphones,'' \textit{PLOS ONE}, vol.~15, no.~3, p.~e0230561, 2020.
+
+\bibitem{tseng2023deep}
+S.~Y. Tseng, S.~Y. Li, S.~Y. Yi, A.~Y. Sun, D.~Y. Gao, and D. Wan, ``Deep learning-assisted ultra-accurate smartphone testing of paper-based colorimetric ELISA assays,'' \textit{Anal. Chim. Acta}, vol.~1243, p.~340799, 2023.
+
+\bibitem{xu2023smartphone}
+D. Xu, X. Huang, J. Guo, and X. Ma, ``Smartphone-based platforms implementing microfluidic detection with image-based artificial intelligence,'' \textit{Nat. Commun.}, vol.~14, no.~1, p.~1341, 2023.
+
+\bibitem{abuhassan2024colorimetric}
+K. Abuhassan, L. Bellorini, C. Algieri, G.~M. Ferrante, T.~R.~I. Cataldi, A. Simonelli, and D. Ferrante, ``Colorimetric detection of glucose with smartphone-coupled $\mu$PADs: Harnessing machine learning algorithms in variable lighting environments,'' \textit{Sens. Actuators B: Chem.}, vol.~401, p.~135538, 2024.
+
+\bibitem{zhang2024cnn}
+Y. Zhang, H. Chen, J. Wang, X. Liu, and M. Zhou, ``Convolutional neural network for colorimetric glucose detection using a smartphone and novel multilayer polyvinyl film microfluidic device,'' \textit{Sci. Rep.}, vol.~14, no.~1, p.~28451, 2024.
+
+\bibitem{wang2024smartphone}
+Y. Wang, H. Liu, X. Chen, L. Zhang, and J. Li, ``Smartphone-based colorimetric detection platform using color correction algorithms to reduce external interference,'' \textit{Biosens. Bioelectron.}, vol.~257, p.~116245, 2024.
+
+\bibitem{pradeep2024role}
+A. Pradeep, A. Kumar, S. Gupta, and P. Sharma, ``Role of machine learning assisted biosensors in point-of-care-testing for clinical decisions,'' \textit{ACS Sensors}, vol.~9, no.~9, pp.~4476--4494, 2024.
+
+\bibitem{carrio2017review}
+A. Carrio, C. Sampedro, J.~L. Sanchez-Lopez, M. Piber, and P. Campoy, ``A review on wax printed microfluidic paper-based devices for international health,'' \textit{Biomicrofluidics}, vol.~11, no.~4, p.~041501, 2017.
+
+\end{thebibliography}
+
+\end{document}

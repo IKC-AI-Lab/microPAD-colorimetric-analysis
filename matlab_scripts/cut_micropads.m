@@ -10,7 +10,7 @@ function cut_micropads(varargin)
     %
     % Features:
     %   - Interactive rotation adjustment with memory
-    %   - AI-powered quad detection (YOLOv11-pose; mobile default)
+    %   - AI-powered quad detection (YOLOv8-pose)
     %   - Manual quad editing and refinement
     %   - Saves quad coordinates with rotation angle
     %
@@ -22,10 +22,9 @@ function cut_micropads(varargin)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial quad placement (default: true)
-    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11s-micropad-pose-1280.pt'; overridden when useMobileModel=true)
+    % - 'detectionModel': path to YOLOv8 pose model (default: 'models/yolov8m-micropad-pose-640.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
-    % - 'inferenceSize': YOLO inference image size in pixels (default: 640 with mobile model, 1280 with desktop)
-    % - 'useMobileModel': use mobile-optimized model (yolo11n at 640px) (default: true)
+    % - 'inferenceSize': YOLO inference image size in pixels (default: 640)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
     %
     % Outputs/Side effects:
@@ -113,7 +112,7 @@ function cut_micropads(varargin)
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = true;
-    DEFAULT_DETECTION_MODEL = 'models/yolo11s-micropad-pose-1280.pt';
+    DEFAULT_DETECTION_MODEL = 'models/yolov8m-micropad-pose-640.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
     % Python path for YOLO inference (auto-detected if empty)
@@ -126,15 +125,7 @@ function cut_micropads(varargin)
     %   Windows: 'C:\Users\YourName\miniconda3\envs\YourEnv\python.exe'
     %   Linux:   '/home/YourName/miniconda3/envs/YourEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
-    DEFAULT_INFERENCE_SIZE = 1280;
-
-    % Mobile model (fast, for testing mobile-optimized weights)
-    % NOTE: Mobile model must be trained separately using:
-    %   python train_yolo.py --mobile
-    %   Then copy best.pt to models/yolo11n-micropad-pose-640.pt
-    DEFAULT_USE_MOBILE_MODEL = false;
-    DEFAULT_DETECTION_MODEL_MOBILE = 'models/yolo11n-micropad-pose-640.pt';
-    DEFAULT_INFERENCE_SIZE_MOBILE = 640;
+    DEFAULT_INFERENCE_SIZE = 640;
 
     % === ROTATION CONSTANTS ===
     ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations
@@ -170,7 +161,6 @@ function cut_micropads(varargin)
                               MARGIN_TO_SPACING_RATIO, VERTICAL_POSITION_RATIO, MIN_AXIS_PERCENT, ...
                               SEMI_MAJOR_DEFAULT_RATIO, SEMI_MINOR_DEFAULT_RATIO, ELLIPSE_DEFAULT_RECORDS, ...
                               DEFAULT_USE_AI_DETECTION, DEFAULT_DETECTION_MODEL, DEFAULT_MIN_CONFIDENCE, DEFAULT_PYTHON_PATH, DEFAULT_INFERENCE_SIZE, ...
-                              DEFAULT_USE_MOBILE_MODEL, DEFAULT_DETECTION_MODEL_MOBILE, DEFAULT_INFERENCE_SIZE_MOBILE, ...
                               ROTATION_ANGLE_TOLERANCE, ...
                               COORDINATE_FILENAME, SUPPORTED_FORMATS, ALLOWED_IMAGE_EXTENSIONS, CONC_FOLDER_PREFIX, uiConfig, ...
                               geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin{:});
@@ -193,7 +183,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
                                    marginToSpacingRatio, verticalPositionRatio, minAxisPercent, ...
                                    semiMajorDefaultRatio, semiMinorDefaultRatio, ellipseDefaultRecords, ...
                                    defaultUseAI, defaultDetectionModel, defaultMinConfidence, defaultPythonPath, defaultInferenceSize, ...
-                                   defaultUseMobileModel, defaultDetectionModelMobile, defaultInferenceSizeMobile, ...
                                    rotationAngleTolerance, ...
                                    coordinateFileName, supportedFormats, allowedImageExtensions, concFolderPrefix, uiConfig, ...
                                    geomTform, pathUtils, imageIO, yoloUtils, fileIOMgr, micropadUI, varargin)
@@ -217,7 +206,6 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     parser.addParameter('minConfidence', defaultMinConfidence, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     parser.addParameter('pythonPath', defaultPythonPath, @(x) ischar(x) || isstring(x));
     parser.addParameter('inferenceSize', defaultInferenceSize, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>', 0}));
-    parser.addParameter('useMobileModel', defaultUseMobileModel, @islogical);
 
     parser.parse(varargin{:});
 
@@ -234,40 +222,14 @@ function cfg = createConfiguration(inputFolder, outputFolder, outputFolderEllips
     cfg.pythonPath = parser.Results.pythonPath;
     cfg.inferenceSize = parser.Results.inferenceSize;
 
-    % Mobile model override - when enabled, use smaller/faster model
-    cfg.useMobileModel = parser.Results.useMobileModel;
-    if cfg.useMobileModel
-        if ~cfg.useAIDetection
-            warning('cut_micropads:mobile_no_ai', ...
-                'useMobileModel=true has no effect because useAIDetection=false. Set useAIDetection=true to use mobile model.');
-        end
-        if ~strcmp(parser.Results.detectionModel, defaultDetectionModel)
-            warning('cut_micropads:mobile_override', ...
-                'useMobileModel=true overrides detectionModel. Using: %s', defaultDetectionModelMobile);
-        end
-        cfg.detectionModelRelative = defaultDetectionModelMobile;
-        cfg.inferenceSize = defaultInferenceSizeMobile;
-    end
-
     % Auto-adjust inference size based on model filename when not explicitly set
     hasInferenceSize = any(strcmpi(varargin(1:2:end), 'inferenceSize'));
-    if ~cfg.useMobileModel && ~hasInferenceSize
-        modelLower = lower(char(cfg.detectionModelRelative));
+    if ~hasInferenceSize
+        targetInferenceSize = detectInferenceSizeFromModel(cfg.detectionModelRelative, cfg.inferenceSize);
 
-        % Detect target inference size from model filename
-        if contains(modelLower, '640')
-            targetInferenceSize = defaultInferenceSizeMobile;
-        elseif contains(modelLower, '1280')
-            targetInferenceSize = defaultInferenceSize;
-        else
-            targetInferenceSize = cfg.inferenceSize;  % Keep current
-        end
-
-        % Update and warn only if there's a mismatch
+        % Update and notify only if there's a mismatch
         if targetInferenceSize ~= cfg.inferenceSize
-            warning('cut_micropads:inference_size_autoset', ...
-                'Model name suggests %dpx inference. Auto-setting inferenceSize to %d. Override with ''inferenceSize'' if needed.', ...
-                targetInferenceSize, targetInferenceSize);
+            fprintf('Auto-detected inference size: %d px (from model filename)\n', targetInferenceSize);
             cfg.inferenceSize = targetInferenceSize;
         end
     end
@@ -371,7 +333,8 @@ function cfg = addPathConfiguration(cfg, inputFolder, outputFolder, outputFolder
             cfg.useAIDetection = false;
         elseif ~isfile(cfg.detectionModel)
             warning('cut_micropads:model_missing', ...
-                'AI detection enabled but model not found: %s\nDisabling AI detection.', cfg.detectionModel);
+                'AI detection enabled but YOLOv8 model not found: %s\nDisabling AI detection.\nTrain model with: python train_yolo.py --medium', ...
+                cfg.detectionModel);
             cfg.useAIDetection = false;
         end
     end
@@ -386,6 +349,39 @@ function validatePaths(cfg)
     if ~isfolder(cfg.outputPath)
         mkdir(cfg.outputPath);
     end
+end
+
+function imgsz = detectInferenceSizeFromModel(modelPath, defaultSize)
+    %detectInferenceSizeFromModel Extract inference size from model filename
+    %   Supports common YOLO training resolutions: 320, 640, 960, 1280
+    %
+    %   Args:
+    %       modelPath: Path to model file (string or char)
+    %       defaultSize: Fallback value if no resolution found
+    %
+    %   Returns:
+    %       Detected inference size or defaultSize if not found
+
+    [~, modelName, ~] = fileparts(char(modelPath));
+
+    % Check for resolution in filename (check larger resolutions first)
+    % Use pattern matching to avoid false positives (e.g., "12800epoch" matching 1280)
+    resolutions = [1280, 960, 640, 320];
+    for i = 1:length(resolutions)
+        res = resolutions(i);
+        % Match resolution preceded by delimiter and followed by delimiter or end
+        pattern = sprintf('[-_]%d($|[-_.])', res);
+        if ~isempty(regexp(modelName, pattern, 'once'))
+            imgsz = res;
+            return;
+        end
+    end
+
+    % Default fallback
+    imgsz = defaultSize;
+    warning('cut_micropads:inference_size', ...
+        'Could not detect inference size from model name "%s", using %d', ...
+        modelName, imgsz);
 end
 
 %% -------------------------------------------------------------------------
@@ -1090,13 +1086,10 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialQuads, initi
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % === TOP OVERLAY ELEMENTS (on top of image) ===
-    % Single top text container (provides semi-transparent background)
-    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
-
     % Path display (single info row showing folder and image name)
     guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
 
-    % Stop button and Run AI button (inside text container)
+    % Stop button and Run AI button
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
     guiData.runAIButton = cfg.micropadUI.createRunAIButton(fig, cfg, @(~,~) rerunAIDetection(fig, cfg));
 
@@ -1189,9 +1182,6 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, ellipse
     [guiData.leftAxes, guiData.rightAxes, guiData.leftImgHandle, guiData.rightImgHandle] = cfg.micropadUI.createPreviewAxes(fig, img, quadParams, ellipseData, cfg);
 
     % === TOP OVERLAY ELEMENTS (on top of image) ===
-    % Single top text container
-    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
-
     % Single info row (folder, image, regions count)
     numRegions = size(quadParams, 1);
     metaText = sprintf('Preview: %s | %s | %d regions', phoneName, imageName, numRegions);
@@ -1205,7 +1195,7 @@ function buildPreviewUI(fig, img, imageName, phoneName, cfg, quadParams, ellipse
         'VerticalAlignment', 'middle', ...
         'Margin', 1);
 
-    % Stop button (inside text container)
+    % Stop button
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     guiData.action = '';
@@ -1258,13 +1248,10 @@ function buildEllipseEditingUI(fig, img, imageName, phoneName, cfg, quadParams, 
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % === TOP OVERLAY ELEMENTS (on top of image) ===
-    % Single top text container
-    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
-
     % Path display (single info row)
     guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
 
-    % Stop button (inside text container)
+    % Stop button
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Instructions overlay
@@ -1418,13 +1405,10 @@ function buildEllipseEditingUIGridMode(fig, img, imageName, phoneName, cfg, elli
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % === TOP OVERLAY ELEMENTS (on top of image) ===
-    % Single top text container
-    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
-
     % Path display (single info row)
     guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
 
-    % Stop button (inside text container)
+    % Stop button
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     % Add double-click background reset callback
@@ -1526,13 +1510,10 @@ function buildReadOnlyPreviewUI(fig, img, imageName, phoneName, cfg, quadParams,
     [guiData.imgAxes, guiData.imgHandle] = cfg.micropadUI.createImageAxes(fig, displayImg, cfg);
 
     % === TOP OVERLAY ELEMENTS (on top of image) ===
-    % Single top text container
-    guiData.topTextContainer = cfg.micropadUI.createTopTextContainer(fig, cfg);
-
     % Path display (single info row)
     guiData.pathHandle = cfg.micropadUI.createPathDisplay(fig, phoneName, imageName, cfg);
 
-    % Stop button (inside text container)
+    % Stop button
     guiData.stopButton = cfg.micropadUI.createStopButton(fig, cfg, @(~,~) stopExecution(fig));
 
     displayQuadsPreview = convertBaseQuadsToDisplay(quadParams, guiData.baseImageSize, guiData.imageSize, rotation, cfg);

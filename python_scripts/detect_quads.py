@@ -5,12 +5,12 @@ Standalone YOLO inference script for microPAD quad detection using pose keypoint
 Called by MATLAB cut_micropads.m to perform AI-based quad detection.
 Accepts image path and outputs detected quad coordinates to stdout.
 
-This script uses YOLOv11 pose models (yolo11n/yolo11s) to detect quadrilateral concentration zones on microPAD
+This script uses YOLOv8 pose models (yolov8n/yolov8s/yolov8m) to detect quadrilateral concentration zones on microPAD
 images by predicting 4 corner keypoints directly. No polygon simplification is needed.
 
 Model Configuration:
-    - Architecture: YOLOv11-pose (n or s, depending on weights)
-    - Training Resolution: 640x640 (mobile) or 1280x1280 (desktop)
+    - Architecture: YOLOv8-pose (n, s, or m, depending on weights)
+    - Training Resolution: 640x640
     - Default Confidence: 0.6 (60%)
 
 Usage:
@@ -41,18 +41,18 @@ DEFAULT_DIMENSION_FALLBACK = 1.0  # Fallback for empty dimension arrays
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
-    Default values match the mobile YOLOv11n-pose model configuration:
-    - imgsz=640: Model was trained at 640x640 resolution (optimized for mobile use)
+    Default values match the YOLOv8 model configuration:
+    - imgsz=640: Model was trained at 640x640 resolution
     - conf=0.6: Balanced detection threshold
 
     Returns:
         Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(
-        description="YOLOv11-pose quad detection for microPAD concentration zones"
+        description="YOLOv8-pose quad detection for microPAD concentration zones"
     )
     parser.add_argument("image_path", type=str, help="Path to input image")
-    parser.add_argument("model_path", type=str, help="Path to YOLOv11 pose model (.pt)")
+    parser.add_argument("model_path", type=str, help="Path to YOLOv8 pose model (.pt)")
     parser.add_argument(
         "--conf",
         type=float,
@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         "--imgsz",
         type=int,
         default=640,
-        help="Inference image size in pixels (default: 640, matches mobile training resolution)"
+        help="Inference image size in pixels (default: 640, matches training resolution)"
     )
     return parser.parse_args()
 
@@ -144,17 +144,17 @@ def sort_quads_by_layout(quads: List[np.ndarray], confidences: List[float]) -> T
 
 
 def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 640) -> Tuple[List[np.ndarray], List[float]]:
-    """Run YOLOv11-pose inference and extract concentration zone keypoint coordinates.
+    """Run YOLOv8-pose inference and extract concentration zone keypoint coordinates.
 
-    This function runs the trained YOLOv11-pose model to detect microPAD
+    This function runs the trained YOLOv8-pose model to detect microPAD
     concentration zones. Each detection consists of 4 corner keypoints
     representing a quadrilateral.
 
     Args:
         image_path: Path to input microPAD image
-        model_path: Path to YOLOv11 pose model (.pt file)
+        model_path: Path to YOLOv8 pose model (.pt file)
         conf_threshold: Confidence threshold for detections (0.5-0.7 recommended)
-        imgsz: Inference image size (default: 640 to match mobile training resolution)
+        imgsz: Inference image size (default: 640 to match training resolution)
 
     Returns:
         Tuple of (quads, confidences) where:
@@ -164,7 +164,7 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
     Note:
         Detections are returned in YOLO's native order. MATLAB handles spatial sorting
         based on display context (rotation, zoom, memory).
-        Optimal performance when imgsz matches the model training resolution (640 or 1280).
+        Optimal performance when imgsz matches the model training resolution (640).
     """
     from ultralytics import YOLO
 
@@ -220,8 +220,8 @@ def main():
 
     Expected workflow:
     1. MATLAB calls: python detect_quads.py image.jpg model.pt --conf 0.6 --imgsz 640
-    2. Script loads YOLOv11-pose model
-    3. Runs inference at 640x640 resolution (mobile default; use 1280 for desktop)
+    2. Script loads YOLOv8-pose model
+    3. Runs inference at 640x640 resolution
     4. Detects 7 concentration zones (4 corners each)
     5. Outputs coordinates to stdout for MATLAB to parse
     """
@@ -234,10 +234,19 @@ def main():
         sys.exit(1)
 
     if not Path(args.model_path).exists():
-        print(f"ERROR: Model not found: {args.model_path}", file=sys.stderr)
-        print(f"  Searched path: {Path(args.model_path).resolve()}", file=sys.stderr)
-        print("  Expected location (mobile): models/yolo11n-micropad-pose-640.pt", file=sys.stderr)
-        print("  Expected location (desktop): models/yolo11s-micropad-pose-1280.pt", file=sys.stderr)
+        print(f"ERROR: Model file not found: {args.model_path}", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print("Expected locations:", file=sys.stderr)
+        print("  Medium: models/yolov8m-micropad-pose-640.pt", file=sys.stderr)
+        print("  Small:  models/yolov8s-micropad-pose-640.pt", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Train a model with:", file=sys.stderr)
+        print("  python train_yolo.py --medium  # For high accuracy", file=sys.stderr)
+        print("  python train_yolo.py --small   # For balanced speed/accuracy", file=sys.stderr)
+        print("  python train_yolo.py --nano    # For fast inference", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("After training, copy best weights:", file=sys.stderr)
+        print("  cp training_runs/yolov8m_pose_640/weights/best.pt models/yolov8m-micropad-pose-640.pt", file=sys.stderr)
         sys.exit(1)
 
     # Validate confidence threshold

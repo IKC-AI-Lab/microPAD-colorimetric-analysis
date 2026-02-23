@@ -46,6 +46,10 @@ function io = image_io()
     % Utilities
     io.stripExtension = @stripExtension;
     io.clampUint8 = @clampUint8;
+
+    % Image Processing - Augmentation Support
+    io.applyMotionBlur = @apply_motion_blur;
+    io.featherQuadEdges = @feather_quad_edges;
 end
 
 %% =========================================================================
@@ -404,4 +408,140 @@ function img = clampUint8(img)
     % Note: Input must be in [0, 255] range (not normalized [0, 1]).
 
     img = uint8(min(255, max(0, img)));
+end
+
+%% =========================================================================
+%% IMAGE PROCESSING - AUGMENTATION SUPPORT
+%% =========================================================================
+
+function img = apply_motion_blur(img)
+    % Apply slight motion blur with cached PSFs to avoid redundant kernel generation
+    %
+    % INPUTS:
+    %   img - RGB image (uint8)
+    %
+    % OUTPUTS:
+    %   img - Motion-blurred image (uint8)
+    %
+    % The blur simulates camera shake during capture with random direction.
+    % PSF kernels are cached by length and angle for performance.
+
+    persistent psf_cache
+    if isempty(psf_cache)
+        psf_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    end
+
+    len = 4 + randi(4);            % 5-8 px
+    ang = rand() * 180;            % degrees
+    ang_rounded = round(ang);
+    cache_key = sprintf('%d_%d', len, ang_rounded);
+
+    if isKey(psf_cache, cache_key)
+        psf = psf_cache(cache_key);
+    else
+        psf = fspecial('motion', len, ang_rounded);
+        psf_cache(cache_key) = psf;
+    end
+
+    img = imfilter(img, psf, 'replicate');
+end
+
+function [featheredImg, featheredAlpha] = feather_quad_edges(quadImg, alpha, featherWidth, sigma)
+    % Apply edge feathering to quad image and alpha, maintaining pre-multiplied consistency
+    %
+    % Uses erosion followed by Gaussian blur to create smooth edge transitions.
+    % Critically, this function adjusts RGB values to match the new alpha,
+    % preserving the pre-multiplied relationship required for correct compositing.
+    %
+    % INPUTS:
+    %   quadImg - RGB image (uint8), pre-multiplied by original alpha
+    %   alpha - Single-precision alpha mask (0-1) from the same transform
+    %   featherWidth - Erosion amount in pixels
+    %   sigma - Gaussian blur sigma (auto-computed if empty)
+    %
+    % OUTPUTS:
+    %   featheredImg - RGB image with adjusted values for new alpha (uint8)
+    %   featheredAlpha - Alpha mask with soft edges (single, 0-1)
+
+    featheredImg = quadImg;
+    origAlpha = single(alpha);  % Defensive conversion + store for RGB adjustment
+    featheredAlpha = origAlpha;
+
+    if featherWidth <= 0
+        return;
+    end
+
+    % Convert to binary for morphological operations
+    binaryAlpha = origAlpha > 0.5;
+
+    % Adaptive featherWidth clamping: prevent erosion from eliminating small ROIs
+    % Clamp to 1/4 of minimum ROI dimension to ensure core region survives
+    [rows, cols] = find(binaryAlpha);
+    if isempty(rows)
+        return;  % No content to feather
+    end
+    roiHeight = max(rows) - min(rows) + 1;
+    roiWidth = max(cols) - min(cols) + 1;
+    minDim = min(roiHeight, roiWidth);
+    effectiveFeatherWidth = min(featherWidth, floor(minDim / 4));
+
+    if effectiveFeatherWidth <= 0
+        return;  % ROI too small for any feathering
+    end
+
+    % Auto-compute sigma if not provided (based on effective width)
+    if isempty(sigma) || ~isfinite(sigma)
+        sigma = max(0.5, effectiveFeatherWidth / 2);
+    else
+        % Scale sigma proportionally if featherWidth was clamped
+        sigma = sigma * (effectiveFeatherWidth / featherWidth);
+    end
+
+    % Erode to shrink boundary inward (disk SE for isotropic erosion)
+    se = strel('disk', effectiveFeatherWidth, 0);
+    erodedAlpha = imerode(binaryAlpha, se);
+
+    % Guard: if erosion still eliminates all content, skip feathering
+    if ~any(erodedAlpha(:))
+        return;
+    end
+
+    % Apply Gaussian blur to create smooth falloff from eroded boundary
+    blurredAlpha = imgaussfilt(single(erodedAlpha), sigma);
+
+    % Preserve core: use max of blurred and eroded
+    featheredAlpha = max(blurredAlpha, single(erodedAlpha));
+
+    % Constrain feathered alpha to not exceed original alpha
+    % This prevents alpha from extending beyond the original content boundary
+    featheredAlpha = min(featheredAlpha, origAlpha);
+
+    % Clamp to valid range
+    featheredAlpha = max(0, min(1, featheredAlpha));
+
+    % Adjust RGB to maintain pre-multiplied consistency
+    % Original RGB = true_color * origAlpha (pre-multiplied)
+    % Need: new RGB = true_color * featheredAlpha
+    % Therefore: new RGB = original RGB * (featheredAlpha / origAlpha)
+    %
+    % This ensures compositing formula (F + B*(1-alpha)) produces correct results
+
+    % Only adjust where alpha changed and original alpha is significant
+    needsAdjustment = (origAlpha > 0.01) & (abs(featheredAlpha - origAlpha) > 0.001);
+
+    if any(needsAdjustment(:))
+        % Compute adjustment ratio - always <= 1 since featheredAlpha <= origAlpha
+        % (no amplification occurs, so no clamping needed unlike un-premultiply)
+        ratio = ones(size(origAlpha), 'single');
+        ratio(needsAdjustment) = featheredAlpha(needsAdjustment) ./ origAlpha(needsAdjustment);
+
+        % Apply ratio to each RGB channel
+        featheredImg = double(quadImg);
+        for c = 1:size(featheredImg, 3)
+            channel = featheredImg(:,:,c);
+            channel = channel .* double(ratio);
+            featheredImg(:,:,c) = channel;
+        end
+        featheredImg = uint8(min(255, max(0, featheredImg)));
+    end
 end
